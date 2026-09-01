@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: "Archivo Expanded", "Archivo", sans-serif;
+  --font-body: "Source Sans 3", sans-serif;
+}
+
+body {
+  background-color: #F7F5F2;
+  color: #14181F;
+}
+
+@layer utilities {
+  .track-tight-display {
+    letter-spacing: -0.01em;
+  }
+}

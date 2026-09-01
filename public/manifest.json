@@ -1,0 +1,16 @@
+{
+  "name": "Sport Famille",
+  "short_name": "Sport Famille",
+  "description": "Calendriers, résultats, statistiques et diplômes sportifs de Candice, Amandine et Julia.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F7F5F2",
+  "theme_color": "#0B2545",
+  "icons": [
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
