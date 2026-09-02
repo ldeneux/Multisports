@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateTime, msToSwimTime } from "@/lib/utils";
+import SyncButton from "@/components/SyncButton";
 import {
   addResult,
   deleteResult,
@@ -91,12 +92,12 @@ function ResultRow({ r, meetResults, amandineName }) {
           ) : (
             <form action={fetchMeetResults}>
               <input type="hidden" name="swim_result_id" value={r.id} />
-              <button
-                type="submit"
-                className="text-xs font-semibold text-cardinal hover:underline"
+              <SyncButton
+                pendingLabel="Récupération..."
+                className="text-xs font-semibold text-cardinal hover:underline disabled:opacity-60"
               >
                 Voir tous les résultats de cette épreuve →
-              </button>
+              </SyncButton>
             </form>
           )}
           {r.meet_fetch_error && (
@@ -134,12 +135,9 @@ function ParticipantSection({ ps, results, meetResultsByEvent }) {
 
         <form action={syncFfnResults}>
           <input type="hidden" name="participant_sport_id" value={ps.id} />
-          <button
-            type="submit"
-            className="rounded-full bg-lagoon px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90"
-          >
+          <SyncButton className="rounded-full bg-lagoon px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
             Synchroniser FFN
-          </button>
+          </SyncButton>
         </form>
       </div>
 
