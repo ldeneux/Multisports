@@ -1,20 +1,69 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { formatDate, formatDateTime, msToSwimTime } from "@/lib/utils";
+import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
 import {
-  addResult,
-  deleteResult,
-  updateFfnId,
-  syncFfnResults,
-  fetchMeetResults,
+  syncClubCompetitions,
+  linkSwimmerToParticipant,
+  toggleSwimmerFlag,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
 
-function MeetResultsTable({ meetResults, amandineName }) {
-  if (!meetResults || meetResults.length === 0) return null;
+function SyncCard({ ps }) {
+  return (
+    <div className="rounded-card bg-white p-5 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-display text-lg uppercase tracking-tight text-navy">
+            Synchro club — {ps.participants?.first_name ?? "Natation"}
+          </p>
+          <p className="text-sm text-ink/50">
+            Récupère toutes les compétitions départementales du club (et tous les
+            nageurs qui y ont participé) pour une saison donnée.
+          </p>
+        </div>
+      </div>
 
-  const sorted = [...meetResults].sort((a, b) => {
+      <form action={syncClubCompetitions} className="mt-3 flex flex-wrap items-end gap-2">
+        <input type="hidden" name="participant_sport_id" value={ps.id} />
+        <label className="text-xs font-semibold text-ink/50">
+          ID club FFN
+          <input
+            name="ffn_club_id"
+            defaultValue={ps.ffn_club_id ?? ""}
+            placeholder="ex. 836"
+            className="mt-1 w-28 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="text-xs font-semibold text-ink/50">
+          Saison (année de fin)
+          <input
+            name="season_year"
+            defaultValue={computeCurrentSeasonYear()}
+            className="mt-1 w-24 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+          />
+        </label>
+        <SyncButton
+          pendingLabel="Synchronisation..."
+          className="rounded-full bg-lagoon px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
+        >
+          Synchroniser
+        </SyncButton>
+      </form>
+
+      {ps.last_ffn_sync_at && (
+        <p className={`mt-2 text-xs ${ps.last_ffn_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
+          Dernière synchro : {formatDateTime(ps.last_ffn_sync_at)} —{" "}
+          {ps.last_ffn_sync_error ?? ps.last_ffn_sync_summary ?? "OK"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function MeetDetails({ rows, highlightSwimmerId }) {
+  const sorted = [...rows].sort((a, b) => {
     if (a.time_ms == null) return 1;
     if (b.time_ms == null) return -1;
     return a.time_ms - b.time_ms;
@@ -22,215 +71,220 @@ function MeetResultsTable({ meetResults, amandineName }) {
 
   return (
     <div className="mt-2 space-y-1 rounded-lg bg-white p-2">
-      {sorted.map((m) => (
+      {sorted.map((r) => (
         <div
-          key={m.id}
+          key={r.id}
           className={`flex items-center justify-between rounded px-2 py-1 text-sm ${
-            m.swimmer_name?.toLowerCase().includes(amandineName?.toLowerCase() ?? "")
+            r.swimmer_id === highlightSwimmerId
               ? "bg-cardinal-light font-semibold text-cardinal-dark"
+              : r.swimmers?.is_flagged
+              ? "bg-lagoon-light text-navy"
               : "text-ink/70"
           }`}
         >
           <span>
-            {m.rank} {m.swimmer_name}
-            {m.swimmer_club ? ` · ${m.swimmer_club}` : ""}
+            {r.rank} {r.swimmers?.full_name}
+            {r.swimmers?.club ? ` · ${r.swimmers.club}` : ""}
           </span>
-          <span className="font-display">{msToSwimTime(m.time_ms)}</span>
+          <span className="font-display">{r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label}</span>
         </div>
       ))}
     </div>
   );
 }
 
-function ResultRow({ r, meetResults, amandineName }) {
+function PerformancesTab({ swimmer, results, view, meetRowsByKey }) {
+  if (!swimmer) {
+    return (
+      <p className="rounded-card bg-white p-8 text-center text-ink/60 shadow-sm">
+        Pas encore de nageuse liée à un profil — lance une synchro, puis va dans
+        l'onglet Participants pour lier une nageuse à une des filles.
+      </p>
+    );
+  }
+
+  let rows = results;
+  if (view === "mpp") {
+    const best = {};
+    for (const r of results) {
+      const key = `${r.distance_m}-${r.stroke}`;
+      if (r.time_ms == null) continue;
+      if (!best[key] || r.time_ms < best[key].time_ms) best[key] = r;
+    }
+    rows = Object.values(best).sort((a, b) => (a.distance_m ?? 0) - (b.distance_m ?? 0));
+  }
+
   return (
-    <div className="rounded-card bg-sand p-3">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="font-semibold text-ink">
-            {r.event_name}
-            {r.pool_length && (
-              <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-ink/50">
-                Bassin {r.pool_length}m
-              </span>
-            )}
-            <span
-              className={`ml-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
-                r.source === "ffn" ? "bg-lagoon-light text-navy" : "bg-white text-ink/50"
-              }`}
+    <div className="space-y-2">
+      {rows.length === 0 ? (
+        <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
+          Aucune performance enregistrée pour l'instant — lance une synchro ci-dessus.
+        </p>
+      ) : (
+        rows.map((r) => {
+          const key = `${r.competition_id}-${r.event_name}`;
+          const meetRows = meetRowsByKey[key];
+          return (
+            <div key={r.id} className="rounded-card bg-sand p-3">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-semibold text-ink">
+                    {r.event_name}
+                    {r.swim_competitions?.pool_length && (
+                      <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-ink/50">
+                        Bassin {r.swim_competitions.pool_length}m
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-sm text-ink/50">
+                    {r.swim_competitions?.competition_date
+                      ? formatDate(r.swim_competitions.competition_date, { weekday: false })
+                      : "Date inconnue"}
+                    {r.swim_competitions?.name ? ` · ${r.swim_competitions.name}` : ""}
+                    {r.points ? ` · ${r.points} pts` : ""}
+                  </p>
+                </div>
+                <p className="font-display text-2xl text-navy">
+                  {r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label ?? "—"}
+                </p>
+              </div>
+
+              {meetRows && meetRows.length > 1 && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-cardinal">
+                    ⭐ Voir les {meetRows.length} résultats de cette épreuve
+                  </summary>
+                  <MeetDetails rows={meetRows} highlightSwimmerId={swimmer.id} />
+                </details>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function ParticipantsTab({ swimmers, participants, filters }) {
+  return (
+    <div className="space-y-4">
+      <form className="flex flex-wrap gap-2 rounded-card bg-white p-3 shadow-sm">
+        <input type="hidden" name="tab" value="participants" />
+        <input
+          name="name"
+          defaultValue={filters.name}
+          placeholder="Nom..."
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="club"
+          defaultValue={filters.club}
+          placeholder="Club..."
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="minYear"
+          defaultValue={filters.minYear}
+          placeholder="Née après (année)"
+          className="w-40 rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="maxYear"
+          defaultValue={filters.maxYear}
+          placeholder="Née avant (année)"
+          className="w-40 rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <button
+          type="submit"
+          className="rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
+        >
+          Filtrer
+        </button>
+        <Link href="/natation?tab=participants" className="px-2 py-1.5 text-sm text-ink/40 hover:text-ink">
+          Réinitialiser
+        </Link>
+      </form>
+
+      {swimmers.length === 0 ? (
+        <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
+          Aucune nageuse ne correspond — lance une synchro ou ajuste les filtres.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {swimmers.map((s) => (
+            <div
+              key={s.id}
+              className="flex flex-col gap-2 rounded-card bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between"
             >
-              {r.source === "ffn" ? "FFN" : "Manuel"}
-            </span>
-          </p>
-          <p className="text-sm text-ink/50">
-            {r.competition_date ? formatDate(r.competition_date, { weekday: false }) : "Date inconnue"}
-            {r.location ? ` · ${r.location}` : ""}
-            {r.points ? ` · ${r.points} pts` : ""}
-          </p>
-        </div>
+              <div>
+                <p className="font-semibold text-ink">
+                  {s.full_name}
+                  {s.participant_id && (
+                    <span className="ml-2 rounded-full bg-navy px-2 py-0.5 text-xs font-semibold text-white">
+                      Une de mes filles
+                    </span>
+                  )}
+                  {s.is_flagged && (
+                    <span className="ml-2 rounded-full bg-cardinal-light px-2 py-0.5 text-xs font-semibold text-cardinal-dark">
+                      ⭐ À suivre
+                    </span>
+                  )}
+                </p>
+                <p className="text-sm text-ink/50">
+                  {s.club ?? "Club inconnu"}
+                  {s.birth_year ? ` · ${s.birth_year}` : ""}
+                </p>
+              </div>
 
-        <div className="flex items-center gap-3">
-          <p className="font-display text-2xl text-navy">{msToSwimTime(r.time_ms)}</p>
-          <form action={deleteResult}>
-            <input type="hidden" name="id" value={r.id} />
-            <button type="submit" className="text-xs font-semibold text-ink/30 hover:text-cardinal">
-              ✕
-            </button>
-          </form>
-        </div>
-      </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <form action={linkSwimmerToParticipant} className="flex items-center gap-1">
+                  <input type="hidden" name="swimmer_id" value={s.id} />
+                  <select
+                    name="participant_id"
+                    defaultValue={s.participant_id ?? ""}
+                    className="rounded-lg border border-ink/15 px-2 py-1 text-xs"
+                  >
+                    <option value="">— Pas une de mes filles —</option>
+                    {participants.map((p) => (
+                      <option key={p.id} value={p.id}>{p.first_name}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="submit"
+                    className="rounded-full bg-navy px-2 py-1 text-xs font-semibold text-white hover:bg-navy-light"
+                  >
+                    OK
+                  </button>
+                </form>
 
-      {r.ffn_competition_id && r.ffn_event_id && (
-        <div className="mt-2">
-          {meetResults && meetResults.length > 0 ? (
-            <>
-              <p className="text-xs font-semibold text-ink/40">
-                Résultats complets de l'épreuve ({meetResults.length} nageurs)
-              </p>
-              <MeetResultsTable meetResults={meetResults} amandineName={amandineName} />
-            </>
-          ) : (
-            <form action={fetchMeetResults}>
-              <input type="hidden" name="swim_result_id" value={r.id} />
-              <SyncButton
-                pendingLabel="Récupération..."
-                className="text-xs font-semibold text-cardinal hover:underline disabled:opacity-60"
-              >
-                Voir tous les résultats de cette épreuve →
-              </SyncButton>
-            </form>
-          )}
-          {r.meet_fetch_error && (
-            <p className="mt-1 text-xs text-cardinal-dark">{r.meet_fetch_error}</p>
-          )}
+                <form action={toggleSwimmerFlag}>
+                  <input type="hidden" name="swimmer_id" value={s.id} />
+                  <input type="hidden" name="currently_flagged" value={String(s.is_flagged)} />
+                  <button
+                    type="submit"
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      s.is_flagged
+                        ? "bg-cardinal-light text-cardinal-dark"
+                        : "bg-sand text-ink/50 hover:text-ink"
+                    }`}
+                  >
+                    {s.is_flagged ? "Ne plus suivre" : "Suivre"}
+                  </button>
+                </form>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function ParticipantSection({ ps, results, meetResultsByEvent }) {
-  return (
-    <div className="rounded-card bg-white p-5 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-display text-xl uppercase tracking-tight text-navy">
-            {ps.participants?.first_name}
-          </p>
-          <p className="text-sm text-ink/50">
-            {ps.club ?? "Club non renseigné"}
-            {ps.category ? ` · ${ps.category}` : ""}
-          </p>
-          {ps.link_url && (
-            <a
-              href={ps.link_url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs font-semibold text-cardinal hover:underline"
-            >
-              Page officielle FFN →
-            </a>
-          )}
-        </div>
-
-        <form action={syncFfnResults}>
-          <input type="hidden" name="participant_sport_id" value={ps.id} />
-          <SyncButton className="rounded-full bg-lagoon px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
-            Synchroniser FFN
-          </SyncButton>
-        </form>
-      </div>
-
-      <div className="mt-3 rounded-lg bg-sand p-3 text-sm">
-        <form action={updateFfnId} className="flex flex-wrap items-center gap-2">
-          <input type="hidden" name="participant_sport_id" value={ps.id} />
-          <label className="text-xs font-semibold text-ink/50">ID ou URL FFN</label>
-          <input
-            name="ffn_swimmer_id"
-            defaultValue={ps.ffn_swimmer_id ?? ""}
-            placeholder="ex. 4432567"
-            className="w-64 rounded-lg border border-ink/15 px-2 py-1 text-sm"
-          />
-          <button
-            type="submit"
-            className="rounded-full bg-navy px-3 py-1 text-xs font-semibold text-white hover:bg-navy-light"
-          >
-            Enregistrer
-          </button>
-        </form>
-        <p className="mt-1.5 text-xs text-ink/40">
-          Par défaut, seuls les records personnels (MPP) sont récupérés. Pour tout
-          l'historique : sur ffn.extranat.fr, coche le filtre <strong>« Performances »</strong>{" "}
-          sur la fiche de la nageuse, puis colle l'URL complète ici à la place du simple ID.
-        </p>
-
-        {ps.last_ffn_sync_at && (
-          <p className={`mt-2 text-xs ${ps.last_ffn_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
-            Dernière synchro : {formatDateTime(ps.last_ffn_sync_at)}
-            {ps.last_ffn_sync_error ? ` — ${ps.last_ffn_sync_error}` : " — OK"}
-          </p>
-        )}
-      </div>
-
-      <div className="mt-4 space-y-1.5">
-        {results.length === 0 ? (
-          <p className="text-sm text-ink/40">Aucune performance enregistrée pour l'instant.</p>
-        ) : (
-          results.map((r) => (
-            <ResultRow
-              key={r.id}
-              r={r}
-              meetResults={
-                r.ffn_competition_id && r.ffn_event_id
-                  ? meetResultsByEvent[`${r.ffn_competition_id}-${r.ffn_event_id}`]
-                  : null
-              }
-              amandineName={ps.participants?.first_name}
-            />
-          ))
-        )}
-      </div>
-
-      <details className="mt-4">
-        <summary className="cursor-pointer text-sm font-semibold text-navy">
-          Ajouter une performance manuellement
-        </summary>
-        <form action={addResult} className="mt-3 grid gap-2 sm:grid-cols-2">
-          <input type="hidden" name="participant_sport_id" value={ps.id} />
-          <input
-            name="event_name" placeholder="Épreuve (ex. 100 Dos)" required
-            className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2"
-          />
-          <input
-            name="time_text" placeholder="Temps (ex. 1:14.30)" required
-            className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-          />
-          <select name="pool_length" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm">
-            <option value="25">Bassin 25m</option>
-            <option value="50">Bassin 50m</option>
-          </select>
-          <input
-            type="date" name="competition_date"
-            className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-          />
-          <input
-            name="location" placeholder="Lieu"
-            className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-          />
-          <button
-            type="submit"
-            className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark sm:col-span-2 sm:w-fit"
-          >
-            Ajouter
-          </button>
-        </form>
-      </details>
-    </div>
-  );
-}
-
-export default async function NatationPage() {
+export default async function NatationPage({ searchParams }) {
   const supabase = createClient();
+
+  const tab = searchParams?.tab === "participants" ? "participants" : "performances";
+  const view = searchParams?.view === "all" ? "all" : "mpp";
 
   const { data: sport } = await supabase
     .from("sports")
@@ -245,39 +299,77 @@ export default async function NatationPage() {
         .eq("sport_id", sport.id)
     : { data: [] };
 
-  const psIds = (assignments ?? []).map((a) => a.id);
+  const { data: allParticipants } = await supabase
+    .from("participants")
+    .select("id, first_name")
+    .order("birthdate");
 
-  const { data: allResults } = psIds.length
-    ? await supabase
-        .from("swim_results")
+  let performancesContent = null;
+  let participantsContent = null;
+
+  if (tab === "performances") {
+    const selectedPsId = searchParams?.participant;
+    const selectedPs =
+      (assignments ?? []).find((a) => a.id === selectedPsId) ?? (assignments ?? [])[0];
+
+    let swimmer = null;
+    let results = [];
+    const meetRowsByKey = {};
+
+    if (selectedPs?.participant_id) {
+      const { data: swimmerRow } = await supabase
+        .from("swimmers")
         .select("*")
-        .in("participant_sport_id", psIds)
-        .order("distance_m", { ascending: true })
-    : { data: [] };
+        .eq("participant_id", selectedPs.participant_id)
+        .maybeSingle();
+      swimmer = swimmerRow;
 
-  const resultsByPs = {};
-  (allResults ?? []).forEach((r) => {
-    if (!resultsByPs[r.participant_sport_id]) resultsByPs[r.participant_sport_id] = [];
-    resultsByPs[r.participant_sport_id].push(r);
-  });
+      if (swimmer) {
+        const { data: resultRows } = await supabase
+          .from("swim_results")
+          .select("*, swim_competitions(name, city, competition_date, pool_length)")
+          .eq("swimmer_id", swimmer.id)
+          .order("competition_date", { referencedTable: "swim_competitions", ascending: false });
+        results = resultRows ?? [];
 
-  // Résultats complets déjà récupérés pour les épreuves concernées
-  const eventKeys = (allResults ?? [])
-    .filter((r) => r.ffn_competition_id && r.ffn_event_id)
-    .map((r) => ({ c: r.ffn_competition_id, e: r.ffn_event_id }));
+        const competitionIds = [...new Set(results.map((r) => r.competition_id))];
+        if (competitionIds.length > 0) {
+          const { data: allMeetRows } = await supabase
+            .from("swim_results")
+            .select("*, swimmers(full_name, club, is_flagged)")
+            .in("competition_id", competitionIds);
 
-  const meetResultsByEvent = {};
-  if (eventKeys.length > 0) {
-    const { data: meetResults } = await supabase
-      .from("swim_meet_results")
-      .select("*")
-      .in("ffn_competition_id", [...new Set(eventKeys.map((k) => k.c))]);
+          (allMeetRows ?? []).forEach((row) => {
+            const key = `${row.competition_id}-${row.event_name}`;
+            if (!meetRowsByKey[key]) meetRowsByKey[key] = [];
+            meetRowsByKey[key].push(row);
+          });
+        }
+      }
+    }
 
-    (meetResults ?? []).forEach((m) => {
-      const key = `${m.ffn_competition_id}-${m.ffn_event_id}`;
-      if (!meetResultsByEvent[key]) meetResultsByEvent[key] = [];
-      meetResultsByEvent[key].push(m);
-    });
+    performancesContent = (
+      <PerformancesTab swimmer={swimmer} results={results} view={view} meetRowsByKey={meetRowsByKey} />
+    );
+  } else {
+    const filters = {
+      name: searchParams?.name ?? "",
+      club: searchParams?.club ?? "",
+      minYear: searchParams?.minYear ?? "",
+      maxYear: searchParams?.maxYear ?? "",
+    };
+
+    let query = supabase.from("swimmers").select("*").order("full_name");
+    if (filters.name) query = query.ilike("full_name", `%${filters.name}%`);
+    if (filters.club) query = query.ilike("club", `%${filters.club}%`);
+    if (filters.minYear) query = query.gte("birth_year", Number(filters.minYear));
+    if (filters.maxYear) query = query.lte("birth_year", Number(filters.maxYear));
+
+    const { data: swimmers } = await query;
+
+    participantsContent = (
+      <ParticipantsTab swimmers={swimmers ?? []} participants={allParticipants ?? []} filters={filters} />
+    );
   }
 
   return (
@@ -287,34 +379,62 @@ export default async function NatationPage() {
           Natation
         </h1>
         <p className="mt-1 text-ink/60">
-          Performances, synchronisables depuis la FFN — MPP ou historique complet.
+          Compétitions départementales du club, synchronisées depuis la FFN.
         </p>
       </div>
 
       <p className="rounded-card bg-lagoon-light p-3 text-xs text-navy">
-        La synchronisation utilise une page publique de la FFN, pas une API officielle
-        — si un champ manque ou que ça échoue, le message sous chaque participante
-        t'indique quoi faire.
+        La synchro utilise des pages publiques de la FFN, pas une API officielle — si
+        ça échoue, le message sous le bouton Synchroniser t'indique quoi faire.
       </p>
 
-      {(!assignments || assignments.length === 0) ? (
-        <div className="rounded-card bg-white p-8 text-center shadow-sm">
-          <p className="text-ink/60">
-            Personne n'est encore associé à la natation. Configure ça dans Paramètres.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {assignments.map((ps) => (
-            <ParticipantSection
-              key={ps.id}
-              ps={ps}
-              results={resultsByPs[ps.id] ?? []}
-              meetResultsByEvent={meetResultsByEvent}
-            />
-          ))}
+      <div className="space-y-3">
+        {(assignments ?? []).map((ps) => (
+          <SyncCard key={ps.id} ps={ps} />
+        ))}
+      </div>
+
+      <div className="flex gap-2">
+        <Link
+          href="/natation?tab=performances"
+          className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
+            tab === "performances" ? "bg-navy text-white" : "bg-white text-ink/60"
+          }`}
+        >
+          Performances
+        </Link>
+        <Link
+          href="/natation?tab=participants"
+          className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
+            tab === "participants" ? "bg-navy text-white" : "bg-white text-ink/60"
+          }`}
+        >
+          Participants
+        </Link>
+      </div>
+
+      {tab === "performances" && (
+        <div className="flex gap-2">
+          <Link
+            href="/natation?tab=performances&view=mpp"
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              view === "mpp" ? "bg-lagoon text-white" : "bg-white text-ink/50"
+            }`}
+          >
+            MPP
+          </Link>
+          <Link
+            href="/natation?tab=performances&view=all"
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              view === "all" ? "bg-lagoon text-white" : "bg-white text-ink/50"
+            }`}
+          >
+            Performances
+          </Link>
         </div>
       )}
+
+      {tab === "performances" ? performancesContent : participantsContent}
     </div>
   );
 }
