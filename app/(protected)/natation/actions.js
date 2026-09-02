@@ -17,9 +17,6 @@ const STROKE_PATTERNS = [
 ];
 
 // ---- Reconnaissance de colonnes par contenu (plutôt que par position) -----
-// La FFN affiche des colonnes différentes selon l'âge/niveau de la nageuse
-// (points, âge... pas toujours présents), donc se fier à la position d'une
-// cellule casse facilement. On identifie chaque valeur par son format.
 
 function looksLikeEvent(text) {
   if (!/^\d/.test(text)) return false;
@@ -42,7 +39,6 @@ function looksLikeLevel(text) {
   return /^\[(INT|NAT|ZON|REG|DEP)\]$/i.test(text);
 }
 
-// "100 Dos" -> { distance_m: 100, stroke: "Dos" }
 function parseEvent(eventName) {
   const match = eventName.match(/^(\d+)\s*(.+)$/);
   if (!match) return { distance_m: null, stroke: eventName.trim() };
@@ -71,12 +67,21 @@ function extractResultLink($, tr) {
   };
 }
 
+// Petit garde-fou : Supabase-js NE lève PAS d'exception sur une erreur de
+// requête (RLS, colonne manquante...), il renvoie juste { error }. Sans ce
+// check, une synchro peut "réussir" silencieusement sans rien écrire.
+function assertNoError(step, error) {
+  if (error) {
+    throw new Error(`${step} : ${error.message}`);
+  }
+}
+
 // ---- Saisie manuelle --------------------------------------------------
 
 export async function addResult(formData) {
   const supabase = createClient();
 
-  await supabase.from("swim_results").insert({
+  const { error } = await supabase.from("swim_results").insert({
     participant_sport_id: formData.get("participant_sport_id"),
     event_name: formData.get("event_name"),
     stroke: formData.get("stroke") || null,
@@ -87,6 +92,7 @@ export async function addResult(formData) {
     location: formData.get("location") || null,
     source: "manuel",
   });
+  assertNoError("Ajout du résultat", error);
 
   revalidatePath("/natation");
 }
@@ -102,33 +108,34 @@ export async function deleteResult(formData) {
 export async function updateFfnId(formData) {
   const supabase = createClient();
 
-  await supabase
+  const { error } = await supabase
     .from("participant_sports")
     .update({ ffn_swimmer_id: formData.get("ffn_swimmer_id") || null })
     .eq("id", formData.get("participant_sport_id"));
+  assertNoError("Enregistrement de l'ID FFN", error);
 
   revalidatePath("/natation");
 }
 
 // ---- Synchronisation FFN (expérimentale, scraping HTML) -------------------
-// ps.ffn_swimmer_id peut être :
-//  - un simple ID (ex. "4432567") -> on interroge la fiche par défaut
-//    (Records personnels / MPP)
-//  - une URL complète collée depuis le site, filtres compris (ex. avec le
-//    filtre "Performances" coché pour récupérer TOUT l'historique, pas
-//    seulement les records personnels)
 
 export async function syncFfnResults(formData) {
   const supabase = createClient();
   const participantSportId = formData.get("participant_sport_id");
 
-  const { data: ps } = await supabase
+  const { data: ps, error: readError } = await supabase
     .from("participant_sports")
     .select("*")
     .eq("id", participantSportId)
     .single();
 
-  if (!ps) return;
+  if (readError || !ps) {
+    // On ne peut pas écrire l'erreur nulle part de fiable ici : on la
+    // remonte quand même dans les logs serveur (visible dans Vercel).
+    console.error("syncFfnResults: lecture participant_sports impossible", readError);
+    revalidatePath("/natation");
+    return;
+  }
 
   const raw = ps.ffn_swimmer_id;
 
@@ -148,6 +155,8 @@ export async function syncFfnResults(formData) {
   const url = raw.startsWith("http")
     ? raw
     : `https://ffn.extranat.fr/webffn/nat_recherche.php?idrch_id=${encodeURIComponent(raw)}`;
+
+  let rowsInserted = 0;
 
   try {
     const cheerio = await import("cheerio");
@@ -191,7 +200,6 @@ export async function syncFfnResults(formData) {
           );
           const remaining = cells.filter((c) => c && !known.has(c));
           const locationCell = remaining[0] || null;
-          const clubCell = remaining.length > 1 ? remaining[remaining.length - 1] : null;
 
           const { result_url, ffn_competition_id, ffn_event_id } = extractResultLink($, tr);
 
@@ -203,7 +211,6 @@ export async function syncFfnResults(formData) {
             pointsCell,
             dateCell,
             locationCell,
-            clubCell,
             result_url,
             ffn_competition_id,
             ffn_event_id,
@@ -246,24 +253,27 @@ export async function syncFfnResults(formData) {
         source: "ffn",
       };
 
-      if (row.ffn_competition_id && row.ffn_event_id) {
-        await supabase
-          .from("swim_results")
-          .upsert(payload, { onConflict: "participant_sport_id,ffn_competition_id,ffn_event_id" });
-      } else {
-        // Pas d'identifiant fiable (page a changé ?) : on insère à part pour
-        // ne rien perdre, sans dédoublonnage.
-        await supabase.from("swim_results").insert(payload);
+      const { error: writeError } =
+        row.ffn_competition_id && row.ffn_event_id
+          ? await supabase
+              .from("swim_results")
+              .upsert(payload, { onConflict: "participant_sport_id,ffn_competition_id,ffn_event_id" })
+          : await supabase.from("swim_results").insert(payload);
+
+      if (writeError) {
+        throw new Error(`Écriture en base impossible (${writeError.message}). As-tu bien joué le script 6-natation-full-results.sql ?`);
       }
+      rowsInserted += 1;
     }
 
-    await supabase
+    const { error: okError } = await supabase
       .from("participant_sports")
       .update({
         last_ffn_sync_at: new Date().toISOString(),
         last_ffn_sync_error: null,
       })
       .eq("id", participantSportId);
+    assertNoError("Mise à jour du statut de synchro", okError);
   } catch (err) {
     await supabase
       .from("participant_sports")
@@ -283,13 +293,19 @@ export async function fetchMeetResults(formData) {
   const supabase = createClient();
   const resultId = formData.get("swim_result_id");
 
-  const { data: result } = await supabase
+  const { data: result, error: readError } = await supabase
     .from("swim_results")
     .select("*")
     .eq("id", resultId)
     .single();
 
-  if (!result?.ffn_competition_id || !result?.ffn_event_id) {
+  if (readError || !result) {
+    console.error("fetchMeetResults: lecture swim_results impossible", readError);
+    revalidatePath("/natation");
+    return;
+  }
+
+  if (!result.ffn_competition_id || !result.ffn_event_id) {
     await supabase
       .from("swim_results")
       .update({
@@ -355,7 +371,7 @@ export async function fetchMeetResults(formData) {
     }
 
     for (const row of rows) {
-      await supabase.from("swim_meet_results").upsert(
+      const { error: writeError } = await supabase.from("swim_meet_results").upsert(
         {
           ffn_competition_id: result.ffn_competition_id,
           ffn_event_id: result.ffn_event_id,
@@ -371,6 +387,9 @@ export async function fetchMeetResults(formData) {
         },
         { onConflict: "ffn_competition_id,ffn_event_id,swimmer_name" }
       );
+      if (writeError) {
+        throw new Error(`Écriture en base impossible (${writeError.message}).`);
+      }
     }
 
     await supabase.from("swim_results").update({ meet_fetch_error: null }).eq("id", resultId);
