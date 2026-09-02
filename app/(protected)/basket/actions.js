@@ -64,17 +64,30 @@ function extractEngagementIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
+// Petit garde-fou : Supabase-js NE lève PAS d'exception sur une erreur de
+// requête (RLS, colonne manquante...), il renvoie juste { error }. Sans ce
+// check, une synchro peut "réussir" silencieusement sans rien écrire.
+function assertNoError(step, error) {
+  if (error) {
+    throw new Error(`${step} : ${error.message}`);
+  }
+}
+
 export async function syncFfbbMatches(formData) {
   const supabase = createClient();
   const participantSportId = formData.get("participant_sport_id");
 
-  const { data: ps } = await supabase
+  const { data: ps, error: readError } = await supabase
     .from("participant_sports")
     .select("*")
     .eq("id", participantSportId)
     .single();
 
-  if (!ps) return;
+  if (readError || !ps) {
+    console.error("syncFfbbMatches: lecture participant_sports impossible", readError);
+    revalidatePath("/basket");
+    return;
+  }
 
   const engagementId = ps.ffbb_engagement_id || extractEngagementIdFromUrl(ps.link_url);
 
@@ -144,7 +157,7 @@ export async function syncFfbbMatches(formData) {
         .filter(Boolean)
         .join(", ");
 
-      await supabase.from("basketball_matches").upsert(
+      const { error: writeError } = await supabase.from("basketball_matches").upsert(
         {
           participant_sport_id: participantSportId,
           ffbb_rencontre_id: String(r.id),
@@ -159,9 +172,12 @@ export async function syncFfbbMatches(formData) {
         },
         { onConflict: "participant_sport_id,ffbb_rencontre_id" }
       );
+      if (writeError) {
+        throw new Error(`Écriture en base impossible (${writeError.message}). As-tu bien joué le script 4-basketball-sync.sql ?`);
+      }
     }
 
-    await supabase
+    const { error: okError } = await supabase
       .from("participant_sports")
       .update({
         ffbb_engagement_id: engagementId,
@@ -172,6 +188,7 @@ export async function syncFfbbMatches(formData) {
             : null,
       })
       .eq("id", participantSportId);
+    assertNoError("Mise à jour du statut de synchro", okError);
   } catch (err) {
     await supabase
       .from("participant_sports")
