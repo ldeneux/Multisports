@@ -4,15 +4,43 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { swimTimeToMs } from "@/lib/utils";
 
+const FFN_USER_AGENT = "Mozilla/5.0 (compatible; SportFamilleApp/1.0)";
+
 const STROKE_PATTERNS = [
   { key: "papillon", label: "Papillon" },
   { key: "dos", label: "Dos" },
   { key: "brasse", label: "Brasse" },
   { key: "4 nages", label: "4 Nages" },
   { key: "4n", label: "4 Nages" },
+  { key: "nage libre", label: "Nage libre" },
   { key: "nl", label: "Nage libre" },
-  { key: "libre", label: "Nage libre" },
 ];
+
+// ---- Reconnaissance de colonnes par contenu (plutôt que par position) -----
+// La FFN affiche des colonnes différentes selon l'âge/niveau de la nageuse
+// (points, âge... pas toujours présents), donc se fier à la position d'une
+// cellule casse facilement. On identifie chaque valeur par son format.
+
+function looksLikeEvent(text) {
+  if (!/^\d/.test(text)) return false;
+  const lower = text.toLowerCase();
+  return STROKE_PATTERNS.some((s) => lower.includes(s.key));
+}
+function looksLikeTime(text) {
+  return /^\d{1,2}:\d{2}[.,]\d{1,2}$/.test(text) || /^\d{1,2}[.,]\d{1,2}$/.test(text);
+}
+function looksLikeAge(text) {
+  return /^\(\d+\s*ans\)$/i.test(text);
+}
+function looksLikePoints(text) {
+  return /^\d+\s*pts$/i.test(text);
+}
+function looksLikeDate(text) {
+  return /^\d{2}\/\d{2}\/\d{4}$/.test(text);
+}
+function looksLikeLevel(text) {
+  return /^\[(INT|NAT|ZON|REG|DEP)\]$/i.test(text);
+}
 
 // "100 Dos" -> { distance_m: 100, stroke: "Dos" }
 function parseEvent(eventName) {
@@ -26,9 +54,21 @@ function parseEvent(eventName) {
 
 function parseFfnTime(text) {
   if (!text) return null;
-  // Le site affiche parfois "00:58.90" -> on retire l'heure à zéro en tête.
   const cleaned = text.trim().replace(/^00:(?=\d{1,2}:)/, "");
   return swimTimeToMs(cleaned);
+}
+
+function extractResultLink($, tr) {
+  const href = $(tr).find('a[href*="resultats.php"]').attr("href");
+  if (!href) return { result_url: null, ffn_competition_id: null, ffn_event_id: null };
+  const full = href.startsWith("http") ? href : `https://ffn.extranat.fr/webffn/${href}`;
+  const idcptMatch = full.match(/idcpt=(\d+)/);
+  const ideprMatch = full.match(/idepr=(\d+)/);
+  return {
+    result_url: full,
+    ffn_competition_id: idcptMatch ? idcptMatch[1] : null,
+    ffn_event_id: ideprMatch ? ideprMatch[1] : null,
+  };
 }
 
 // ---- Saisie manuelle --------------------------------------------------
@@ -57,7 +97,7 @@ export async function deleteResult(formData) {
   revalidatePath("/natation");
 }
 
-// ---- ID FFN manuel ------------------------------------------------------
+// ---- ID / URL FFN ---------------------------------------------------------
 
 export async function updateFfnId(formData) {
   const supabase = createClient();
@@ -71,6 +111,12 @@ export async function updateFfnId(formData) {
 }
 
 // ---- Synchronisation FFN (expérimentale, scraping HTML) -------------------
+// ps.ffn_swimmer_id peut être :
+//  - un simple ID (ex. "4432567") -> on interroge la fiche par défaut
+//    (Records personnels / MPP)
+//  - une URL complète collée depuis le site, filtres compris (ex. avec le
+//    filtre "Performances" coché pour récupérer TOUT l'historique, pas
+//    seulement les records personnels)
 
 export async function syncFfnResults(formData) {
   const supabase = createClient();
@@ -84,33 +130,33 @@ export async function syncFfnResults(formData) {
 
   if (!ps) return;
 
-  const swimmerId = ps.ffn_swimmer_id;
+  const raw = ps.ffn_swimmer_id;
 
-  if (!swimmerId) {
+  if (!raw) {
     await supabase
       .from("participant_sports")
       .update({
         last_ffn_sync_at: new Date().toISOString(),
         last_ffn_sync_error:
-          "Aucun ID FFN renseigné. Trouve-le sur la fiche nageur (ffn.extranat.fr, page « Rechercher des Perf. »), c'est le nombre entre crochets à côté du nom.",
+          "Aucun ID/URL FFN renseigné. Colle l'ID (ou l'URL complète de la fiche) ci-dessous.",
       })
       .eq("id", participantSportId);
     revalidatePath("/natation");
     return;
   }
 
+  const url = raw.startsWith("http")
+    ? raw
+    : `https://ffn.extranat.fr/webffn/nat_recherche.php?idrch_id=${encodeURIComponent(raw)}`;
+
   try {
     const cheerio = await import("cheerio");
-    const url = `https://ffn.extranat.fr/webffn/nat_recherche.php?idrch_id=${encodeURIComponent(swimmerId)}`;
 
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; SportFamilleApp/1.0)" },
+      headers: { "User-Agent": FFN_USER_AGENT },
       cache: "no-store",
     });
-
-    if (!res.ok) {
-      throw new Error(`Page FFN inaccessible (HTTP ${res.status}).`);
-    }
+    if (!res.ok) throw new Error(`Page FFN inaccessible (HTTP ${res.status}).`);
 
     const html = await res.text();
     const $ = cheerio.load(html);
@@ -125,58 +171,90 @@ export async function syncFfnResults(formData) {
       $(table)
         .find("tr")
         .each((__, tr) => {
-          const cells = $(tr)
-            .find("td")
-            .map((___, td) => $(td).text().trim())
-            .get();
+          const cellEls = $(tr).find("td, th").toArray();
+          if (cellEls.length < 3) return;
 
-          if (cells.length < 5) return;
+          const cells = cellEls.map((el) => $(el).text().trim());
 
-          const [eventName, timeText, ageText, pointsText, locationText, dateText] = cells;
-          if (!eventName || !timeText || !/^\d/.test(eventName)) return;
+          const eventCell = cells.find((c) => looksLikeEvent(c));
+          if (!eventCell) return;
+          const timeCell = cells.find((c) => looksLikeTime(c));
+          if (!timeCell) return;
 
-          rows.push({ poolLength, eventName, timeText, ageText, pointsText, locationText, dateText });
+          const ageCell = cells.find((c) => looksLikeAge(c));
+          const pointsCell = cells.find((c) => looksLikePoints(c));
+          const dateCell = cells.find((c) => looksLikeDate(c));
+          const levelCell = cells.find((c) => looksLikeLevel(c));
+
+          const known = new Set(
+            [eventCell, timeCell, ageCell, pointsCell, dateCell, levelCell].filter(Boolean)
+          );
+          const remaining = cells.filter((c) => c && !known.has(c));
+          const locationCell = remaining[0] || null;
+          const clubCell = remaining.length > 1 ? remaining[remaining.length - 1] : null;
+
+          const { result_url, ffn_competition_id, ffn_event_id } = extractResultLink($, tr);
+
+          rows.push({
+            poolLength,
+            eventCell,
+            timeCell,
+            ageCell,
+            pointsCell,
+            dateCell,
+            locationCell,
+            clubCell,
+            result_url,
+            ffn_competition_id,
+            ffn_event_id,
+          });
         });
     });
 
     if (rows.length === 0) {
       throw new Error(
-        "Aucune performance trouvée pour cet ID sur la page FFN — vérifie qu'il est correct."
+        "Aucune performance reconnue sur cette page — le format a peut-être changé, ou l'ID/URL est incorrect."
       );
     }
 
     for (const row of rows) {
-      const { distance_m, stroke } = parseEvent(row.eventName);
-      const time_ms = parseFfnTime(row.timeText);
-      const age_at_swim = row.ageText
-        ? parseInt(row.ageText.replace(/\D/g, ""), 10) || null
-        : null;
-      const points = row.pointsText
-        ? parseInt(row.pointsText.replace(/\D/g, ""), 10) || null
-        : null;
+      const { distance_m, stroke } = parseEvent(row.eventCell);
+      const time_ms = parseFfnTime(row.timeCell);
+      const age_at_swim = row.ageCell ? parseInt(row.ageCell.replace(/\D/g, ""), 10) || null : null;
+      const points = row.pointsCell ? parseInt(row.pointsCell.replace(/\D/g, ""), 10) || null : null;
 
       let competition_date = null;
-      const dateMatch = (row.dateText || "").match(/(\d{2})\/(\d{2})\/(\d{4})/);
+      const dateMatch = (row.dateCell || "").match(/(\d{2})\/(\d{2})\/(\d{4})/);
       if (dateMatch) {
         competition_date = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
       }
 
-      await supabase.from("swim_results").upsert(
-        {
-          participant_sport_id: participantSportId,
-          event_name: row.eventName,
-          stroke,
-          distance_m,
-          pool_length: row.poolLength,
-          time_ms,
-          points,
-          age_at_swim,
-          location: row.locationText || null,
-          competition_date,
-          source: "ffn",
-        },
-        { onConflict: "participant_sport_id,event_name,pool_length" }
-      );
+      const payload = {
+        participant_sport_id: participantSportId,
+        event_name: row.eventCell,
+        stroke,
+        distance_m,
+        pool_length: row.poolLength,
+        time_ms,
+        points,
+        age_at_swim,
+        location: row.locationCell,
+        competition_date,
+        result_url: row.result_url,
+        ffn_competition_id: row.ffn_competition_id,
+        ffn_event_id: row.ffn_event_id,
+        source: "ffn",
+      };
+
+      if (row.ffn_competition_id && row.ffn_event_id) {
+        await supabase
+          .from("swim_results")
+          .upsert(payload, { onConflict: "participant_sport_id,ffn_competition_id,ffn_event_id" });
+      } else {
+        // Pas d'identifiant fiable (page a changé ?) : on insère à part pour
+        // ne rien perdre, sans dédoublonnage.
+        await supabase.from("swim_results").insert(payload);
+      }
     }
 
     await supabase
@@ -194,6 +272,113 @@ export async function syncFfnResults(formData) {
         last_ffn_sync_error: String(err?.message || err).slice(0, 300),
       })
       .eq("id", participantSportId);
+  }
+
+  revalidatePath("/natation");
+}
+
+// ---- Résultats complets d'une compétition (tous les nageurs) --------------
+
+export async function fetchMeetResults(formData) {
+  const supabase = createClient();
+  const resultId = formData.get("swim_result_id");
+
+  const { data: result } = await supabase
+    .from("swim_results")
+    .select("*")
+    .eq("id", resultId)
+    .single();
+
+  if (!result?.ffn_competition_id || !result?.ffn_event_id) {
+    await supabase
+      .from("swim_results")
+      .update({
+        meet_fetch_error: "Pas d'identifiant de compétition FFN pour cette performance.",
+      })
+      .eq("id", resultId);
+    revalidatePath("/natation");
+    return;
+  }
+
+  try {
+    const cheerio = await import("cheerio");
+    const url =
+      result.result_url ||
+      `https://ffn.extranat.fr/webffn/resultats.php?idact=nat&idcpt=${result.ffn_competition_id}&idepr=${result.ffn_event_id}`;
+
+    const res = await fetch(url, {
+      headers: { "User-Agent": FFN_USER_AGENT },
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Page FFN inaccessible (HTTP ${res.status}).`);
+
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    const eventLabel = $("table").first().find("th").first().text().trim() || null;
+    const title = $("h1, h2, h3")
+      .filter((_, el) => $(el).text().trim().length > 0)
+      .first()
+      .text()
+      .trim();
+    const competitionName = title || null;
+
+    const rows = [];
+
+    $("table tr").each((_, tr) => {
+      const tds = $(tr).find("td");
+      if (tds.length < 4) return;
+
+      const rankText = $(tds[0]).text().trim();
+      if (!/^\d+\.$|^-+\.?$/.test(rankText)) return;
+
+      const swimmerText = $(tds[1]).text().trim();
+      if (!swimmerText) return;
+      const swimmerMatch = swimmerText.match(/^(.+?)\s*\((\d{4})\/\d+\s*ans\)\s*([A-Za-z]{2,3})$/);
+
+      const clubText = $(tds[2]).text().trim();
+      const timeText = $(tds[3]).text().trim();
+      const pointsText = tds.length > 5 ? $(tds[5]).text().trim() : "";
+
+      rows.push({
+        rank: rankText,
+        swimmer_name: swimmerMatch ? swimmerMatch[1].trim() : swimmerText,
+        birth_year: swimmerMatch ? parseInt(swimmerMatch[2], 10) : null,
+        swimmer_club: clubText || null,
+        time_ms: /^\d/.test(timeText) ? parseFfnTime(timeText) : null,
+        points: /\d/.test(pointsText) ? parseInt(pointsText.replace(/\D/g, ""), 10) : null,
+      });
+    });
+
+    if (rows.length === 0) {
+      throw new Error("Aucun nageur trouvé sur cette page de résultats.");
+    }
+
+    for (const row of rows) {
+      await supabase.from("swim_meet_results").upsert(
+        {
+          ffn_competition_id: result.ffn_competition_id,
+          ffn_event_id: result.ffn_event_id,
+          event_label: eventLabel,
+          competition_name: competitionName,
+          swimmer_name: row.swimmer_name,
+          swimmer_club: row.swimmer_club,
+          birth_year: row.birth_year,
+          rank: row.rank,
+          time_ms: row.time_ms,
+          points: row.points,
+          fetched_by_participant_sport_id: result.participant_sport_id,
+        },
+        { onConflict: "ffn_competition_id,ffn_event_id,swimmer_name" }
+      );
+    }
+
+    await supabase.from("swim_results").update({ meet_fetch_error: null }).eq("id", resultId);
+  } catch (err) {
+    await supabase
+      .from("swim_results")
+      .update({ meet_fetch_error: String(err?.message || err).slice(0, 300) })
+      .eq("id", resultId);
   }
 
   revalidatePath("/natation");
