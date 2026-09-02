@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { formatDateTime } from "@/lib/utils";
+import SyncButton from "@/components/SyncButton";
 import {
   addMatch,
   recordScore,
@@ -99,12 +100,9 @@ function ParticipantSection({ ps, matches }) {
 
         <form action={syncFfbbMatches}>
           <input type="hidden" name="participant_sport_id" value={ps.id} />
-          <button
-            type="submit"
-            className="rounded-full bg-lagoon px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90"
-          >
+          <SyncButton className="rounded-full bg-lagoon px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
             Synchroniser FFBB
-          </button>
+          </SyncButton>
         </form>
       </div>
 
