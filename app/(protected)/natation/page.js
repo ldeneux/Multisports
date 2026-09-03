@@ -2,10 +2,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
-import {
-  syncClubCompetitions,
-  toggleSwimmerFlag,
-} from "./actions";
+import { syncClubCompetitions, toggleSwimmerFlag } from "./actions";
 
 export const dynamic = "force-dynamic";
 // La synchro FFN (appelée via l'action syncClubCompetitions depuis cette
@@ -74,20 +71,20 @@ function MeetDetails({ rows, highlightSwimmerId }) {
   });
 
   return (
-    <div className="mt-2 space-y-1 rounded-lg bg-white p-2">
-      {sorted.map((r) => (
+    <div className="space-y-0.5 bg-navy/5 px-4 py-2">
+      {sorted.map((r, i) => (
         <div
           key={r.id}
-          className={`flex items-center justify-between rounded px-2 py-1 text-sm ${
+          className={`flex items-center justify-between rounded px-2 py-1 text-xs ${
             r.swimmer_id === highlightSwimmerId
               ? "bg-cardinal-light font-semibold text-cardinal-dark"
               : r.swimmers?.is_flagged
               ? "bg-lagoon-light text-navy"
-              : "text-ink/70"
+              : "text-ink/60"
           }`}
         >
           <span>
-            {r.rank} {r.swimmers?.full_name}
+            {i + 1}. {r.swimmers?.full_name}
             {r.swimmers?.club ? ` · ${r.swimmers.club}` : ""}
           </span>
           <span className="font-display">{r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label}</span>
@@ -97,21 +94,104 @@ function MeetDetails({ rows, highlightSwimmerId }) {
   );
 }
 
-function PerformancesTab({ swimmer, results, view, meetRowsByKey }) {
-  if (!swimmer) {
+// Tableau dense façon "fiche FFN" : bandeau bleu par bassin, lignes
+// compactes une par épreuve, alternées, avec une étoile dépliable si
+// d'autres nageuses ont couru la même épreuve dans la même compétition.
+function ResultsTable({ title, rows, meetRowsByKey, swimmerId }) {
+  if (rows.length === 0) {
+    return (
+      <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
+        Aucune performance enregistrée pour l'instant — lance une synchro ci-dessus.
+      </p>
+    );
+  }
+
+  const byPool = {};
+  rows.forEach((r) => {
+    const pool = r.swim_competitions?.pool_length ?? r.pool_length ?? "?";
+    if (!byPool[pool]) byPool[pool] = [];
+    byPool[pool].push(r);
+  });
+
+  return (
+    <div className="space-y-4">
+      {Object.entries(byPool).map(([pool, poolRows]) => (
+        <div key={pool} className="overflow-hidden rounded-card shadow-sm">
+          <div className="bg-navy px-4 py-2 text-white">
+            <p className="font-display text-sm uppercase tracking-tight">{title}</p>
+            <p className="text-xs opacity-70">Bassin : {pool} mètres</p>
+          </div>
+          <div>
+            {poolRows.map((r, i) => {
+              const key = `${r.competition_id}-${r.event_name}-${r.gender}`;
+              const meetRows = meetRowsByKey[key];
+              const expandable = meetRows && meetRows.length > 1;
+
+              const rowContent = (
+                <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
+                  <span className="w-28 shrink-0 font-semibold text-ink">{r.event_name}</span>
+                  <span className="w-20 shrink-0 font-display text-lg text-navy">
+                    {r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label ?? "—"}
+                  </span>
+                  <span className="hidden flex-1 truncate text-xs text-ink/50 sm:block">
+                    {r.swim_competitions?.city ?? r.swim_competitions?.name ?? ""}
+                  </span>
+                  <span className="shrink-0 text-xs text-ink/50">
+                    {r.swim_competitions?.competition_date
+                      ? formatDate(r.swim_competitions.competition_date, { weekday: false })
+                      : ""}
+                  </span>
+                  <span className="w-12 shrink-0 text-right text-xs italic text-lagoon">
+                    {r.points ? `${r.points}p` : ""}
+                  </span>
+                  {expandable ? (
+                    <span className="shrink-0 text-xs font-semibold text-cardinal">
+                      ⭐ {meetRows.length}
+                    </span>
+                  ) : (
+                    <span className="w-8 shrink-0" />
+                  )}
+                </summary>
+              );
+
+              return expandable ? (
+                <details
+                  key={r.id}
+                  className={i % 2 === 0 ? "bg-lagoon-light/40" : "bg-white"}
+                >
+                  {rowContent}
+                  <MeetDetails rows={meetRows} highlightSwimmerId={swimmerId} />
+                </details>
+              ) : (
+                <div key={r.id} className={i % 2 === 0 ? "bg-lagoon-light/40" : "bg-white"}>
+                  {rowContent}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PerformancesTab({ swimmerId, results, view, meetRowsByKey }) {
+  if (!swimmerId) {
     return (
       <p className="rounded-card bg-white p-8 text-center text-ink/60 shadow-sm">
-        Pas encore de nageuse liée à un profil — lance une synchro, puis va dans
-        l'onglet Participants pour lier une nageuse à une des filles.
+        Pas encore de nageuse à afficher — lance une synchro, ou va dans l'onglet
+        Participants pour en suivre une.
       </p>
     );
   }
 
   let rows = results;
+  let title = "Performances";
   if (view === "mpp") {
+    title = "Meilleures Performances Personnelles (MPP)";
     const best = {};
     for (const r of results) {
-      const key = `${r.distance_m}-${r.stroke}`;
+      const key = `${r.distance_m}-${r.stroke}-${r.swim_competitions?.pool_length ?? r.pool_length}`;
       if (r.time_ms == null) continue;
       if (!best[key] || r.time_ms < best[key].time_ms) best[key] = r;
     }
@@ -119,53 +199,7 @@ function PerformancesTab({ swimmer, results, view, meetRowsByKey }) {
   }
 
   return (
-    <div className="space-y-2">
-      {rows.length === 0 ? (
-        <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
-          Aucune performance enregistrée pour l'instant — lance une synchro ci-dessus.
-        </p>
-      ) : (
-        rows.map((r) => {
-          const key = `${r.competition_id}-${r.event_name}`;
-          const meetRows = meetRowsByKey[key];
-          return (
-            <div key={r.id} className="rounded-card bg-sand p-3">
-              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="font-semibold text-ink">
-                    {r.event_name}
-                    {r.swim_competitions?.pool_length && (
-                      <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-ink/50">
-                        Bassin {r.swim_competitions.pool_length}m
-                      </span>
-                    )}
-                  </p>
-                  <p className="text-sm text-ink/50">
-                    {r.swim_competitions?.competition_date
-                      ? formatDate(r.swim_competitions.competition_date, { weekday: false })
-                      : "Date inconnue"}
-                    {r.swim_competitions?.name ? ` · ${r.swim_competitions.name}` : ""}
-                    {r.points ? ` · ${r.points} pts` : ""}
-                  </p>
-                </div>
-                <p className="font-display text-2xl text-navy">
-                  {r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label ?? "—"}
-                </p>
-              </div>
-
-              {meetRows && meetRows.length > 1 && (
-                <details className="mt-2">
-                  <summary className="cursor-pointer text-xs font-semibold text-cardinal">
-                    ⭐ Voir les {meetRows.length} résultats de cette épreuve
-                  </summary>
-                  <MeetDetails rows={meetRows} highlightSwimmerId={swimmer.id} />
-                </details>
-              )}
-            </div>
-          );
-        })
-      )}
-    </div>
+    <ResultsTable title={title} rows={rows} meetRowsByKey={meetRowsByKey} swimmerId={swimmerId} />
   );
 }
 
@@ -303,50 +337,76 @@ export default async function NatationPage({ searchParams }) {
 
   let performancesContent = null;
   let participantsContent = null;
+  let swimmerOptions = [];
+  let selectedSwimmerId = null;
 
   if (tab === "performances") {
-    const selectedPsId = searchParams?.participant;
-    const selectedPs =
-      (assignments ?? []).find((a) => a.id === selectedPsId) ?? (assignments ?? [])[0];
+    // Nageuse par défaut = celle liée à une participante de Paramètres.
+    const defaultPs = (assignments ?? []).find((a) => a.participant_id);
+    let defaultSwimmer = null;
+    if (defaultPs?.participant_id) {
+      const { data } = await supabase
+        .from("swimmers")
+        .select("*")
+        .eq("participant_id", defaultPs.participant_id)
+        .maybeSingle();
+      defaultSwimmer = data;
+    }
 
-    let swimmer = null;
+    const { data: followedSwimmers } = await supabase
+      .from("swimmers")
+      .select("*")
+      .eq("is_flagged", true)
+      .order("full_name");
+
+    if (defaultSwimmer) {
+      swimmerOptions.push({
+        id: defaultSwimmer.id,
+        label: defaultPs.participants?.first_name ?? defaultSwimmer.full_name,
+      });
+    }
+    (followedSwimmers ?? []).forEach((s) => {
+      if (!swimmerOptions.find((o) => o.id === s.id)) {
+        swimmerOptions.push({ id: s.id, label: s.full_name });
+      }
+    });
+
+    selectedSwimmerId =
+      searchParams?.swimmer || defaultSwimmer?.id || swimmerOptions[0]?.id || null;
+
     let results = [];
     const meetRowsByKey = {};
 
-    if (selectedPs?.participant_id) {
-      const { data: swimmerRow } = await supabase
-        .from("swimmers")
-        .select("*")
-        .eq("participant_id", selectedPs.participant_id)
-        .maybeSingle();
-      swimmer = swimmerRow;
+    if (selectedSwimmerId) {
+      const { data: resultRows } = await supabase
+        .from("swim_results")
+        .select("*, swim_competitions(name, city, competition_date, pool_length)")
+        .eq("swimmer_id", selectedSwimmerId)
+        .order("competition_date", { referencedTable: "swim_competitions", ascending: false });
+      results = resultRows ?? [];
 
-      if (swimmer) {
-        const { data: resultRows } = await supabase
+      const competitionIds = [...new Set(results.map((r) => r.competition_id))];
+      if (competitionIds.length > 0) {
+        const { data: allMeetRows } = await supabase
           .from("swim_results")
-          .select("*, swim_competitions(name, city, competition_date, pool_length)")
-          .eq("swimmer_id", swimmer.id)
-          .order("competition_date", { referencedTable: "swim_competitions", ascending: false });
-        results = resultRows ?? [];
+          .select("*, swimmers(full_name, club, is_flagged)")
+          .in("competition_id", competitionIds);
 
-        const competitionIds = [...new Set(results.map((r) => r.competition_id))];
-        if (competitionIds.length > 0) {
-          const { data: allMeetRows } = await supabase
-            .from("swim_results")
-            .select("*, swimmers(full_name, club, is_flagged)")
-            .in("competition_id", competitionIds);
-
-          (allMeetRows ?? []).forEach((row) => {
-            const key = `${row.competition_id}-${row.event_name}`;
-            if (!meetRowsByKey[key]) meetRowsByKey[key] = [];
-            meetRowsByKey[key].push(row);
-          });
-        }
+        (allMeetRows ?? []).forEach((row) => {
+          const key = `${row.competition_id}-${row.event_name}-${row.gender}`;
+          if (!meetRowsByKey[key]) meetRowsByKey[key] = [];
+          meetRowsByKey[key].push(row);
+        });
       }
     }
 
     performancesContent = (
-      <PerformancesTab swimmer={swimmer} results={results} view={view} meetRowsByKey={meetRowsByKey} />
+      <PerformancesTab
+        swimmerId={selectedSwimmerId}
+        results={results}
+        view={view}
+        meetRowsByKey={meetRowsByKey}
+      />
     );
   } else {
     const q = (searchParams?.q ?? "").trim();
@@ -421,24 +481,44 @@ export default async function NatationPage({ searchParams }) {
       </div>
 
       {tab === "performances" && (
-        <div className="flex gap-2">
-          <Link
-            href="/natation?tab=performances&view=mpp"
-            className={`rounded-full px-3 py-1 text-xs font-semibold ${
-              view === "mpp" ? "bg-lagoon text-white" : "bg-white text-ink/50"
-            }`}
-          >
-            MPP
-          </Link>
-          <Link
-            href="/natation?tab=performances&view=all"
-            className={`rounded-full px-3 py-1 text-xs font-semibold ${
-              view === "all" ? "bg-lagoon text-white" : "bg-white text-ink/50"
-            }`}
-          >
-            Performances
-          </Link>
-        </div>
+        <>
+          {swimmerOptions.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {swimmerOptions.map((opt) => (
+                <Link
+                  key={opt.id}
+                  href={`/natation?tab=performances&view=${view}&swimmer=${opt.id}`}
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    opt.id === selectedSwimmerId
+                      ? "bg-cardinal text-white"
+                      : "bg-white text-ink/50 hover:text-ink"
+                  }`}
+                >
+                  {opt.label}
+                </Link>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Link
+              href={`/natation?tab=performances&view=mpp&swimmer=${selectedSwimmerId ?? ""}`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                view === "mpp" ? "bg-lagoon text-white" : "bg-white text-ink/50"
+              }`}
+            >
+              MPP
+            </Link>
+            <Link
+              href={`/natation?tab=performances&view=all&swimmer=${selectedSwimmerId ?? ""}`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                view === "all" ? "bg-lagoon text-white" : "bg-white text-ink/50"
+              }`}
+            >
+              Performances
+            </Link>
+          </div>
+        </>
       )}
 
       {tab === "performances" ? performancesContent : participantsContent}
