@@ -6,9 +6,10 @@ import { createClient } from "@/lib/supabase/server";
 const FFN_USER_AGENT = "Mozilla/5.0 (compatible; SportFamilleApp/1.0)";
 
 // ---- Table officielle des codes d'épreuve (raceid), spec FFNex v1.0.19 ----
-// Une seule table à plat : les codes sont uniques tous genres confondus.
-const RACE_TABLE = {
-  // Dames
+// Trois tables séparées par genre : les mêmes codes existent en double
+// (Dames/Messieurs/Mixte) pour une même distance/nage, donc il faut garder
+// le genre pour ne pas mélanger les classements des filles et des garçons.
+const DAMES_RACES = {
   "100": "25 Nage Libre", "1": "50 Nage Libre", "2": "100 Nage Libre", "3": "200 Nage Libre",
   "4": "400 Nage Libre", "5": "800 Nage Libre", "7": "1000 Nage Libre", "6": "1500 Nage Libre",
   "16": "3000 Nage Libre", "15": "5000 Nage Libre",
@@ -20,7 +21,9 @@ const RACE_TABLE = {
   "111": "4x50 Dos", "121": "4x50 Brasse", "131": "4x50 Papillon",
   "39": "4x25 4 Nages", "48": "4x50 4 Nages", "46": "4x100 4 Nages", "49": "6x50 Nage Libre",
   "14": "8x100 Nage Libre", "9": "10x50 Nage Libre", "45": "10x100 Nage Libre",
-  // Messieurs
+};
+
+const MESSIEURS_RACES = {
   "150": "25 Nage Libre", "51": "50 Nage Libre", "52": "100 Nage Libre", "53": "200 Nage Libre",
   "54": "400 Nage Libre", "55": "800 Nage Libre", "57": "1000 Nage Libre", "56": "1500 Nage Libre",
   "66": "3000 Nage Libre", "65": "5000 Nage Libre",
@@ -32,7 +35,9 @@ const RACE_TABLE = {
   "161": "4x50 Dos", "171": "4x50 Brasse", "181": "4x50 Papillon",
   "89": "4x25 4 Nages", "98": "4x50 4 Nages", "96": "4x100 4 Nages", "99": "6x50 Nage Libre",
   "64": "8x100 Nage Libre", "59": "10x50 Nage Libre", "95": "10x100 Nage Libre",
-  // Mixte
+};
+
+const MIXTE_RACES = {
   "200": "25 Nage Libre", "201": "50 Nage Libre", "202": "100 Nage Libre", "203": "200 Nage Libre",
   "204": "400 Nage Libre", "205": "800 Nage Libre", "207": "1000 Nage Libre", "206": "1500 Nage Libre",
   "216": "3000 Nage Libre", "215": "5000 Nage Libre",
@@ -44,6 +49,13 @@ const RACE_TABLE = {
   "38": "4x25 4 Nages", "37": "4x50 4 Nages", "36": "4x100 4 Nages", "35": "6x50 Nage Libre",
   "214": "8x100 Nage Libre", "84": "10x50 Nage Libre", "85": "10x100 Nage Libre",
 };
+
+function resolveRace(raceId) {
+  if (DAMES_RACES[raceId]) return { eventName: DAMES_RACES[raceId], gender: "F" };
+  if (MESSIEURS_RACES[raceId]) return { eventName: MESSIEURS_RACES[raceId], gender: "M" };
+  if (MIXTE_RACES[raceId]) return { eventName: MIXTE_RACES[raceId], gender: "X" };
+  return { eventName: `Épreuve ${raceId}`, gender: null };
+}
 
 const DQ_LABELS = {
   "1": "Forfait excusé", "2": "Forfait déclaré", "3": "Disqualifié (relais)", "4": "Forfait",
@@ -245,7 +257,7 @@ export async function syncClubCompetitions(formData) {
         if (!swimmerId || !swimmersById[swimmerId]) return;
 
         const raceId = $el.attr("raceid");
-        const eventName = RACE_TABLE[raceId] || `Épreuve ${raceId}`;
+        const { eventName, gender } = resolveRace(raceId);
         const disqId = $el.attr("disqualificationid");
         const time_ms = parseSwimtimeAttr($el.attr("swimtime"));
         const pointsAttr = $el.attr("points");
@@ -254,6 +266,7 @@ export async function syncClubCompetitions(formData) {
           ffnResultId: $el.attr("id"),
           swimmerId,
           eventName,
+          gender,
           time_ms,
           time_label: time_ms === null ? (DQ_LABELS[disqId] || (disqId ? "Disqualifié" : null)) : null,
           place: $el.attr("place") && $el.attr("place") !== "999" ? $el.attr("place") : null,
@@ -289,6 +302,7 @@ export async function syncClubCompetitions(formData) {
             swimmer_id: swimmerUuid,
             ffn_result_id: row.ffnResultId,
             event_name: row.eventName,
+            gender: row.gender,
             stroke,
             distance_m,
             pool_length: poolLength,
