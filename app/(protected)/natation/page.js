@@ -4,7 +4,6 @@ import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear } fr
 import SyncButton from "@/components/SyncButton";
 import {
   syncClubCompetitions,
-  linkSwimmerToParticipant,
   toggleSwimmerFlag,
 } from "./actions";
 
@@ -165,117 +164,115 @@ function PerformancesTab({ swimmer, results, view, meetRowsByKey }) {
   );
 }
 
-function ParticipantsTab({ swimmers, participants, filters }) {
+function ParticipantsTab({ searchResults, followed, hasQuery, query }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <form className="flex flex-wrap gap-2 rounded-card bg-white p-3 shadow-sm">
         <input type="hidden" name="tab" value="participants" />
         <input
-          name="name"
-          defaultValue={filters.name}
-          placeholder="Nom..."
-          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-        />
-        <input
-          name="club"
-          defaultValue={filters.club}
-          placeholder="Club..."
-          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-        />
-        <input
-          name="minYear"
-          defaultValue={filters.minYear}
-          placeholder="Née après (année)"
-          className="w-40 rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-        />
-        <input
-          name="maxYear"
-          defaultValue={filters.maxYear}
-          placeholder="Née avant (année)"
-          className="w-40 rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+          name="q"
+          defaultValue={query}
+          placeholder="Chercher une nageuse par nom ou club..."
+          className="min-w-[240px] flex-1 rounded-lg border border-ink/15 px-3 py-1.5 text-sm"
         />
         <button
           type="submit"
           className="rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
         >
-          Filtrer
+          Rechercher
         </button>
-        <Link href="/natation?tab=participants" className="px-2 py-1.5 text-sm text-ink/40 hover:text-ink">
-          Réinitialiser
-        </Link>
       </form>
 
-      {swimmers.length === 0 ? (
-        <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
-          Aucune nageuse ne correspond — lance une synchro ou ajuste les filtres.
-        </p>
-      ) : (
-        <div className="space-y-1.5">
-          {swimmers.map((s) => (
-            <div
-              key={s.id}
-              className="flex flex-col gap-2 rounded-card bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between"
-            >
-              <div>
-                <p className="font-semibold text-ink">
-                  {s.full_name}
-                  {s.participant_id && (
-                    <span className="ml-2 rounded-full bg-navy px-2 py-0.5 text-xs font-semibold text-white">
-                      Une de mes filles
+      {hasQuery && (
+        <section>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">
+            Résultats de recherche
+          </h3>
+          {searchResults.length === 0 ? (
+            <p className="rounded-card bg-white p-4 text-sm text-ink/50 shadow-sm">
+              Aucune nageuse trouvée pour "{query}".
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {searchResults.map((s) => (
+                <div
+                  key={s.id}
+                  className="flex items-center justify-between rounded-card bg-white p-3 shadow-sm"
+                >
+                  <div>
+                    <p className="font-semibold text-ink">{s.full_name}</p>
+                    <p className="text-sm text-ink/50">
+                      {s.club ?? "Club inconnu"}
+                      {s.birth_year ? ` · ${s.birth_year}` : ""}
+                    </p>
+                  </div>
+                  {s.is_flagged ? (
+                    <span className="rounded-full bg-cardinal-light px-3 py-1 text-xs font-semibold text-cardinal-dark">
+                      ⭐ Déjà suivie
                     </span>
+                  ) : (
+                    <form action={toggleSwimmerFlag}>
+                      <input type="hidden" name="swimmer_id" value={s.id} />
+                      <input type="hidden" name="currently_flagged" value="false" />
+                      <button
+                        type="submit"
+                        className="rounded-full bg-lagoon px-3 py-1 text-xs font-semibold text-white hover:opacity-90"
+                      >
+                        + Suivre
+                      </button>
+                    </form>
                   )}
-                  {s.is_flagged && (
-                    <span className="ml-2 rounded-full bg-cardinal-light px-2 py-0.5 text-xs font-semibold text-cardinal-dark">
-                      ⭐ À suivre
-                    </span>
-                  )}
-                </p>
-                <p className="text-sm text-ink/50">
-                  {s.club ?? "Club inconnu"}
-                  {s.birth_year ? ` · ${s.birth_year}` : ""}
-                </p>
-              </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
-              <div className="flex flex-wrap items-center gap-2">
-                <form action={linkSwimmerToParticipant} className="flex items-center gap-1">
-                  <input type="hidden" name="swimmer_id" value={s.id} />
-                  <select
-                    name="participant_id"
-                    defaultValue={s.participant_id ?? ""}
-                    className="rounded-lg border border-ink/15 px-2 py-1 text-xs"
-                  >
-                    <option value="">— Pas une de mes filles —</option>
-                    {participants.map((p) => (
-                      <option key={p.id} value={p.id}>{p.first_name}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="submit"
-                    className="rounded-full bg-navy px-2 py-1 text-xs font-semibold text-white hover:bg-navy-light"
-                  >
-                    OK
-                  </button>
-                </form>
-
+      <section>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">
+          Nageuses suivies ({followed.length})
+        </h3>
+        {followed.length === 0 ? (
+          <p className="rounded-card bg-white p-4 text-sm text-ink/50 shadow-sm">
+            Personne à suivre pour l'instant — cherche une nageuse ci-dessus pour l'ajouter.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {followed.map((s) => (
+              <div
+                key={s.id}
+                className="flex items-center justify-between rounded-card bg-white p-3 shadow-sm"
+              >
+                <div>
+                  <p className="font-semibold text-ink">
+                    {s.full_name}
+                    {s.participant_id && (
+                      <span className="ml-2 rounded-full bg-navy px-2 py-0.5 text-xs font-semibold text-white">
+                        Une de mes filles
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-sm text-ink/50">
+                    {s.club ?? "Club inconnu"}
+                    {s.birth_year ? ` · ${s.birth_year}` : ""}
+                  </p>
+                </div>
                 <form action={toggleSwimmerFlag}>
                   <input type="hidden" name="swimmer_id" value={s.id} />
-                  <input type="hidden" name="currently_flagged" value={String(s.is_flagged)} />
+                  <input type="hidden" name="currently_flagged" value="true" />
                   <button
                     type="submit"
-                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                      s.is_flagged
-                        ? "bg-cardinal-light text-cardinal-dark"
-                        : "bg-sand text-ink/50 hover:text-ink"
-                    }`}
+                    className="rounded-full bg-sand px-3 py-1 text-xs font-semibold text-ink/50 hover:text-cardinal"
                   >
-                    {s.is_flagged ? "Ne plus suivre" : "Suivre"}
+                    Retirer
                   </button>
                 </form>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -298,11 +295,6 @@ export default async function NatationPage({ searchParams }) {
         .select("*, participants(id, first_name)")
         .eq("sport_id", sport.id)
     : { data: [] };
-
-  const { data: allParticipants } = await supabase
-    .from("participants")
-    .select("id, first_name")
-    .order("birthdate");
 
   let performancesContent = null;
   let participantsContent = null;
@@ -352,23 +344,33 @@ export default async function NatationPage({ searchParams }) {
       <PerformancesTab swimmer={swimmer} results={results} view={view} meetRowsByKey={meetRowsByKey} />
     );
   } else {
-    const filters = {
-      name: searchParams?.name ?? "",
-      club: searchParams?.club ?? "",
-      minYear: searchParams?.minYear ?? "",
-      maxYear: searchParams?.maxYear ?? "",
-    };
+    const q = (searchParams?.q ?? "").trim();
+    const hasQuery = q.length > 0;
 
-    let query = supabase.from("swimmers").select("*").order("full_name");
-    if (filters.name) query = query.ilike("full_name", `%${filters.name}%`);
-    if (filters.club) query = query.ilike("club", `%${filters.club}%`);
-    if (filters.minYear) query = query.gte("birth_year", Number(filters.minYear));
-    if (filters.maxYear) query = query.lte("birth_year", Number(filters.maxYear));
+    let searchResults = [];
+    if (hasQuery) {
+      const { data } = await supabase
+        .from("swimmers")
+        .select("*")
+        .or(`full_name.ilike.%${q}%,club.ilike.%${q}%`)
+        .order("full_name")
+        .limit(30);
+      searchResults = data ?? [];
+    }
 
-    const { data: swimmers } = await query;
+    const { data: followedData } = await supabase
+      .from("swimmers")
+      .select("*")
+      .eq("is_flagged", true)
+      .order("full_name");
 
     participantsContent = (
-      <ParticipantsTab swimmers={swimmers ?? []} participants={allParticipants ?? []} filters={filters} />
+      <ParticipantsTab
+        searchResults={searchResults}
+        followed={followedData ?? []}
+        hasQuery={hasQuery}
+        query={q}
+      />
     );
   }
 
