@@ -2,41 +2,91 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { swimTimeToMs } from "@/lib/utils";
 
 const FFN_USER_AGENT = "Mozilla/5.0 (compatible; SportFamilleApp/1.0)";
+
+// ---- Table officielle des codes d'épreuve (raceid), spec FFNex v1.0.19 ----
+// Une seule table à plat : les codes sont uniques tous genres confondus.
+const RACE_TABLE = {
+  // Dames
+  "100": "25 Nage Libre", "1": "50 Nage Libre", "2": "100 Nage Libre", "3": "200 Nage Libre",
+  "4": "400 Nage Libre", "5": "800 Nage Libre", "7": "1000 Nage Libre", "6": "1500 Nage Libre",
+  "16": "3000 Nage Libre", "15": "5000 Nage Libre",
+  "110": "25 Dos", "11": "50 Dos", "12": "100 Dos", "13": "200 Dos",
+  "120": "25 Brasse", "21": "50 Brasse", "22": "100 Brasse", "23": "200 Brasse",
+  "130": "25 Papillon", "31": "50 Papillon", "32": "100 Papillon", "33": "200 Papillon",
+  "40": "100 4 Nages", "41": "200 4 Nages", "42": "400 4 Nages",
+  "8": "4x25 Nage Libre", "47": "4x50 Nage Libre", "43": "4x100 Nage Libre", "44": "4x200 Nage Libre",
+  "111": "4x50 Dos", "121": "4x50 Brasse", "131": "4x50 Papillon",
+  "39": "4x25 4 Nages", "48": "4x50 4 Nages", "46": "4x100 4 Nages", "49": "6x50 Nage Libre",
+  "14": "8x100 Nage Libre", "9": "10x50 Nage Libre", "45": "10x100 Nage Libre",
+  // Messieurs
+  "150": "25 Nage Libre", "51": "50 Nage Libre", "52": "100 Nage Libre", "53": "200 Nage Libre",
+  "54": "400 Nage Libre", "55": "800 Nage Libre", "57": "1000 Nage Libre", "56": "1500 Nage Libre",
+  "66": "3000 Nage Libre", "65": "5000 Nage Libre",
+  "160": "25 Dos", "61": "50 Dos", "62": "100 Dos", "63": "200 Dos",
+  "170": "25 Brasse", "71": "50 Brasse", "72": "100 Brasse", "73": "200 Brasse",
+  "180": "25 Papillon", "81": "50 Papillon", "82": "100 Papillon", "83": "200 Papillon",
+  "90": "100 4 Nages", "91": "200 4 Nages", "92": "400 4 Nages",
+  "58": "4x25 Nage Libre", "97": "4x50 Nage Libre", "93": "4x100 Nage Libre", "94": "4x200 Nage Libre",
+  "161": "4x50 Dos", "171": "4x50 Brasse", "181": "4x50 Papillon",
+  "89": "4x25 4 Nages", "98": "4x50 4 Nages", "96": "4x100 4 Nages", "99": "6x50 Nage Libre",
+  "64": "8x100 Nage Libre", "59": "10x50 Nage Libre", "95": "10x100 Nage Libre",
+  // Mixte
+  "200": "25 Nage Libre", "201": "50 Nage Libre", "202": "100 Nage Libre", "203": "200 Nage Libre",
+  "204": "400 Nage Libre", "205": "800 Nage Libre", "207": "1000 Nage Libre", "206": "1500 Nage Libre",
+  "216": "3000 Nage Libre", "215": "5000 Nage Libre",
+  "210": "25 Dos", "211": "50 Dos", "212": "100 Dos", "213": "200 Dos",
+  "220": "25 Brasse", "221": "50 Brasse", "222": "100 Brasse", "223": "200 Brasse",
+  "230": "25 Papillon", "231": "50 Papillon", "232": "100 Papillon", "233": "200 Papillon",
+  "240": "100 4 Nages", "241": "200 4 Nages", "242": "400 4 Nages",
+  "86": "4x25 Nage Libre", "87": "4x50 Nage Libre", "88": "4x100 Nage Libre", "34": "4x200 Nage Libre",
+  "38": "4x25 4 Nages", "37": "4x50 4 Nages", "36": "4x100 4 Nages", "35": "6x50 Nage Libre",
+  "214": "8x100 Nage Libre", "84": "10x50 Nage Libre", "85": "10x100 Nage Libre",
+};
+
+const DQ_LABELS = {
+  "1": "Forfait excusé", "2": "Forfait déclaré", "3": "Disqualifié (relais)", "4": "Forfait",
+  "6": "Disqualifié", "7": "Faux départ", "8": "Virage incorrect", "9": "Nage incorrecte",
+  "10": "Disqualifié", "52": "Temps limite dépassé", "53": "Non courue",
+  "54": "Arrivée incorrecte", "55": "Abandon",
+};
 
 const STROKE_PATTERNS = [
   { key: "papillon", label: "Papillon" },
   { key: "dos", label: "Dos" },
   { key: "brasse", label: "Brasse" },
   { key: "4 nages", label: "4 Nages" },
-  { key: "4n", label: "4 Nages" },
   { key: "nage libre", label: "Nage libre" },
-  { key: "nl", label: "Nage libre" },
 ];
 
-function parseEvent(eventNameRaw) {
-  const eventName = eventNameRaw.replace(/\b(Dames|Messieurs|Mixte)\b/gi, "").trim();
+// "50 Dos" -> { distance_m: 50, stroke: "Dos" } (les épreuves de relais type
+// "4x50 Nage Libre" ne sont pas découpées ici, elles sont filtrées avant).
+function parseEvent(eventName) {
   const match = eventName.match(/^(\d+)\s*(.+)$/);
-  if (!match) return { distance_m: null, stroke: eventName || eventNameRaw };
+  if (!match) return { distance_m: null, stroke: eventName };
   const distance_m = parseInt(match[1], 10);
   const rest = match[2].trim().toLowerCase();
   const found = STROKE_PATTERNS.find((s) => rest.includes(s.key));
   return { distance_m, stroke: found ? found.label : match[2].trim() };
 }
 
-function parseFfnTimeText(text) {
-  if (!text || !/^\d/.test(text)) return null;
-  const cleaned = text.trim().replace(/^00:(?=\d{1,2}:)/, "");
-  return swimTimeToMs(cleaned);
-}
-
-function cleanEventHeader(text) {
-  return text
-    .replace(/(Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche)\s+\d{1,2}\s+\w+\.?\s+\d{4}.*$/i, "")
-    .replace(/-\s*(Séries|Finale[s]?(\s*[AB])?|Éliminatoires)\s*$/i, "")
-    .trim();
+// Format officiel FFNex : "m.sscc" (ex. "1.2345" = 1 min 23 s 45), ou
+// "hh`h`mm.sscc" si des heures sont présentes (jamais le cas en natation
+// course). Spec FFNex §3.1.
+function parseSwimtimeAttr(str) {
+  if (!str) return null;
+  const s = str.trim();
+  if (s === "" || s === "0") return null;
+  const withHours = s.match(/^(-?\d+)h(\d{2})\.(\d{2})(\d{2})$/);
+  if (withHours) {
+    const [, h, m, sec, cs] = withHours;
+    return (parseInt(h, 10) * 3600 + parseInt(m, 10) * 60 + parseInt(sec, 10)) * 1000 + parseInt(cs, 10) * 10;
+  }
+  const match = s.match(/^(-?\d+)\.(\d{2})(\d{2})$/);
+  if (!match) return null;
+  const [, m, sec, cs] = match;
+  return (parseInt(m, 10) * 60 + parseInt(sec, 10)) * 1000 + parseInt(cs, 10) * 10;
 }
 
 // Supabase-js ne lève pas d'exception sur une erreur de requête : il faut
@@ -45,7 +95,12 @@ function assertNoError(step, error) {
   if (error) throw new Error(`${step} : ${error.message}`);
 }
 
-// ---- Config club + synchro (expérimentale, scraping HTML) -----------------
+// ---- Config club + synchro -------------------------------------------------
+// 1) Liste des compétitions du club/de la saison : page HTML publique
+//    (competitions.php), parsée par fenêtre de texte.
+// 2) Résultats de chaque compétition départementale : export officiel FFNex
+//    (XML), beaucoup plus fiable — nom d'épreuve, ID FFN de chaque nageur,
+//    temps exact, tout y est structuré.
 
 export async function syncClubCompetitions(formData) {
   const supabase = createClient();
@@ -86,10 +141,6 @@ export async function syncClubCompetitions(formData) {
     if (!listRes.ok) throw new Error(`Page compétitions inaccessible (HTTP ${listRes.status}).`);
     const listHtml = await listRes.text();
 
-    // On repère chaque lien de compétition, puis on regarde le texte qui
-    // l'entoure (fenêtre glissante) pour en déduire niveau/date/ville/bassin
-    // — on ne connaît pas la structure exacte des balises à l'avance, donc
-    // on évite de dépendre d'une hiérarchie DOM précise.
     const linkPattern = /<a[^>]*href="[^"]*resultats\.php\?idact=nat&idcpt=(\d+)"[^>]*>([^<]+)<\/a>/g;
     const competitionsMap = {};
     let match;
@@ -97,21 +148,8 @@ export async function syncClubCompetitions(formData) {
       const idcpt = match[1];
       const name = match[2].trim();
       const before = listHtml.slice(Math.max(0, match.index - 900), match.index);
-      const after = listHtml.slice(match.index, Math.min(listHtml.length, match.index + match[0].length + 500));
-
       if (!/D[ée]partemental/.test(before)) continue;
-
-      const poolLength = /compets_50m/.test(before) ? 50 : /compets_25m/.test(before) ? 25 : null;
-      const dateMatches = [...before.matchAll(/(\d{2})\/(\d{2})\/(\d{4})/g)];
-      let competition_date = null;
-      if (dateMatches.length > 0) {
-        const last = dateMatches[dateMatches.length - 1];
-        competition_date = `${last[3]}-${last[2]}-${last[1]}`;
-      }
-      const cityMatch = after.match(/>([A-ZÀ-Ü][A-ZÀ-Ü\s\-']{2,40})\s*\(FRA\)/);
-      const city = cityMatch ? cityMatch[1].trim() : null;
-
-      competitionsMap[idcpt] = { idcpt, name, poolLength, competition_date, city };
+      competitionsMap[idcpt] = { idcpt, name };
     }
 
     const competitions = Object.values(competitionsMap);
@@ -124,16 +162,34 @@ export async function syncClubCompetitions(formData) {
     }
 
     for (const comp of competitions) {
+      const xmlUrl = `https://ffn.extranat.fr/webffn/resultats_ffnex.php?idcpt=${comp.idcpt}`;
+      const xmlRes = await fetch(xmlUrl, {
+        headers: { "User-Agent": FFN_USER_AGENT },
+        cache: "no-store",
+      });
+      if (!xmlRes.ok) continue; // une compétition en erreur ne bloque pas les autres
+
+      const xml = await xmlRes.text();
+      const $ = cheerio.load(xml, { xmlMode: true });
+
+      const meetEl = $("MEET").first();
+      if (meetEl.length === 0) continue;
+
+      const poolLength = parseInt($("POOL").attr("size") || "25", 10);
+      const meetName = meetEl.attr("name") || comp.name;
+      const meetCity = meetEl.attr("city") || null;
+      const meetDate = meetEl.attr("startdate") || null;
+
       const { data: compRow, error: compError } = await supabase
         .from("swim_competitions")
         .upsert(
           {
             ffn_competition_id: comp.idcpt,
-            name: comp.name,
-            city: comp.city,
+            name: meetName,
+            city: meetCity,
             level: "Départemental",
-            pool_length: comp.poolLength,
-            competition_date: comp.competition_date,
+            pool_length: poolLength,
+            competition_date: meetDate,
             season_year: Number(seasonYear),
             synced_at: new Date().toISOString(),
           },
@@ -143,115 +199,89 @@ export async function syncClubCompetitions(formData) {
         .single();
       if (compError) throw new Error(`Écriture compétition impossible (${compError.message}).`);
 
-      const resUrl = `https://ffn.extranat.fr/webffn/resultats.php?idact=nat&idcpt=${comp.idcpt}`;
-      const resResponse = await fetch(resUrl, {
-        headers: { "User-Agent": FFN_USER_AGENT },
-        cache: "no-store",
+      const clubsById = {};
+      $("CLUB").each((_, el) => {
+        const $el = $(el);
+        clubsById[$el.attr("id")] = $el.attr("name");
       });
-      if (!resResponse.ok) continue; // une compétition en erreur ne bloque pas les autres
 
-      const resHtml = await resResponse.text();
-      const $ = cheerio.load(resHtml);
+      const swimmersById = {};
+      $("SWIMMER").each((_, el) => {
+        const $el = $(el);
+        const id = $el.attr("id");
+        const birthdate = $el.attr("birthdate");
+        swimmersById[id] = {
+          ffn_swimmer_id: id,
+          full_name: `${$el.attr("firstname") || ""} ${$el.attr("lastname") || ""}`.trim(),
+          club: clubsById[$el.attr("clubid")] || null,
+          ffn_club_id: $el.attr("clubid") || null,
+          birth_year: birthdate ? parseInt(birthdate.slice(0, 4), 10) : null,
+        };
+      });
 
-      let currentEvent = null;
-      const rows = [];
+      const resultRows = [];
+      $("RESULT").each((_, el) => {
+        const $el = $(el);
+        const solo = $el.children("SOLO").first();
+        if (solo.length === 0) return; // relais non capturés pour l'instant
 
-      $("table tr").each((_, tr) => {
-        const tds = $(tr).find("td");
-        const ths = $(tr).find("th");
+        const swimmerId = solo.attr("swimmerid");
+        if (!swimmerId || !swimmersById[swimmerId]) return;
 
-        if (ths.length === 1 && tds.length === 0) {
-          const headerText = $(ths[0]).text().trim();
-          if (headerText && /^\d/.test(headerText) && !/^Légende/i.test(headerText)) {
-            currentEvent = cleanEventHeader(headerText);
-          }
-          return;
-        }
+        const raceId = $el.attr("raceid");
+        const eventName = RACE_TABLE[raceId] || `Épreuve ${raceId}`;
+        const disqId = $el.attr("disqualificationid");
+        const time_ms = parseSwimtimeAttr($el.attr("swimtime"));
+        const pointsAttr = $el.attr("points");
 
-        if (tds.length < 4 || !currentEvent) return;
-
-        const rankText = $(tds[0]).text().trim();
-        if (!/^\d+\.$|^-+\.?$/.test(rankText)) return;
-
-        const swimmerLink = $(tds[1]).find("a").first();
-        const swimmerText = swimmerLink.text().trim() || $(tds[1]).text().trim();
-        const swimmerHref = swimmerLink.attr("href") || "";
-        const idMatch = swimmerHref.match(/#(\d+)/);
-        const ffnSwimmerId = idMatch ? idMatch[1] : null;
-        if (!ffnSwimmerId) return;
-
-        const nameMatch = swimmerText.match(/^(.+?)\s*\((\d{4})\/\d+\s*ans\)/);
-
-        const clubLink = $(tds[2]).find("a").first();
-        const clubText = clubLink.text().trim() || $(tds[2]).text().trim();
-        const clubHref = clubLink.attr("href") || "";
-        const idclbMatch = clubHref.match(/idclb=(\d+)/);
-
-        const timeText = $(tds[3]).text().trim();
-        const pointsText = tds.length > 5 ? $(tds[5]).text().trim() : "";
-
-        rows.push({
-          event: currentEvent,
-          ffnSwimmerId,
-          swimmerName: nameMatch ? nameMatch[1].trim() : swimmerText,
-          birthYear: nameMatch ? parseInt(nameMatch[2], 10) : null,
-          club: clubText || null,
-          ffnClubIdForSwimmer: idclbMatch ? idclbMatch[1] : null,
-          rank: rankText,
-          timeText,
-          pointsText,
+        resultRows.push({
+          ffnResultId: $el.attr("id"),
+          swimmerId,
+          eventName,
+          time_ms,
+          time_label: time_ms === null ? (DQ_LABELS[disqId] || (disqId ? "Disqualifié" : null)) : null,
+          place: $el.attr("place") && $el.attr("place") !== "999" ? $el.attr("place") : null,
+          points: pointsAttr ? parseInt(pointsAttr, 10) : null,
         });
       });
 
-      const { error: delError } = await supabase
-        .from("swim_results")
-        .delete()
-        .eq("competition_id", compRow.id);
-      assertNoError("Nettoyage des anciens résultats", delError);
+      for (const row of resultRows) {
+        const swimmerInfo = swimmersById[row.swimmerId];
 
-      for (const row of rows) {
         const { data: swimmerRow, error: swimmerError } = await supabase
           .from("swimmers")
-          .upsert(
-            {
-              ffn_swimmer_id: row.ffnSwimmerId,
-              full_name: row.swimmerName,
-              club: row.club,
-              ffn_club_id: row.ffnClubIdForSwimmer,
-              birth_year: row.birthYear,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: "ffn_swimmer_id" }
-          )
+          .upsert(swimmerInfo, { onConflict: "ffn_swimmer_id" })
           .select()
           .single();
         if (swimmerError) throw new Error(`Écriture nageur impossible (${swimmerError.message}).`);
 
-        const { distance_m, stroke } = parseEvent(row.event);
-        const time_ms = parseFfnTimeText(row.timeText);
+        const { distance_m, stroke } = parseEvent(row.eventName);
 
         const { error: resultError } = await supabase.from("swim_results").upsert(
           {
             competition_id: compRow.id,
             swimmer_id: swimmerRow.id,
-            event_name: row.event,
+            ffn_result_id: row.ffnResultId,
+            event_name: row.eventName,
             stroke,
             distance_m,
-            rank: row.rank,
-            time_ms,
-            time_label: time_ms === null ? row.timeText : null,
-            points: /\d/.test(row.pointsText) ? parseInt(row.pointsText.replace(/\D/g, ""), 10) : null,
+            pool_length: poolLength,
+            rank: row.place,
+            time_ms: row.time_ms,
+            time_label: row.time_label,
+            points: row.points,
           },
-          { onConflict: "competition_id,swimmer_id,event_name" }
+          { onConflict: "competition_id,ffn_result_id" }
         );
-        if (resultError) throw new Error(`Écriture résultat impossible (${resultError.message}).`);
+        if (resultError) {
+          throw new Error(
+            `Écriture résultat impossible (${resultError.message}). As-tu bien joué le script 9-natation-ffnex.sql ?`
+          );
+        }
         resultsWritten += 1;
       }
     }
 
-    // Rattache automatiquement les nageuses de la famille (via l'ID FFN
-    // personnel connu sur leur fiche Paramètres/Basket... ici Natation) à
-    // leur profil participant.
     const { data: allPs } = await supabase
       .from("participant_sports")
       .select("participant_id, ffn_swimmer_id")
