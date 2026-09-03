@@ -244,6 +244,7 @@ export async function syncClubCompetitions(formData) {
           club: clubsById[$el.attr("clubid")] || null,
           ffn_club_id: $el.attr("clubid") || null,
           birth_year: birthdate ? parseInt(birthdate.slice(0, 4), 10) : null,
+          gender: $el.attr("gender") === "M" || $el.attr("gender") === "F" ? $el.attr("gender") : null,
         };
       });
 
@@ -251,26 +252,80 @@ export async function syncClubCompetitions(formData) {
       $("RESULT").each((_, el) => {
         const $el = $(el);
         const solo = $el.children("SOLO").first();
-        if (solo.length === 0) return; // relais non capturés pour l'instant
 
-        const swimmerId = solo.attr("swimmerid");
-        if (!swimmerId || !swimmersById[swimmerId]) return;
+        if (solo.length > 0) {
+          const swimmerId = solo.attr("swimmerid");
+          if (!swimmerId || !swimmersById[swimmerId]) return;
+
+          const raceId = $el.attr("raceid");
+          const { eventName, gender } = resolveRace(raceId);
+          const disqId = $el.attr("disqualificationid");
+          const time_ms = parseSwimtimeAttr($el.attr("swimtime"));
+          const pointsAttr = $el.attr("points");
+
+          resultRows.push({
+            ffnResultId: $el.attr("id"),
+            swimmerId,
+            eventName,
+            gender,
+            time_ms,
+            time_label: time_ms === null ? (DQ_LABELS[disqId] || (disqId ? "Disqualifié" : null)) : null,
+            place: $el.attr("place") && $el.attr("place") !== "999" ? $el.attr("place") : null,
+            points: pointsAttr ? parseInt(pointsAttr, 10) : null,
+          });
+          return;
+        }
+
+        // Relais : le 1er relayeur part comme dans une épreuve individuelle
+        // (départ plongé, pas de prise de relais). Son temps sur le premier
+        // relais compte donc comme une performance individuelle à part
+        // entière — exactement ce que fait le site FFN lui-même (une
+        // finale 4x50 Nage Libre donne un 50 Nage Libre individuel au 1er
+        // relayeur). Les autres relayeurs (prise de relais, pas de départ
+        // plongé) ne sont pas concernés.
+        const relay = $el.children("RELAY").first();
+        if (relay.length === 0) return;
+
+        const leadoff = relay.find('RELAYPOSITION[number="1"]').first();
+        if (leadoff.length === 0) return;
+
+        const leadoffSwimmerId = leadoff.attr("swimmerid");
+        if (!leadoffSwimmerId || !swimmersById[leadoffSwimmerId]) return;
+
+        const splitEls = $el.children("SPLITS").find("SPLIT").toArray();
+        if (splitEls.length === 0) return;
+
+        let firstSplit = null;
+        for (const sp of splitEls) {
+          const d = parseInt($(sp).attr("distance"), 10);
+          if (!firstSplit || d < firstSplit.distance) {
+            firstSplit = { distance: d, time: $(sp).attr("swimtime") };
+          }
+        }
+        if (!firstSplit) return;
 
         const raceId = $el.attr("raceid");
-        const { eventName, gender } = resolveRace(raceId);
-        const disqId = $el.attr("disqualificationid");
-        const time_ms = parseSwimtimeAttr($el.attr("swimtime"));
-        const pointsAttr = $el.attr("points");
+        const relayInfo = resolveRace(raceId);
+        const isMedley = /4 Nages/.test(relayInfo.eventName);
+        // Ordre officiel d'un relais 4 Nages : Dos, Brasse, Papillon, Nage
+        // Libre — le 1er relayeur nage donc le Dos. Un relais Nage Libre
+        // est nagé en Nage Libre par tout le monde.
+        const stroke = isMedley ? "Dos" : "Nage Libre";
+        const swimmerGender = swimmersById[leadoffSwimmerId].gender;
+        const time_ms = parseSwimtimeAttr(firstSplit.time);
 
         resultRows.push({
-          ffnResultId: $el.attr("id"),
-          swimmerId,
-          eventName,
-          gender,
+          ffnResultId: `${$el.attr("id")}-relais1`,
+          swimmerId: leadoffSwimmerId,
+          eventName: `${firstSplit.distance} ${stroke}`,
+          gender: swimmerGender,
           time_ms,
-          time_label: time_ms === null ? (DQ_LABELS[disqId] || (disqId ? "Disqualifié" : null)) : null,
-          place: $el.attr("place") && $el.attr("place") !== "999" ? $el.attr("place") : null,
-          points: pointsAttr ? parseInt(pointsAttr, 10) : null,
+          // La FFN calcule ses propres points pour ce cas ; on ne dispose
+          // pas de sa table de cotation, donc pas de points ici plutôt
+          // qu'un chiffre inventé.
+          time_label: null,
+          place: null,
+          points: null,
         });
       });
 
