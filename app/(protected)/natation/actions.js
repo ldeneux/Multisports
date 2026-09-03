@@ -3,12 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 
-// Une synchro peut faire plusieurs appels réseau (liste + une page XML par
-// compétition) : on demande explicitement plus de temps qu'une requête HTTP
-// classique (le max dépend du plan Vercel, ceci est une demande, pas une
-// garantie).
-export const maxDuration = 60;
-
 const FFN_USER_AGENT = "Mozilla/5.0 (compatible; SportFamilleApp/1.0)";
 
 // ---- Table officielle des codes d'épreuve (raceid), spec FFNex v1.0.19 ----
