@@ -3,6 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 
+// Une synchro peut faire plusieurs appels réseau (liste + une page XML par
+// compétition) : on demande explicitement plus de temps qu'une requête HTTP
+// classique (le max dépend du plan Vercel, ceci est une demande, pas une
+// garantie).
+export const maxDuration = 60;
+
 const FFN_USER_AGENT = "Mozilla/5.0 (compatible; SportFamilleApp/1.0)";
 
 // ---- Table officielle des codes d'épreuve (raceid), spec FFNex v1.0.19 ----
@@ -128,6 +134,8 @@ export async function syncClubCompetitions(formData) {
     .eq("id", participantSportId);
 
   let competitionsFound = 0;
+  let competitionsOk = 0;
+  let competitionsFailed = [];
   let resultsWritten = 0;
 
   try {
@@ -164,16 +172,30 @@ export async function syncClubCompetitions(formData) {
     for (const comp of competitions) {
       const xmlUrl = `https://ffn.extranat.fr/webffn/resultats_ffnex.php?idcpt=${comp.idcpt}`;
       const xmlRes = await fetch(xmlUrl, {
-        headers: { "User-Agent": FFN_USER_AGENT },
+        headers: { "User-Agent": FFN_USER_AGENT, Accept: "application/xml,text/xml" },
         cache: "no-store",
       });
-      if (!xmlRes.ok) continue; // une compétition en erreur ne bloque pas les autres
+      if (!xmlRes.ok) {
+        competitionsFailed.push(`${comp.name} (HTTP ${xmlRes.status})`);
+        continue; // une compétition en erreur ne bloque pas les autres
+      }
 
       const xml = await xmlRes.text();
+
+      if (!xml.includes("<MEET")) {
+        competitionsFailed.push(`${comp.name} (réponse inattendue — pas de XML)`);
+        continue;
+      }
+
       const $ = cheerio.load(xml, { xmlMode: true });
 
       const meetEl = $("MEET").first();
-      if (meetEl.length === 0) continue;
+      if (meetEl.length === 0) {
+        competitionsFailed.push(`${comp.name} (balise MEET introuvable)`);
+        continue;
+      }
+
+      competitionsOk += 1;
 
       const poolLength = parseInt($("POOL").attr("size") || "25", 10);
       const meetName = meetEl.attr("name") || comp.name;
@@ -245,22 +267,32 @@ export async function syncClubCompetitions(formData) {
         });
       });
 
-      for (const row of resultRows) {
-        const swimmerInfo = swimmersById[row.swimmerId];
-
-        const { data: swimmerRow, error: swimmerError } = await supabase
+      // Écritures en LOT plutôt qu'une par une : avec ~100-150 résultats par
+      // compétition, faire un aller-retour base de données par ligne prenait
+      // largement plus de temps que la limite d'exécution d'une fonction
+      // serveur Vercel, et le bouton restait grisé indéfiniment sans jamais
+      // aboutir.
+      const swimmerPayload = Object.values(swimmersById);
+      let swimmerUuidByFfnId = {};
+      if (swimmerPayload.length > 0) {
+        const { data: upsertedSwimmers, error: swimmersError } = await supabase
           .from("swimmers")
-          .upsert(swimmerInfo, { onConflict: "ffn_swimmer_id" })
-          .select()
-          .single();
-        if (swimmerError) throw new Error(`Écriture nageur impossible (${swimmerError.message}).`);
+          .upsert(swimmerPayload, { onConflict: "ffn_swimmer_id" })
+          .select();
+        if (swimmersError) throw new Error(`Écriture nageurs impossible (${swimmersError.message}).`);
+        (upsertedSwimmers ?? []).forEach((s) => {
+          swimmerUuidByFfnId[s.ffn_swimmer_id] = s.id;
+        });
+      }
 
-        const { distance_m, stroke } = parseEvent(row.eventName);
-
-        const { error: resultError } = await supabase.from("swim_results").upsert(
-          {
+      const resultPayload = resultRows
+        .map((row) => {
+          const swimmerUuid = swimmerUuidByFfnId[row.swimmerId];
+          if (!swimmerUuid) return null;
+          const { distance_m, stroke } = parseEvent(row.eventName);
+          return {
             competition_id: compRow.id,
-            swimmer_id: swimmerRow.id,
+            swimmer_id: swimmerUuid,
             ffn_result_id: row.ffnResultId,
             event_name: row.eventName,
             stroke,
@@ -270,15 +302,20 @@ export async function syncClubCompetitions(formData) {
             time_ms: row.time_ms,
             time_label: row.time_label,
             points: row.points,
-          },
-          { onConflict: "competition_id,ffn_result_id" }
-        );
-        if (resultError) {
+          };
+        })
+        .filter(Boolean);
+
+      if (resultPayload.length > 0) {
+        const { error: resultsError } = await supabase
+          .from("swim_results")
+          .upsert(resultPayload, { onConflict: "competition_id,ffn_result_id" });
+        if (resultsError) {
           throw new Error(
-            `Écriture résultat impossible (${resultError.message}). As-tu bien joué le script 9-natation-ffnex.sql ?`
+            `Écriture résultats impossible (${resultsError.message}). As-tu bien joué le script 9-natation-ffnex.sql ?`
           );
         }
-        resultsWritten += 1;
+        resultsWritten += resultPayload.length;
       }
     }
 
@@ -294,12 +331,18 @@ export async function syncClubCompetitions(formData) {
         .eq("ffn_swimmer_id", ps.ffn_swimmer_id);
     }
 
+    const summary =
+      `${competitionsFound} compétition(s) trouvée(s), ${competitionsOk} lue(s), ${resultsWritten} résultat(s).` +
+      (competitionsFailed.length > 0
+        ? ` Échecs : ${competitionsFailed.slice(0, 5).join(" · ")}${competitionsFailed.length > 5 ? "…" : ""}`
+        : "");
+
     await supabase
       .from("participant_sports")
       .update({
         last_ffn_sync_at: new Date().toISOString(),
         last_ffn_sync_error: null,
-        last_ffn_sync_summary: `${competitionsFound} compétition(s) départementale(s), ${resultsWritten} résultat(s).`,
+        last_ffn_sync_summary: summary.slice(0, 500),
       })
       .eq("id", participantSportId);
   } catch (err) {
