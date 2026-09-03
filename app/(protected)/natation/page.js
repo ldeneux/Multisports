@@ -8,6 +8,11 @@ import {
 } from "./actions";
 
 export const dynamic = "force-dynamic";
+// La synchro FFN (appelée via l'action syncClubCompetitions depuis cette
+// page) peut enchaîner plusieurs appels réseau : on demande explicitement
+// plus de temps qu'une requête classique (le max réel dépend du plan
+// Vercel, ceci est une demande, pas une garantie).
+export const maxDuration = 60;
 
 function SyncCard({ ps }) {
   return (
