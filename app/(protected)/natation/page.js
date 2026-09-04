@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
+import { SwimRadarChart, SwimPercentileTrendChart } from "@/components/SwimCharts";
 import { syncClubCompetitions, toggleSwimmerFlag } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -445,11 +446,134 @@ function ParticipantsTab({ searchResults, followed, hasQuery, query }) {
   );
 }
 
+// Score de 0 à 100 de `timeMs` au sein du champ [best, worst] (best = temps
+// le plus rapide connu sur l'épreuve, worst = le plus lent). Volontairement
+// une interpolation linéaire sur le TEMPS réel (pas sur le rang / la
+// position dans la liste) : deux nageuses séparées de 3 secondes dans un
+// groupe où tout le monde se tient en 0.2s doivent avoir un écart de score
+// nettement plus grand que deux nageuses qui se suivent à 0.1s d'intervalle
+// — un simple classement (1er, 2e, 3e...) gommerait cet écart.
+function percentileFromField(timeMs, best, worst) {
+  if (timeMs == null || best == null || worst == null) return null;
+  if (worst === best) return 100;
+  const score = ((worst - timeMs) / (worst - best)) * 100;
+  return Math.max(0, Math.min(100, score));
+}
+
+// Pour une épreuve (event_name + gender + pool_length) donnée, va chercher
+// en base le meilleur temps de CHAQUE nageuse déjà synchronisée sur cette
+// épreuve, pour obtenir le temps le plus rapide et le plus lent du champ.
+async function fetchEventField(supabase, { eventName, gender, poolLength }) {
+  const { data } = await supabase
+    .from("swim_results")
+    .select("swimmer_id, time_ms")
+    .eq("event_name", eventName)
+    .eq("gender", gender)
+    .eq("pool_length", poolLength)
+    .not("time_ms", "is", null)
+    .limit(1000);
+
+  const bestBySwimmer = new Map();
+  for (const row of data ?? []) {
+    const current = bestBySwimmer.get(row.swimmer_id);
+    if (current == null || row.time_ms < current) {
+      bestBySwimmer.set(row.swimmer_id, row.time_ms);
+    }
+  }
+  const times = [...bestBySwimmer.values()];
+  if (times.length === 0) return null;
+  return { best: Math.min(...times), worst: Math.max(...times), fieldSize: times.length };
+}
+
+// Construit les données du radar (une épreuve = un axe, score = percentile
+// de la MPP de la nageuse) et de la courbe d'évolution (une épreuve = une
+// série, un point par compétition nagée sur cette épreuve).
+async function buildGraphData(supabase, mppRows, results) {
+  const radarData = [];
+  const trendSeries = [];
+  const fieldCache = new Map();
+
+  for (const mpp of mppRows) {
+    if (mpp.time_ms == null || !mpp.event_name) continue;
+    const poolLength = mpp.swim_competitions?.pool_length ?? mpp.pool_length;
+    const cacheKey = `${mpp.event_name}-${mpp.gender}-${poolLength}`;
+
+    let field = fieldCache.get(cacheKey);
+    if (field === undefined) {
+      field = await fetchEventField(supabase, { eventName: mpp.event_name, gender: mpp.gender, poolLength });
+      fieldCache.set(cacheKey, field);
+    }
+    if (!field) continue;
+
+    const percentile = percentileFromField(mpp.time_ms, field.best, field.worst);
+    if (percentile == null) continue;
+
+    radarData.push({ label: mpp.event_name, percentile, fieldSize: field.fieldSize });
+
+    const eventResults = results.filter((r) => {
+      const rPoolLength = r.swim_competitions?.pool_length ?? r.pool_length;
+      return r.event_name === mpp.event_name && r.gender === mpp.gender && rPoolLength === poolLength && r.time_ms != null;
+    });
+    const points = eventResults
+      .filter((r) => r.swim_competitions?.competition_date)
+      .map((r) => ({
+        date: r.swim_competitions.competition_date,
+        percentile: percentileFromField(r.time_ms, field.best, field.worst),
+      }))
+      .filter((p) => p.percentile != null);
+
+    if (points.length > 0) {
+      trendSeries.push({ label: mpp.event_name, points });
+    }
+  }
+
+  return { radarData, trendSeries };
+}
+
+function GraphiqueTab({ swimmerLabel, radarData, trendSeries }) {
+  if (!radarData || radarData.length === 0) {
+    return (
+      <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+        Pas encore assez de données synchronisées pour {swimmerLabel ?? "cette nageuse"} — reviens après
+        quelques compétitions de plus.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-card bg-white p-5 shadow-sm">
+        <p className="font-display text-sm uppercase tracking-tight text-navy">
+          Profil par épreuve{swimmerLabel ? ` — ${swimmerLabel}` : ""}
+        </p>
+        <p className="mt-1 text-xs text-ink/50">
+          100 = meilleur temps connu sur l'épreuve, 0 = le plus lent. L'écart entre deux épreuves reflète
+          l'écart de temps réel dans le champ, pas juste le classement.
+        </p>
+        <SwimRadarChart data={radarData} />
+      </div>
+
+      {trendSeries.length > 0 && (
+        <div className="rounded-card bg-white p-5 shadow-sm">
+          <p className="font-display text-sm uppercase tracking-tight text-navy">Évolution dans la saison</p>
+          <p className="mt-1 text-xs text-ink/50">
+            Percentile obtenu à chaque compétition, épreuve par épreuve.
+          </p>
+          <div className="mt-3">
+            <SwimPercentileTrendChart series={trendSeries} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default async function NatationPage({ searchParams }) {
   const supabase = createClient();
 
   const tab = searchParams?.tab === "participants" ? "participants" : "performances";
-  const view = searchParams?.view === "all" ? "all" : "mpp";
+  const view =
+    searchParams?.view === "all" ? "all" : searchParams?.view === "graph" ? "graph" : "mpp";
 
   const { data: sport } = await supabase
     .from("sports")
@@ -530,72 +654,79 @@ export default async function NatationPage({ searchParams }) {
       }
       mppRows = Object.values(best).sort((a, b) => (a.distance_m ?? 0) - (b.distance_m ?? 0));
 
-      // Pour chaque ligne réellement affichée (pas toutes ses performances,
-      // juste celles de la vue courante), on va chercher le classement
-      // complet — soit individuel (une compétition + une épreuve + un genre
-      // = ~150 lignes max), soit, pour les performances issues d'un 1er
-      // relayeur, le classement complet des ÉQUIPES de la course de relais.
-      // Requêtes ciblées plutôt qu'une grosse requête globale qui dépassait
-      // la limite de 1000 lignes de Supabase et tronquait silencieusement
-      // les résultats.
-      const rowsToExpand = view === "mpp" ? mppRows : results;
-      const seenKeys = new Set();
-      for (const r of rowsToExpand) {
-        const key = `${r.competition_id}-${r.event_name}-${r.gender}-${r.relay_ffn_result_id ?? "solo"}`;
-        if (seenKeys.has(key)) continue;
-        seenKeys.add(key);
+      if (view === "graph") {
+        const { radarData, trendSeries } = await buildGraphData(supabase, mppRows, results);
+        performancesContent = (
+          <GraphiqueTab swimmerLabel={swimmerOptions.find((o) => o.id === selectedSwimmerId)?.label} radarData={radarData} trendSeries={trendSeries} />
+        );
+      } else {
+        // Pour chaque ligne réellement affichée (pas toutes ses performances,
+        // juste celles de la vue courante), on va chercher le classement
+        // complet — soit individuel (une compétition + une épreuve + un genre
+        // = ~150 lignes max), soit, pour les performances issues d'un 1er
+        // relayeur, le classement complet des ÉQUIPES de la course de relais.
+        // Requêtes ciblées plutôt qu'une grosse requête globale qui dépassait
+        // la limite de 1000 lignes de Supabase et tronquait silencieusement
+        // les résultats.
+        const rowsToExpand = view === "mpp" ? mppRows : results;
+        const seenKeys = new Set();
+        for (const r of rowsToExpand) {
+          const key = `${r.competition_id}-${r.event_name}-${r.gender}-${r.relay_ffn_result_id ?? "solo"}`;
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
 
-        if (r.relay_ffn_result_id) {
-          const { data: thisTeam } = await supabase
-            .from("swim_relay_teams")
-            .select("*")
-            .eq("competition_id", r.competition_id)
-            .eq("ffn_result_id", r.relay_ffn_result_id)
-            .maybeSingle();
-
-          if (thisTeam) {
-            const { data: allTeams } = await supabase
+          if (r.relay_ffn_result_id) {
+            const { data: thisTeam } = await supabase
               .from("swim_relay_teams")
-              .select(
-                "*, swim_relay_legs(position, swimmer_id, leg_time_ms, cumulative_time_ms, swimmers(full_name, club, gender))"
-              )
+              .select("*")
               .eq("competition_id", r.competition_id)
-              .eq("event_name", thisTeam.event_name)
-              .eq("gender", thisTeam.gender)
-              .order("team_time_ms", { ascending: true })
-              .limit(100);
+              .eq("ffn_result_id", r.relay_ffn_result_id)
+              .maybeSingle();
 
-            if (allTeams && allTeams.length > 0) {
-              relayFieldByKey[key] = { teams: allTeams, eventName: thisTeam.event_name };
+            if (thisTeam) {
+              const { data: allTeams } = await supabase
+                .from("swim_relay_teams")
+                .select(
+                  "*, swim_relay_legs(position, swimmer_id, leg_time_ms, cumulative_time_ms, swimmers(full_name, club, gender))"
+                )
+                .eq("competition_id", r.competition_id)
+                .eq("event_name", thisTeam.event_name)
+                .eq("gender", thisTeam.gender)
+                .order("team_time_ms", { ascending: true })
+                .limit(100);
+
+              if (allTeams && allTeams.length > 0) {
+                relayFieldByKey[key] = { teams: allTeams, eventName: thisTeam.event_name };
+              }
             }
+            continue;
           }
-          continue;
+
+          const { data: meetRows } = await supabase
+            .from("swim_results")
+            .select("*, swimmers(full_name, club, is_flagged)")
+            .eq("competition_id", r.competition_id)
+            .eq("event_name", r.event_name)
+            .eq("gender", r.gender)
+            .limit(300);
+
+          if (meetRows && meetRows.length > 1) {
+            meetRowsByKey[key] = meetRows;
+          }
         }
 
-        const { data: meetRows } = await supabase
-          .from("swim_results")
-          .select("*, swimmers(full_name, club, is_flagged)")
-          .eq("competition_id", r.competition_id)
-          .eq("event_name", r.event_name)
-          .eq("gender", r.gender)
-          .limit(300);
-
-        if (meetRows && meetRows.length > 1) {
-          meetRowsByKey[key] = meetRows;
-        }
+        performancesContent = (
+          <PerformancesTab
+            swimmerId={selectedSwimmerId}
+            results={results}
+            mppRows={mppRows}
+            view={view}
+            meetRowsByKey={meetRowsByKey}
+            relayFieldByKey={relayFieldByKey}
+          />
+        );
       }
     }
-
-    performancesContent = (
-      <PerformancesTab
-        swimmerId={selectedSwimmerId}
-        results={results}
-        mppRows={mppRows}
-        view={view}
-        meetRowsByKey={meetRowsByKey}
-        relayFieldByKey={relayFieldByKey}
-      />
-    );
   } else {
     const q = (searchParams?.q ?? "").trim();
     const hasQuery = q.length > 0;
@@ -704,6 +835,14 @@ export default async function NatationPage({ searchParams }) {
               }`}
             >
               Performances
+            </Link>
+            <Link
+              href={`/natation?tab=performances&view=graph&swimmer=${selectedSwimmerId ?? ""}`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                view === "graph" ? "bg-lagoon text-white" : "bg-white text-ink/50"
+              }`}
+            >
+              Graphique
             </Link>
           </div>
         </>
