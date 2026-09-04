@@ -75,12 +75,17 @@ function findIndividualRaceId(eventName, gender) {
 // dans le XML des résultats).
 async function lookupPoints(supabase, raceid, timeMs) {
   if (!raceid || timeMs == null) return null;
+  // Le barème associe à chaque valeur de points un temps de référence ; plus
+  // les points sont élevés, plus le temps est rapide. Le nageur obtient les
+  // points du palier qu'il a atteint ou dépassé : on cherche donc, parmi les
+  // temps de référence AU MOINS AUSSI LENTS que le sien (>=), le plus rapide
+  // d'entre eux (le palier le plus exigeant qu'il a rempli).
   const { data } = await supabase
     .from("swim_points_table")
     .select("points")
     .eq("raceid", raceid)
-    .lte("time_ms", timeMs)
-    .order("points", { ascending: false })
+    .gte("time_ms", timeMs)
+    .order("time_ms", { ascending: true })
     .limit(1);
   return data && data[0] ? data[0].points : null;
 }
