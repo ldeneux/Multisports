@@ -94,6 +94,8 @@ function MeetDetails({ rows, highlightSwimmerId }) {
   );
 }
 
+const GENDER_LABELS = { F: "Dames", M: "Messieurs", X: "Mixtes" };
+
 // Classement complet des ÉQUIPES d'une course de relais (garçons + filles
 // mélangés si le relais est mixte), triées par temps cumulé, avec pour
 // chaque relayeur son propre temps ET le temps cumulé de l'équipe à ce
@@ -145,20 +147,17 @@ function RelayFieldDetails({ teams, highlightSwimmerId }) {
 
 // Une ligne compacte pour une performance (utilisée par les deux vues).
 function ResultRow({ r, showEventName, meetRowsByKey, relayFieldByKey, swimmerId, striped }) {
-  const key = `${r.competition_id}-${r.event_name}-${r.gender}`;
+  const key = `${r.competition_id}-${r.event_name}-${r.gender}-${r.relay_ffn_result_id ?? "solo"}`;
   const relayField = relayFieldByKey[key];
   const meetRows = relayField ? null : meetRowsByKey[key];
   const expandable = !!relayField || !!meetRows;
   const count = relayField ? relayField.teams.length : meetRows?.length ?? 0;
 
-  // Le temps a été pris comme 1er relayeur (départ plongé d'un relais,
-  // compté comme performance individuelle équivalente) dès que la ligne a
-  // un relay_ffn_result_id — indépendamment du fait que le détail par
-  // équipe (relayField) ait pu être chargé ou non.
-  const isRelayLeadoff = !!r.relay_ffn_result_id;
-  const cityLabel = `${r.swim_competitions?.city ?? r.swim_competitions?.name ?? ""}${
-    isRelayLeadoff ? " (RELAIS)" : ""
-  }`;
+  const cityLabel = relayField
+    ? `${r.swim_competitions?.city ?? r.swim_competitions?.name ?? ""} (${relayField.eventName}${
+        r.gender ? ` ${GENDER_LABELS[r.gender] ?? ""}` : ""
+      })`
+    : r.swim_competitions?.city ?? r.swim_competitions?.name ?? "";
 
   const rowContent = (
     <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
@@ -542,7 +541,7 @@ export default async function NatationPage({ searchParams }) {
       const rowsToExpand = view === "mpp" ? mppRows : results;
       const seenKeys = new Set();
       for (const r of rowsToExpand) {
-        const key = `${r.competition_id}-${r.event_name}-${r.gender}`;
+        const key = `${r.competition_id}-${r.event_name}-${r.gender}-${r.relay_ffn_result_id ?? "solo"}`;
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
 
