@@ -57,6 +57,34 @@ function resolveRace(raceId) {
   return { eventName: `Épreuve ${raceId}`, gender: null };
 }
 
+// Sens inverse : retrouve le raceid d'une épreuve INDIVIDUELLE à partir de
+// son nom + genre — nécessaire pour chercher les points d'un 1er relayeur
+// dans la table de cotation (indexée par raceid individuel).
+function findIndividualRaceId(eventName, gender) {
+  const table = gender === "F" ? DAMES_RACES : gender === "M" ? MESSIEURS_RACES : null;
+  if (!table) return null;
+  for (const [id, name] of Object.entries(table)) {
+    if (name === eventName) return id;
+  }
+  return null;
+}
+
+// Table de cotation officielle FFN (temps -> points), importée depuis le
+// fichier CSV fourni par la FFN. Utilisée uniquement quand la FFN elle-même
+// ne donne pas de points (cas du 1er relayeur, qui n'a pas de points direct
+// dans le XML des résultats).
+async function lookupPoints(supabase, raceid, timeMs) {
+  if (!raceid || timeMs == null) return null;
+  const { data } = await supabase
+    .from("swim_points_table")
+    .select("points")
+    .eq("raceid", raceid)
+    .lte("time_ms", timeMs)
+    .order("points", { ascending: false })
+    .limit(1);
+  return data && data[0] ? data[0].points : null;
+}
+
 const DQ_LABELS = {
   "1": "Forfait excusé", "2": "Forfait déclaré", "3": "Disqualifié (relais)", "4": "Forfait",
   "6": "Disqualifié", "7": "Faux départ", "8": "Virage incorrect", "9": "Nage incorrecte",
@@ -249,6 +277,8 @@ export async function syncClubCompetitions(formData) {
       });
 
       const resultRows = [];
+      const relayTeamRows = [];
+      const pendingLeadoffs = [];
       $("RESULT").each((_, el) => {
         const $el = $(el);
         const solo = $el.children("SOLO").first();
@@ -276,33 +306,36 @@ export async function syncClubCompetitions(formData) {
           return;
         }
 
-        // Relais : le 1er relayeur part comme dans une épreuve individuelle
-        // (départ plongé, pas de prise de relais). Son temps sur le premier
-        // relais compte donc comme une performance individuelle à part
-        // entière — exactement ce que fait le site FFN lui-même (une
-        // finale 4x50 Nage Libre donne un 50 Nage Libre individuel au 1er
+        // Relais : on capture l'équipe complète (pour le classement affiché
+        // au clic sur l'étoile) ET, pour le 1er relayeur, sa performance
+        // individuelle équivalente (départ plongé, comme une épreuve
+        // classique — exactement ce que fait le site FFN : une finale
+        // 4x50 Nage Libre donne un 50 Nage Libre individuel au 1er
         // relayeur). Les autres relayeurs (prise de relais, pas de départ
-        // plongé) ne sont pas concernés.
+        // plongé) ne comptent pas comme performance individuelle.
         const relay = $el.children("RELAY").first();
         if (relay.length === 0) return;
 
-        const leadoff = relay.find('RELAYPOSITION[number="1"]').first();
-        if (leadoff.length === 0) return;
+        const positions = relay
+          .find("RELAYPOSITION")
+          .toArray()
+          .map((p) => ({
+            number: parseInt($(p).attr("number"), 10),
+            swimmerId: $(p).attr("swimmerid"),
+          }))
+          .filter((p) => p.swimmerId && swimmersById[p.swimmerId]);
 
-        const leadoffSwimmerId = leadoff.attr("swimmerid");
-        if (!leadoffSwimmerId || !swimmersById[leadoffSwimmerId]) return;
+        const splitEls = $el
+          .children("SPLITS")
+          .find("SPLIT")
+          .toArray()
+          .map((sp) => ({
+            distance: parseInt($(sp).attr("distance"), 10),
+            cumulativeMs: parseSwimtimeAttr($(sp).attr("swimtime")),
+          }))
+          .sort((a, b) => a.distance - b.distance);
 
-        const splitEls = $el.children("SPLITS").find("SPLIT").toArray();
-        if (splitEls.length === 0) return;
-
-        let firstSplit = null;
-        for (const sp of splitEls) {
-          const d = parseInt($(sp).attr("distance"), 10);
-          if (!firstSplit || d < firstSplit.distance) {
-            firstSplit = { distance: d, time: $(sp).attr("swimtime") };
-          }
-        }
-        if (!firstSplit) return;
+        if (positions.length === 0 || splitEls.length === 0) return;
 
         const raceId = $el.attr("raceid");
         const relayInfo = resolveRace(raceId);
@@ -310,24 +343,64 @@ export async function syncClubCompetitions(formData) {
         // Ordre officiel d'un relais 4 Nages : Dos, Brasse, Papillon, Nage
         // Libre — le 1er relayeur nage donc le Dos. Un relais Nage Libre
         // est nagé en Nage Libre par tout le monde.
-        const stroke = isMedley ? "Dos" : "Nage Libre";
-        const swimmerGender = swimmersById[leadoffSwimmerId].gender;
-        const time_ms = parseSwimtimeAttr(firstSplit.time);
+        const leadoffStroke = isMedley ? "Dos" : "Nage Libre";
 
+        const legs = positions.map((p) => {
+          const split = splitEls[p.number - 1];
+          const prevMs = p.number === 1 ? 0 : splitEls[p.number - 2]?.cumulativeMs ?? null;
+          const legTimeMs =
+            split?.cumulativeMs != null && prevMs != null ? split.cumulativeMs - prevMs : null;
+          return {
+            position: p.number,
+            swimmerId: p.swimmerId,
+            legTimeMs,
+            cumulativeMs: split?.cumulativeMs ?? null,
+          };
+        });
+
+        relayTeamRows.push({
+          ffnResultId: $el.attr("id"),
+          eventName: relayInfo.eventName,
+          gender: relayInfo.gender,
+          clubId: $el.attr("clubid"),
+          teamTimeMs: parseSwimtimeAttr($el.attr("swimtime")),
+          place: $el.attr("place") && $el.attr("place") !== "999" ? $el.attr("place") : null,
+          points: $el.attr("points") ? parseInt($el.attr("points"), 10) : null,
+          legs,
+        });
+
+        const leadoff = legs.find((l) => l.position === 1);
+        const firstSplit = splitEls[0];
+        if (leadoff && firstSplit && leadoff.legTimeMs != null) {
+          pendingLeadoffs.push({
+            ffnResultId: `${$el.attr("id")}-relais1`,
+            swimmerId: leadoff.swimmerId,
+            eventName: `${firstSplit.distance} ${leadoffStroke}`,
+            gender: swimmersById[leadoff.swimmerId].gender,
+            time_ms: leadoff.legTimeMs,
+            relayFfnResultId: $el.attr("id"),
+          });
+        }
+      });
+
+      // La FFN calcule les points d'un 1er relayeur via sa table de cotation
+      // officielle (pas de points direct dans le XML des résultats) — on la
+      // consulte ici, après le parsing synchrone ci-dessus.
+      for (const p of pendingLeadoffs) {
+        const individualRaceId = findIndividualRaceId(p.eventName, p.gender);
+        const points = await lookupPoints(supabase, individualRaceId, p.time_ms);
         resultRows.push({
-          ffnResultId: `${$el.attr("id")}-relais1`,
-          swimmerId: leadoffSwimmerId,
-          eventName: `${firstSplit.distance} ${stroke}`,
-          gender: swimmerGender,
-          time_ms,
-          // La FFN calcule ses propres points pour ce cas ; on ne dispose
-          // pas de sa table de cotation, donc pas de points ici plutôt
-          // qu'un chiffre inventé.
+          ffnResultId: p.ffnResultId,
+          swimmerId: p.swimmerId,
+          eventName: p.eventName,
+          gender: p.gender,
+          time_ms: p.time_ms,
           time_label: null,
           place: null,
-          points: null,
+          points,
+          relayFfnResultId: p.relayFfnResultId,
         });
-      });
+      }
 
       // Écritures en LOT plutôt qu'une par une : avec ~100-150 résultats par
       // compétition, faire un aller-retour base de données par ligne prenait
@@ -365,6 +438,7 @@ export async function syncClubCompetitions(formData) {
             time_ms: row.time_ms,
             time_label: row.time_label,
             points: row.points,
+            relay_ffn_result_id: row.relayFfnResultId ?? null,
           };
         })
         .filter(Boolean);
@@ -379,6 +453,62 @@ export async function syncClubCompetitions(formData) {
           );
         }
         resultsWritten += resultPayload.length;
+      }
+
+      // Équipes de relais (classement complet, tous clubs) + leurs relayeurs.
+      if (relayTeamRows.length > 0) {
+        const teamPayload = relayTeamRows.map((t) => ({
+          competition_id: compRow.id,
+          ffn_result_id: t.ffnResultId,
+          event_name: t.eventName,
+          gender: t.gender,
+          club: clubsById[t.clubId] || null,
+          ffn_club_id: t.clubId || null,
+          team_time_ms: t.teamTimeMs,
+          place: t.place,
+          points: t.points,
+        }));
+
+        const { data: upsertedTeams, error: teamsError } = await supabase
+          .from("swim_relay_teams")
+          .upsert(teamPayload, { onConflict: "competition_id,ffn_result_id" })
+          .select();
+        if (teamsError) {
+          throw new Error(
+            `Écriture équipes de relais impossible (${teamsError.message}). As-tu bien joué le script 13-natation-relay-teams.sql ?`
+          );
+        }
+
+        const teamUuidByFfnId = {};
+        (upsertedTeams ?? []).forEach((t) => {
+          teamUuidByFfnId[t.ffn_result_id] = t.id;
+        });
+
+        const legPayload = [];
+        relayTeamRows.forEach((t) => {
+          const teamUuid = teamUuidByFfnId[t.ffnResultId];
+          if (!teamUuid) return;
+          t.legs.forEach((leg) => {
+            const swimmerUuid = swimmerUuidByFfnId[leg.swimmerId];
+            if (!swimmerUuid) return;
+            legPayload.push({
+              relay_team_id: teamUuid,
+              position: leg.position,
+              swimmer_id: swimmerUuid,
+              leg_time_ms: leg.legTimeMs,
+              cumulative_time_ms: leg.cumulativeMs,
+            });
+          });
+        });
+
+        if (legPayload.length > 0) {
+          const { error: legsError } = await supabase
+            .from("swim_relay_legs")
+            .upsert(legPayload, { onConflict: "relay_team_id,position" });
+          if (legsError) {
+            throw new Error(`Écriture relayeurs impossible (${legsError.message}).`);
+          }
+        }
       }
     }
 
