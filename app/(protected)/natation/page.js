@@ -94,11 +94,70 @@ function MeetDetails({ rows, highlightSwimmerId }) {
   );
 }
 
+const GENDER_LABELS = { F: "Dames", M: "Messieurs", X: "Mixtes" };
+
+// Classement complet des ÉQUIPES d'une course de relais (garçons + filles
+// mélangés si le relais est mixte), triées par temps cumulé, avec pour
+// chaque relayeur son propre temps ET le temps cumulé de l'équipe à ce
+// stade.
+function RelayFieldDetails({ teams, highlightSwimmerId }) {
+  return (
+    <div className="space-y-2 bg-navy/5 px-4 py-2">
+      {teams.map((team, i) => (
+        <div key={team.id} className="rounded-lg bg-white p-2 text-xs shadow-sm">
+          <div className="flex items-center justify-between font-semibold text-ink">
+            <span>
+              {i + 1}. {team.club ?? "Club inconnu"}
+            </span>
+            <span className="font-display text-sm text-navy">
+              {team.team_time_ms != null ? msToSwimTime(team.team_time_ms) : "—"}
+              {team.points ? ` · ${team.points}p` : ""}
+            </span>
+          </div>
+          <div className="mt-1 space-y-0.5">
+            {(team.swim_relay_legs ?? [])
+              .slice()
+              .sort((a, b) => a.position - b.position)
+              .map((leg) => (
+                <div
+                  key={leg.position}
+                  className={`flex items-center justify-between px-1 ${
+                    leg.swimmers && highlightSwimmerId && leg.swimmer_id === highlightSwimmerId
+                      ? "font-semibold text-cardinal-dark"
+                      : "text-ink/60"
+                  }`}
+                >
+                  <span>
+                    {leg.position}. {leg.swimmers?.full_name ?? "?"}
+                  </span>
+                  <span className="flex gap-3 font-display">
+                    <span>{leg.leg_time_ms != null ? msToSwimTime(leg.leg_time_ms) : "—"}</span>
+                    <span className="text-ink/40">
+                      ({leg.cumulative_time_ms != null ? msToSwimTime(leg.cumulative_time_ms) : "—"})
+                    </span>
+                  </span>
+                </div>
+              ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Une ligne compacte pour une performance (utilisée par les deux vues).
-function ResultRow({ r, showEventName, meetRowsByKey, swimmerId, striped }) {
+function ResultRow({ r, showEventName, meetRowsByKey, relayFieldByKey, swimmerId, striped }) {
   const key = `${r.competition_id}-${r.event_name}-${r.gender}`;
-  const meetRows = meetRowsByKey[key];
-  const expandable = !!meetRows;
+  const relayField = relayFieldByKey[key];
+  const meetRows = relayField ? null : meetRowsByKey[key];
+  const expandable = !!relayField || !!meetRows;
+  const count = relayField ? relayField.teams.length : meetRows?.length ?? 0;
+
+  const cityLabel = relayField
+    ? `${r.swim_competitions?.city ?? r.swim_competitions?.name ?? ""} (${relayField.eventName}${
+        r.gender ? ` ${GENDER_LABELS[r.gender] ?? ""}` : ""
+      })`
+    : r.swim_competitions?.city ?? r.swim_competitions?.name ?? "";
 
   const rowContent = (
     <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
@@ -106,9 +165,7 @@ function ResultRow({ r, showEventName, meetRowsByKey, swimmerId, striped }) {
       <span className="w-24 shrink-0 text-right font-display text-lg text-navy">
         {r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label ?? "—"}
       </span>
-      <span className="hidden flex-1 truncate text-xs text-ink/50 sm:block">
-        {r.swim_competitions?.city ?? r.swim_competitions?.name ?? ""}
-      </span>
+      <span className="hidden flex-1 truncate text-xs text-ink/50 sm:block">{cityLabel}</span>
       <span className="shrink-0 text-xs text-ink/50">
         {r.swim_competitions?.competition_date
           ? formatDate(r.swim_competitions.competition_date, { weekday: false })
@@ -118,7 +175,7 @@ function ResultRow({ r, showEventName, meetRowsByKey, swimmerId, striped }) {
         {r.points ? `${r.points}p` : ""}
       </span>
       {expandable ? (
-        <span className="shrink-0 text-xs font-semibold text-cardinal">⭐ {meetRows.length}</span>
+        <span className="shrink-0 text-xs font-semibold text-cardinal">⭐ {count}</span>
       ) : (
         <span className="w-8 shrink-0" />
       )}
@@ -127,18 +184,24 @@ function ResultRow({ r, showEventName, meetRowsByKey, swimmerId, striped }) {
 
   const bg = striped ? "bg-lagoon-light/40" : "bg-white";
 
-  return expandable ? (
+  if (!expandable) {
+    return <div className={bg}>{rowContent}</div>;
+  }
+
+  return (
     <details className={bg}>
       {rowContent}
-      <MeetDetails rows={meetRows} highlightSwimmerId={swimmerId} />
+      {relayField ? (
+        <RelayFieldDetails teams={relayField.teams} highlightSwimmerId={swimmerId} />
+      ) : (
+        <MeetDetails rows={meetRows} highlightSwimmerId={swimmerId} />
+      )}
     </details>
-  ) : (
-    <div className={bg}>{rowContent}</div>
   );
 }
 
 // Vue MPP : une ligne par épreuve, groupée par bassin.
-function MppTable({ rows, meetRowsByKey, swimmerId }) {
+function MppTable({ rows, meetRowsByKey, relayFieldByKey, swimmerId }) {
   const byPool = {};
   rows.forEach((r) => {
     const pool = r.swim_competitions?.pool_length ?? r.pool_length ?? "?";
@@ -163,6 +226,7 @@ function MppTable({ rows, meetRowsByKey, swimmerId }) {
                 r={r}
                 showEventName
                 meetRowsByKey={meetRowsByKey}
+                relayFieldByKey={relayFieldByKey}
                 swimmerId={swimmerId}
                 striped={i % 2 === 0}
               />
@@ -177,7 +241,7 @@ function MppTable({ rows, meetRowsByKey, swimmerId }) {
 // Vue Performances (historique complet) : groupée par bassin PUIS par
 // épreuve, chaque groupe d'épreuve trié chronologiquement — pour suivre la
 // progression au fil des compétitions plutôt qu'une liste en vrac.
-function PerformancesByEvent({ results, meetRowsByKey, swimmerId }) {
+function PerformancesByEvent({ results, meetRowsByKey, relayFieldByKey, swimmerId }) {
   const byPool = {};
   results.forEach((r) => {
     const pool = r.swim_competitions?.pool_length ?? r.pool_length ?? "?";
@@ -218,6 +282,7 @@ function PerformancesByEvent({ results, meetRowsByKey, swimmerId }) {
                         r={r}
                         showEventName={false}
                         meetRowsByKey={meetRowsByKey}
+                        relayFieldByKey={relayFieldByKey}
                         swimmerId={swimmerId}
                         striped={i % 2 === 0}
                       />
@@ -232,7 +297,7 @@ function PerformancesByEvent({ results, meetRowsByKey, swimmerId }) {
   );
 }
 
-function PerformancesTab({ swimmerId, results, mppRows, view, meetRowsByKey }) {
+function PerformancesTab({ swimmerId, results, mppRows, view, meetRowsByKey, relayFieldByKey }) {
   if (!swimmerId) {
     return (
       <p className="rounded-card bg-white p-8 text-center text-ink/60 shadow-sm">
@@ -251,9 +316,19 @@ function PerformancesTab({ swimmerId, results, mppRows, view, meetRowsByKey }) {
   }
 
   return view === "mpp" ? (
-    <MppTable rows={mppRows} meetRowsByKey={meetRowsByKey} swimmerId={swimmerId} />
+    <MppTable
+      rows={mppRows}
+      meetRowsByKey={meetRowsByKey}
+      relayFieldByKey={relayFieldByKey}
+      swimmerId={swimmerId}
+    />
   ) : (
-    <PerformancesByEvent results={results} meetRowsByKey={meetRowsByKey} swimmerId={swimmerId} />
+    <PerformancesByEvent
+      results={results}
+      meetRowsByKey={meetRowsByKey}
+      relayFieldByKey={relayFieldByKey}
+      swimmerId={swimmerId}
+    />
   );
 }
 
@@ -430,6 +505,7 @@ export default async function NatationPage({ searchParams }) {
     let results = [];
     let mppRows = [];
     const meetRowsByKey = {};
+    const relayFieldByKey = {};
 
     if (selectedSwimmerId) {
       const { data: resultRows } = await supabase
@@ -443,23 +519,58 @@ export default async function NatationPage({ searchParams }) {
       for (const r of results) {
         const key = `${r.distance_m}-${r.stroke}-${r.swim_competitions?.pool_length ?? r.pool_length}`;
         if (r.time_ms == null) continue;
-        if (!best[key] || r.time_ms < best[key].time_ms) best[key] = r;
+        const current = best[key];
+        if (!current || r.time_ms < current.time_ms) {
+          best[key] = r;
+        } else if (r.time_ms === current.time_ms && current.points == null && r.points != null) {
+          // Deux lignes à temps identique (ex. doublon issu d'anciennes
+          // synchros) : on garde celle qui a des points renseignés.
+          best[key] = r;
+        }
       }
       mppRows = Object.values(best).sort((a, b) => (a.distance_m ?? 0) - (b.distance_m ?? 0));
 
       // Pour chaque ligne réellement affichée (pas toutes ses performances,
       // juste celles de la vue courante), on va chercher le classement
-      // complet de CETTE épreuve précise dans CETTE compétition précise —
-      // requête ciblée (une compétition + une épreuve + un genre = ~150
-      // lignes max), plutôt qu'une grosse requête globale qui dépassait la
-      // limite de 1000 lignes de Supabase et tronquait silencieusement les
-      // résultats.
+      // complet — soit individuel (une compétition + une épreuve + un genre
+      // = ~150 lignes max), soit, pour les performances issues d'un 1er
+      // relayeur, le classement complet des ÉQUIPES de la course de relais.
+      // Requêtes ciblées plutôt qu'une grosse requête globale qui dépassait
+      // la limite de 1000 lignes de Supabase et tronquait silencieusement
+      // les résultats.
       const rowsToExpand = view === "mpp" ? mppRows : results;
       const seenKeys = new Set();
       for (const r of rowsToExpand) {
         const key = `${r.competition_id}-${r.event_name}-${r.gender}`;
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
+
+        if (r.relay_ffn_result_id) {
+          const { data: thisTeam } = await supabase
+            .from("swim_relay_teams")
+            .select("*")
+            .eq("competition_id", r.competition_id)
+            .eq("ffn_result_id", r.relay_ffn_result_id)
+            .maybeSingle();
+
+          if (thisTeam) {
+            const { data: allTeams } = await supabase
+              .from("swim_relay_teams")
+              .select(
+                "*, swim_relay_legs(position, swimmer_id, leg_time_ms, cumulative_time_ms, swimmers(full_name, club, gender))"
+              )
+              .eq("competition_id", r.competition_id)
+              .eq("event_name", thisTeam.event_name)
+              .eq("gender", thisTeam.gender)
+              .order("team_time_ms", { ascending: true })
+              .limit(100);
+
+            if (allTeams && allTeams.length > 0) {
+              relayFieldByKey[key] = { teams: allTeams, eventName: thisTeam.event_name };
+            }
+          }
+          continue;
+        }
 
         const { data: meetRows } = await supabase
           .from("swim_results")
@@ -482,6 +593,7 @@ export default async function NatationPage({ searchParams }) {
         mppRows={mppRows}
         view={view}
         meetRowsByKey={meetRowsByKey}
+        relayFieldByKey={relayFieldByKey}
       />
     );
   } else {
