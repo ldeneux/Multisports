@@ -7,9 +7,6 @@ import { createClient } from "@/lib/supabase/client";
 const LINKS = [
   { href: "/basket", label: "Basket" },
   { href: "/natation", label: "Natation" },
-  { href: "/course-a-pied", label: "Course à pied" },
-  { href: "/triathlon", label: "Triathlon" },
-  { href: "/plongee", label: "Plongée" },
   { href: "/autres-sports", label: "Autres sports" },
   { href: "/documents", label: "Documents" },
   { href: "/parametres", label: "Paramètres" },
