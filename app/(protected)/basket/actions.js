@@ -89,6 +89,32 @@ export async function deleteMatch(formData) {
   revalidatePath("/basket");
 }
 
+// Supprime UNIQUEMENT les matchs et le classement de la saison EN COURS
+// pour ce participant. La saison en cours est recalculée ici, côté serveur
+// — jamais lue depuis le formulaire — pour qu'il soit impossible de
+// réinitialiser une saison passée par erreur : l'engagement FFBB change
+// chaque année, une archive supprimée ne peut plus jamais être
+// resynchronisée.
+export async function resetCurrentSeason(formData) {
+  const supabase = createClient();
+  const participantSportId = formData.get("participant_sport_id");
+  const currentSeason = computeCurrentSeasonLabel();
+
+  await supabase
+    .from("basketball_matches")
+    .delete()
+    .eq("participant_sport_id", participantSportId)
+    .eq("season", currentSeason);
+
+  await supabase
+    .from("basketball_classements")
+    .delete()
+    .eq("participant_sport_id", participantSportId)
+    .eq("season", currentSeason);
+
+  revalidatePath("/basket");
+}
+
 // ---- ID FFBB manuel --------------------------------------------------------
 
 export async function updateFfbbId(formData) {
