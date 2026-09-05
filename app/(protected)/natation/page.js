@@ -2,7 +2,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
-import { SwimRadarChart, SwimPercentileTrendChart } from "@/components/SwimCharts";
+import { SwimRadarChart, SwimPercentileTrendChart, SwimScatterChart, SwimTimeTrendChart } from "@/components/SwimCharts";
 import { syncClubCompetitions, toggleSwimmerFlag } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -568,10 +568,176 @@ function GraphiqueTab({ swimmerLabel, radarData, trendSeries }) {
   );
 }
 
+// Regroupe les épreuves déjà nagées par au moins une nageuse suivie, pour
+// construire le sélecteur "nage" de l'onglet Suivi. Le bassin n'est ajouté
+// au libellé que si la même épreuve existe pour plusieurs longueurs de
+// bassin (sinon c'est juste du bruit visuel).
+function buildNageOptions(rows) {
+  const byKey = new Map();
+  for (const r of rows ?? []) {
+    if (!r.event_name || !r.gender || !r.pool_length) continue;
+    const key = `${r.event_name}|${r.gender}|${r.pool_length}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        key,
+        eventName: r.event_name,
+        gender: r.gender,
+        poolLength: r.pool_length,
+        distanceM: r.distance_m,
+        stroke: r.stroke,
+      });
+    }
+  }
+
+  const options = [...byKey.values()];
+  const countByEventGender = new Map();
+  for (const o of options) {
+    const k = `${o.eventName}|${o.gender}`;
+    countByEventGender.set(k, (countByEventGender.get(k) ?? 0) + 1);
+  }
+
+  return options
+    .map((o) => ({
+      ...o,
+      label:
+        countByEventGender.get(`${o.eventName}|${o.gender}`) > 1
+          ? `${o.eventName} (${o.poolLength}m)`
+          : o.eventName,
+    }))
+    .sort(
+      (a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0) || (a.stroke ?? "").localeCompare(b.stroke ?? "")
+    );
+}
+
+// Pour une épreuve donnée : le classement complet (meilleur temps de chaque
+// nageuse ayant déjà nagé cette épreuve, tous clubs confondus) pour le
+// nuage de points, + la progression de chaque nageuse SUIVIE pour la
+// courbe d'évolution.
+async function buildSuiviData(supabase, nage, followedSwimmers) {
+  const { data: fieldRows } = await supabase
+    .from("swim_results")
+    .select("swimmer_id, time_ms, swimmers(full_name, is_flagged, club)")
+    .eq("event_name", nage.eventName)
+    .eq("gender", nage.gender)
+    .eq("pool_length", nage.poolLength)
+    .not("time_ms", "is", null)
+    .limit(1000);
+
+  const bestBySwimmer = new Map();
+  for (const row of fieldRows ?? []) {
+    const current = bestBySwimmer.get(row.swimmer_id);
+    if (!current || row.time_ms < current.timeMs) {
+      bestBySwimmer.set(row.swimmer_id, {
+        swimmerId: row.swimmer_id,
+        timeMs: row.time_ms,
+        fullName: row.swimmers?.full_name,
+        club: row.swimmers?.club,
+        isFlagged: row.swimmers?.is_flagged,
+      });
+    }
+  }
+
+  const scatterPoints = [...bestBySwimmer.values()]
+    .sort((a, b) => a.timeMs - b.timeMs)
+    .map((s, i) => ({ ...s, rank: i + 1 }));
+
+  const avgTime =
+    scatterPoints.length > 0 ? scatterPoints.reduce((sum, s) => sum + s.timeMs, 0) / scatterPoints.length : null;
+  const rank1Time = scatterPoints[0]?.timeMs ?? null;
+  const rank3Time = scatterPoints[2]?.timeMs ?? null;
+
+  const trendSeries = [];
+  for (const sw of followedSwimmers) {
+    const { data: rows } = await supabase
+      .from("swim_results")
+      .select("time_ms, swim_competitions(competition_date)")
+      .eq("swimmer_id", sw.id)
+      .eq("event_name", nage.eventName)
+      .eq("gender", nage.gender)
+      .eq("pool_length", nage.poolLength)
+      .not("time_ms", "is", null);
+
+    const points = (rows ?? [])
+      .filter((r) => r.swim_competitions?.competition_date)
+      .map((r) => ({ date: r.swim_competitions.competition_date, time_ms: r.time_ms }))
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    if (points.length > 0) {
+      trendSeries.push({ label: sw.full_name, points });
+    }
+  }
+
+  return { scatterPoints, avgTime, rank1Time, rank3Time, trendSeries };
+}
+
+function SuiviTab({ nageOptions, selectedNage, scatterPoints, avgTime, rank1Time, rank3Time, trendSeries }) {
+  if (nageOptions.length === 0) {
+    return (
+      <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+        Aucune performance synchronisée pour tes nageuses suivies pour l'instant — reviens après quelques
+        compétitions de plus.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {nageOptions.map((o) => (
+          <Link
+            key={o.key}
+            href={`/natation?tab=suivi&nage=${encodeURIComponent(o.key)}`}
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              o.key === selectedNage?.key ? "bg-cardinal text-white" : "bg-white text-ink/50 hover:text-ink"
+            }`}
+          >
+            {o.label}
+          </Link>
+        ))}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-card bg-white p-5 shadow-sm">
+          <p className="font-display text-sm uppercase tracking-tight text-navy">
+            Positionnement — {selectedNage?.label}
+          </p>
+          <p className="mt-1 text-xs text-ink/50">
+            Chaque point = la meilleure performance d'une nageuse sur cette épreuve. En rouge, tes nageuses
+            suivies.
+          </p>
+          <div className="mt-3">
+            <SwimScatterChart points={scatterPoints} />
+          </div>
+        </div>
+
+        <div className="rounded-card bg-white p-5 shadow-sm">
+          <p className="font-display text-sm uppercase tracking-tight text-navy">
+            Évolution — {selectedNage?.label}
+          </p>
+          <p className="mt-1 text-xs text-ink/50">
+            Temps au fil de la saison, avec la moyenne du champ et les temps des N°1 et N°3.
+          </p>
+          <div className="mt-3">
+            <SwimTimeTrendChart
+              series={trendSeries}
+              referenceLines={[
+                avgTime != null ? { label: "Moyenne", time_ms: avgTime, color: "#0B2545", dashed: true } : null,
+                rank1Time != null ? { label: "N°1", time_ms: rank1Time, color: "#E08E1D", dashed: true } : null,
+                rank3Time != null ? { label: "N°3", time_ms: rank3Time, color: "#1E88C7", dashed: true } : null,
+              ].filter(Boolean)}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default async function NatationPage({ searchParams }) {
   const supabase = createClient();
 
-  const tab = searchParams?.tab === "participants" ? "participants" : "performances";
+  const tab =
+    searchParams?.tab === "participants" ? "participants" : searchParams?.tab === "suivi" ? "suivi" : "performances";
   const view =
     searchParams?.view === "all" ? "all" : searchParams?.view === "graph" ? "graph" : "mpp";
 
@@ -590,6 +756,7 @@ export default async function NatationPage({ searchParams }) {
 
   let performancesContent = null;
   let participantsContent = null;
+  let suiviContent = null;
   let swimmerOptions = [];
   let selectedSwimmerId = null;
 
@@ -727,6 +894,56 @@ export default async function NatationPage({ searchParams }) {
         );
       }
     }
+  } else if (tab === "suivi") {
+    const { data: followedSwimmers } = await supabase
+      .from("swimmers")
+      .select("*")
+      .eq("is_flagged", true)
+      .order("full_name");
+
+    const followed = followedSwimmers ?? [];
+
+    if (followed.length === 0) {
+      suiviContent = (
+        <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+          Aucune nageuse suivie pour l'instant — va dans l'onglet Participants pour en suivre une.
+        </div>
+      );
+    } else {
+      const { data: followedResults } = await supabase
+        .from("swim_results")
+        .select("event_name, gender, pool_length, distance_m, stroke")
+        .in(
+          "swimmer_id",
+          followed.map((s) => s.id)
+        )
+        .not("event_name", "is", null);
+
+      const nageOptions = buildNageOptions(followedResults);
+      const selectedNageKey = searchParams?.nage || nageOptions[0]?.key || null;
+      const selectedNage = nageOptions.find((o) => o.key === selectedNageKey) ?? nageOptions[0] ?? null;
+
+      if (selectedNage) {
+        const { scatterPoints, avgTime, rank1Time, rank3Time, trendSeries } = await buildSuiviData(
+          supabase,
+          selectedNage,
+          followed
+        );
+        suiviContent = (
+          <SuiviTab
+            nageOptions={nageOptions}
+            selectedNage={selectedNage}
+            scatterPoints={scatterPoints}
+            avgTime={avgTime}
+            rank1Time={rank1Time}
+            rank3Time={rank3Time}
+            trendSeries={trendSeries}
+          />
+        );
+      } else {
+        suiviContent = <SuiviTab nageOptions={[]} selectedNage={null} scatterPoints={[]} trendSeries={[]} />;
+      }
+    }
   } else {
     const q = (searchParams?.q ?? "").trim();
     const hasQuery = q.length > 0;
@@ -797,6 +1014,14 @@ export default async function NatationPage({ searchParams }) {
         >
           Participants
         </Link>
+        <Link
+          href="/natation?tab=suivi"
+          className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
+            tab === "suivi" ? "bg-navy text-white" : "bg-white text-ink/60"
+          }`}
+        >
+          Suivi
+        </Link>
       </div>
 
       {tab === "performances" && (
@@ -848,7 +1073,7 @@ export default async function NatationPage({ searchParams }) {
         </>
       )}
 
-      {tab === "performances" ? performancesContent : participantsContent}
+      {tab === "performances" ? performancesContent : tab === "suivi" ? suiviContent : participantsContent}
     </div>
   );
 }
