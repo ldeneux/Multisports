@@ -3,10 +3,12 @@ import { createClient } from "@/lib/supabase/server";
 import { formatDateTime, ffbbAssetUrl, computeCurrentSeasonLabel } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
 import SeasonSelect from "@/components/SeasonSelect";
+import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import {
   addMatch,
   recordScore,
   deleteMatch,
+  resetCurrentSeason,
   updateFfbbId,
   syncFfbbMatches,
 } from "./actions";
@@ -248,7 +250,21 @@ function MatchCard({ m, clubName }) {
   );
 }
 
-function CalendrierTab({ matches, journeeOptions, selectedJournee, participantSportId, tab, scope, clubName }) {
+function journeeLabel(value) {
+  return Number.isNaN(Number(value)) ? value : `${value}${value === "1" ? "re" : "e"} journée`;
+}
+
+function CalendrierTab({
+  matches,
+  journeeOptions,
+  selectedJournee,
+  participantSportId,
+  tab,
+  scope,
+  season,
+  journeesMode,
+  clubName,
+}) {
   if (matches.length === 0) {
     return (
       <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
@@ -259,55 +275,109 @@ function CalendrierTab({ matches, journeeOptions, selectedJournee, participantSp
     );
   }
 
-  const journeeMatches = selectedJournee
-    ? matches.filter((m) => m.numero_journee === selectedJournee)
-    : matches;
+  const baseParams = `ps=${participantSportId}&tab=${tab}&scope=${scope}&season=${encodeURIComponent(season)}`;
+  const journeeHref = (j) => `/basket?${baseParams}&journees=une&journee=${encodeURIComponent(j)}`;
+  const toutesHref = `/basket?${baseParams}&journees=toutes`;
+  const uneHref = `/basket?${baseParams}&journees=une&journee=${encodeURIComponent(selectedJournee ?? "")}`;
+
   const currentIndex = journeeOptions.indexOf(selectedJournee);
   const prevJournee = currentIndex > 0 ? journeeOptions[currentIndex - 1] : null;
   const nextJournee =
     currentIndex >= 0 && currentIndex < journeeOptions.length - 1 ? journeeOptions[currentIndex + 1] : null;
 
   const undated = matches.filter((m) => !m.numero_journee);
+  const showAll = journeesMode === "toutes";
 
-  const journeeHref = (j) =>
-    `/basket?ps=${participantSportId}&tab=${tab}&scope=${scope}&journee=${encodeURIComponent(j)}`;
+  // journée par journée, dans l'ordre — utilisé seulement en mode "toutes".
+  const byJournee = journeeOptions.map((j) => ({
+    journee: j,
+    rows: matches.filter((m) => m.numero_journee === j),
+  }));
+
+  const journeeMatches = !showAll && selectedJournee ? matches.filter((m) => m.numero_journee === selectedJournee) : [];
 
   return (
     <div className="space-y-4">
       {journeeOptions.length > 0 && (
-        <div className="flex items-center justify-center gap-3 rounded-full bg-white px-2 py-1.5 shadow-sm">
-          <Link
-            href={prevJournee ? journeeHref(prevJournee) : "#"}
-            aria-disabled={!prevJournee}
-            className={`px-2 text-lg font-bold ${prevJournee ? "text-navy hover:text-cardinal" : "text-ink/20"}`}
-          >
-            ‹
-          </Link>
-          <span className="font-display text-sm uppercase tracking-tight text-navy">
-            {Number.isNaN(Number(selectedJournee))
-              ? selectedJournee
-              : `${selectedJournee}${selectedJournee === "1" ? "re" : "e"} journée`}
-          </span>
-          <Link
-            href={nextJournee ? journeeHref(nextJournee) : "#"}
-            aria-disabled={!nextJournee}
-            className={`px-2 text-lg font-bold ${nextJournee ? "text-navy hover:text-cardinal" : "text-ink/20"}`}
-          >
-            ›
-          </Link>
+        <div className="flex items-center gap-2">
+          {!showAll && (
+            <div className="flex items-center gap-1.5 rounded-full bg-white px-1.5 py-1 shadow-sm">
+              <Link
+                href={prevJournee ? journeeHref(prevJournee) : "#"}
+                scroll={false}
+                aria-disabled={!prevJournee}
+                className={`px-1.5 text-sm font-bold ${
+                  prevJournee ? "text-navy hover:text-cardinal" : "text-ink/20"
+                }`}
+              >
+                ‹
+              </Link>
+              <span className="font-display text-xs uppercase tracking-tight text-navy">
+                {journeeLabel(selectedJournee)}
+              </span>
+              <Link
+                href={nextJournee ? journeeHref(nextJournee) : "#"}
+                scroll={false}
+                aria-disabled={!nextJournee}
+                className={`px-1.5 text-sm font-bold ${
+                  nextJournee ? "text-navy hover:text-cardinal" : "text-ink/20"
+                }`}
+              >
+                ›
+              </Link>
+            </div>
+          )}
+
+          <div className="ml-auto flex overflow-hidden rounded-full bg-white text-xs shadow-sm">
+            <Link
+              href={uneHref}
+              scroll={false}
+              className={`px-3 py-1.5 font-semibold ${
+                !showAll ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
+              }`}
+            >
+              Une journée
+            </Link>
+            <Link
+              href={toutesHref}
+              scroll={false}
+              className={`px-3 py-1.5 font-semibold ${
+                showAll ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
+              }`}
+            >
+              Toutes
+            </Link>
+          </div>
         </div>
       )}
 
-      <div className="space-y-2">
-        {journeeMatches.map((m) => (
-          <MatchCard key={m.id} m={m} clubName={clubName} />
-        ))}
-        {journeeMatches.length === 0 && (
-          <p className="rounded-card bg-white p-4 text-center text-sm text-ink/40 shadow-sm">
-            Pas de match sur cette journée.
-          </p>
-        )}
-      </div>
+      {showAll ? (
+        <div className="space-y-4">
+          {byJournee.map(({ journee, rows }) => (
+            <div key={journee}>
+              <p className="mb-1.5 bg-sand px-3 py-1 text-xs font-semibold uppercase tracking-wide text-ink/50">
+                {journeeLabel(journee)}
+              </p>
+              <div className="space-y-2">
+                {rows.map((m) => (
+                  <MatchCard key={m.id} m={m} clubName={clubName} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {journeeMatches.map((m) => (
+            <MatchCard key={m.id} m={m} clubName={clubName} />
+          ))}
+          {journeeMatches.length === 0 && (
+            <p className="rounded-card bg-white p-4 text-center text-sm text-ink/40 shadow-sm">
+              Pas de match sur cette journée.
+            </p>
+          )}
+        </div>
+      )}
 
       {undated.length > 0 && (
         <div>
@@ -531,6 +601,7 @@ export default async function BasketPage({ searchParams }) {
     ? searchParams.tab
     : "calendrier";
   const scope = ["us", "poule"].includes(searchParams?.scope) ? searchParams.scope : "us";
+  const journeesMode = searchParams?.journees === "toutes" ? "toutes" : "une";
 
   // Saisons disponibles pour ce participant — toujours au moins la saison en
   // cours, même si rien n'a encore été synchronisé.
@@ -615,11 +686,24 @@ export default async function BasketPage({ searchParams }) {
             ) : (
               <span />
             )}
-            <SeasonSelect
-              seasons={seasonOptions}
-              value={selectedSeason}
-              basePath={`/basket?ps=${selectedPsId}&tab=${tab}&scope=${scope}`}
-            />
+            <div className="flex items-center gap-2">
+              <form action={resetCurrentSeason}>
+                <input type="hidden" name="participant_sport_id" value={selectedPsId} />
+                <ConfirmSubmitButton
+                  confirmMessage={`Supprimer tous les matchs et le classement de la saison ${currentSeason} pour ${
+                    selectedPs?.club || "cette équipe"
+                  } ? Les autres saisons (archives) ne sont pas concernées. Cette action est irréversible.`}
+                  className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-ink/50 shadow-sm hover:text-cardinal"
+                >
+                  Réinitialiser
+                </ConfirmSubmitButton>
+              </form>
+              <SeasonSelect
+                seasons={seasonOptions}
+                value={selectedSeason}
+                basePath={`/basket?ps=${selectedPsId}&tab=${tab}&scope=${scope}`}
+              />
+            </div>
           </div>
 
           {isCurrentSeason ? (
@@ -698,7 +782,8 @@ export default async function BasketPage({ searchParams }) {
             {tab === "calendrier" && (
               <div className="ml-auto flex overflow-hidden rounded-full bg-white shadow-sm">
                 <Link
-                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=us`}
+                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=us&season=${encodeURIComponent(selectedSeason)}`}
+                  scroll={false}
                   className={`px-3 py-1.5 text-xs font-semibold ${
                     scope === "us" ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
                   }`}
@@ -706,7 +791,8 @@ export default async function BasketPage({ searchParams }) {
                   {selectedPs?.club || "Sathonay Camp"}
                 </Link>
                 <Link
-                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=poule`}
+                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=poule&season=${encodeURIComponent(selectedSeason)}`}
+                  scroll={false}
                   className={`px-3 py-1.5 text-xs font-semibold ${
                     scope === "poule" ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
                   }`}
@@ -725,6 +811,8 @@ export default async function BasketPage({ searchParams }) {
               participantSportId={selectedPsId}
               tab={tab}
               scope={scope}
+              season={selectedSeason}
+              journeesMode={journeesMode}
               clubName={selectedPs?.club}
             />
           )}
