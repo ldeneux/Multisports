@@ -1,4 +1,4 @@
-import { formatDate } from "@/lib/utils";
+import { formatDate, msToSwimTime } from "@/lib/utils";
 
 // Palette réutilisée pour distinguer plusieurs séries sur la courbe (une
 // couleur par épreuve). Reprend les teintes de la charte + quelques
@@ -171,6 +171,209 @@ export function SwimPercentileTrendChart({ series, width = 640, height = 320 }) 
                 <circle key={i} cx={xFor(p.date)} cy={yFor(p.percentile)} r="3" fill={color}>
                   <title>
                     {s.label} · {formatDate(p.date, { weekday: false })} · {Math.round(p.percentile)}e percentile
+                  </title>
+                </circle>
+              ))}
+            </g>
+          );
+        })}
+      </svg>
+
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+        {withPoints.map((s, si) => (
+          <span key={s.label} className="flex items-center gap-1.5 text-xs font-semibold text-ink/60">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ backgroundColor: s.color ?? SERIES_COLORS[si % SERIES_COLORS.length] }}
+            />
+            {s.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Nuage de points : la meilleure performance de CHAQUE nageuse sur une
+ * épreuve donnée, classées de la plus rapide (rang 1, à gauche) à la plus
+ * lente (à droite). Les nageuses suivies (`isFlagged`) sont mises en avant
+ * en rouge avec leur nom ; les autres apparaissent en petits points gris
+ * pour donner le contexte du champ sans surcharger le graphique.
+ */
+export function SwimScatterChart({ points, width = 520, height = 320 }) {
+  if (!points || points.length === 0) return null;
+
+  const padding = { top: 16, right: 16, bottom: 34, left: 46 };
+  const plotW = width - padding.left - padding.right;
+  const plotH = height - padding.top - padding.bottom;
+
+  const n = points.length;
+  const times = points.map((p) => p.timeMs);
+  const minTime = Math.min(...times);
+  const maxTime = Math.max(...times);
+  const timeSpan = maxTime - minTime || 1;
+
+  const xFor = (rank) => (n === 1 ? padding.left + plotW / 2 : padding.left + ((rank - 1) / (n - 1)) * plotW);
+  const yFor = (t) => padding.top + ((t - minTime) / timeSpan) * plotH;
+
+  const yTickCount = 4;
+  const yTicks = Array.from({ length: yTickCount + 1 }, (_, i) => minTime + (i / yTickCount) * timeSpan);
+
+  const others = points.filter((p) => !p.isFlagged);
+  const flagged = points.filter((p) => p.isFlagged);
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
+      {yTicks.map((t, i) => (
+        <g key={i}>
+          <line
+            x1={padding.left}
+            y1={yFor(t)}
+            x2={width - padding.right}
+            y2={yFor(t)}
+            stroke="#0B2545"
+            strokeOpacity="0.08"
+            strokeWidth="1"
+          />
+          <text x={padding.left - 6} y={yFor(t) + 3} textAnchor="end" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+            {msToSwimTime(t)}
+          </text>
+        </g>
+      ))}
+
+      <text x={padding.left} y={height - 10} textAnchor="start" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+        1er (plus rapide)
+      </text>
+      <text x={width - padding.right} y={height - 10} textAnchor="end" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+        {n}e (plus lent)
+      </text>
+
+      {others.map((p) => (
+        <circle key={p.swimmerId} cx={xFor(p.rank)} cy={yFor(p.timeMs)} r="2.5" fill="#0B2545" fillOpacity="0.3">
+          <title>
+            {p.fullName} · {msToSwimTime(p.timeMs)}
+          </title>
+        </circle>
+      ))}
+
+      {flagged.map((p, i) => (
+        <g key={p.swimmerId}>
+          <circle cx={xFor(p.rank)} cy={yFor(p.timeMs)} r="5" fill="#D6293F" stroke="#fff" strokeWidth="1.5" />
+          <text
+            x={xFor(p.rank)}
+            y={yFor(p.timeMs) + (i % 2 === 0 ? -10 : 18)}
+            textAnchor="middle"
+            style={{ fontSize: "10px", fontWeight: 700, fill: "#D6293F" }}
+          >
+            {p.fullName}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/**
+ * Courbe d'évolution des TEMPS (pas des percentiles) pour une épreuve
+ * donnée : une ligne par nageuse suivie + des repères horizontaux fixes
+ * (moyenne du champ, temps du N°1, temps du N°3). Le plus rapide est en
+ * haut du graphique (axe Y inversé par rapport au temps brut) pour que
+ * "progresser" se lise visuellement comme "monter".
+ */
+export function SwimTimeTrendChart({ series, referenceLines = [], width = 640, height = 320 }) {
+  const withPoints = (series ?? []).filter((s) => s.points && s.points.length > 0);
+  if (withPoints.length === 0 && referenceLines.length === 0) return null;
+
+  const padding = { top: 16, right: 92, bottom: 36, left: 50 };
+  const plotW = width - padding.left - padding.right;
+  const plotH = height - padding.top - padding.bottom;
+
+  const allTimes = [
+    ...withPoints.flatMap((s) => s.points.map((p) => p.time_ms)),
+    ...referenceLines.map((r) => r.time_ms),
+  ];
+  if (allTimes.length === 0) return null;
+  const rawMin = Math.min(...allTimes);
+  const rawMax = Math.max(...allTimes);
+  const margin = (rawMax - rawMin) * 0.08 || 500;
+  const minTime = rawMin - margin;
+  const maxTime = rawMax + margin;
+  const timeSpan = maxTime - minTime || 1;
+
+  const allDates = withPoints.flatMap((s) => s.points.map((p) => new Date(p.date).getTime()));
+  const minDate = allDates.length ? Math.min(...allDates) : 0;
+  const maxDate = allDates.length ? Math.max(...allDates) : 1;
+  const dateSpan = maxDate - minDate || 1;
+
+  const xFor = (dateStr) => padding.left + ((new Date(dateStr).getTime() - minDate) / dateSpan) * plotW;
+  const yFor = (t) => padding.top + ((t - minTime) / timeSpan) * plotH;
+
+  const yTickCount = 4;
+  const yTicks = Array.from({ length: yTickCount + 1 }, (_, i) => minTime + (i / yTickCount) * timeSpan);
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
+        {yTicks.map((t, i) => (
+          <g key={i}>
+            <line
+              x1={padding.left}
+              y1={yFor(t)}
+              x2={width - padding.right}
+              y2={yFor(t)}
+              stroke="#0B2545"
+              strokeOpacity="0.08"
+              strokeWidth="1"
+            />
+            <text x={padding.left - 6} y={yFor(t) + 3} textAnchor="end" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+              {msToSwimTime(t)}
+            </text>
+          </g>
+        ))}
+
+        {allDates.length > 1 && (
+          <>
+            <text x={padding.left} y={height - 10} textAnchor="start" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+              {formatDate(new Date(minDate).toISOString(), { weekday: false })}
+            </text>
+            <text x={width - padding.right} y={height - 10} textAnchor="end" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+              {formatDate(new Date(maxDate).toISOString(), { weekday: false })}
+            </text>
+          </>
+        )}
+
+        {referenceLines.map((ref) => (
+          <g key={ref.label}>
+            <line
+              x1={padding.left}
+              y1={yFor(ref.time_ms)}
+              x2={width - padding.right}
+              y2={yFor(ref.time_ms)}
+              stroke={ref.color}
+              strokeWidth="1.5"
+              strokeDasharray={ref.dashed ? "4 3" : undefined}
+              opacity="0.75"
+            />
+            <text x={width - padding.right + 6} y={yFor(ref.time_ms) + 3} style={{ fontSize: "9px", fontWeight: 700, fill: ref.color }}>
+              {ref.label}
+            </text>
+          </g>
+        ))}
+
+        {withPoints.map((s, si) => {
+          const color = s.color ?? SERIES_COLORS[si % SERIES_COLORS.length];
+          const sorted = [...s.points].sort((a, b) => new Date(a.date) - new Date(b.date));
+          const path = sorted
+            .map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(p.date).toFixed(1)} ${yFor(p.time_ms).toFixed(1)}`)
+            .join(" ");
+          return (
+            <g key={s.label}>
+              <path d={path} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              {sorted.map((p, i) => (
+                <circle key={i} cx={xFor(p.date)} cy={yFor(p.time_ms)} r="3" fill={color}>
+                  <title>
+                    {s.label} · {formatDate(p.date, { weekday: false })} · {msToSwimTime(p.time_ms)}
                   </title>
                 </circle>
               ))}
