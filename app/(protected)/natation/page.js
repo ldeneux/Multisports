@@ -460,15 +460,18 @@ function percentileFromField(timeMs, best, worst) {
   return Math.max(0, Math.min(100, score));
 }
 
-// Pour une épreuve (event_name + gender + pool_length) donnée, va chercher
-// en base le meilleur temps de CHAQUE nageuse déjà synchronisée sur cette
-// épreuve, pour obtenir le temps le plus rapide et le plus lent du champ.
-async function fetchEventField(supabase, { eventName, gender, poolLength }) {
+// Pour une épreuve (event_name + pool_length) donnée, va chercher en base le
+// meilleur temps de CHAQUE fille déjà synchronisée sur cette épreuve, pour
+// obtenir le temps le plus rapide et le plus lent du champ. On force le
+// genre à "F" (et non le genre de la ligne d'origine, qui peut valoir "X"
+// pour un relais mixte) car tous les graphiques ne doivent comparer que des
+// résultats de filles entre eux, jamais de garçons.
+async function fetchEventField(supabase, { eventName, poolLength }) {
   const { data } = await supabase
     .from("swim_results")
     .select("swimmer_id, time_ms")
     .eq("event_name", eventName)
-    .eq("gender", gender)
+    .eq("gender", "F")
     .eq("pool_length", poolLength)
     .not("time_ms", "is", null)
     .limit(1000);
@@ -500,7 +503,7 @@ async function buildGraphData(supabase, mppRows, results) {
 
     let field = fieldCache.get(cacheKey);
     if (field === undefined) {
-      field = await fetchEventField(supabase, { eventName: mpp.event_name, gender: mpp.gender, poolLength });
+      field = await fetchEventField(supabase, { eventName: mpp.event_name, poolLength });
       fieldCache.set(cacheKey, field);
     }
     if (!field) continue;
@@ -610,15 +613,16 @@ function buildNageOptions(rows) {
 }
 
 // Pour une épreuve donnée : le classement complet (meilleur temps de chaque
-// nageuse ayant déjà nagé cette épreuve, tous clubs confondus) pour le
-// nuage de points, + la progression de chaque nageuse SUIVIE pour la
-// courbe d'évolution.
+// FILLE ayant déjà nagé cette épreuve, tous clubs confondus) pour le nuage
+// de points, + la progression de chaque nageuse SUIVIE pour la courbe
+// d'évolution. Genre forcé à "F" (voir fetchEventField) : on ne compare
+// jamais à des temps de garçons, même sur un relais mixte.
 async function buildSuiviData(supabase, nage, followedSwimmers) {
   const { data: fieldRows } = await supabase
     .from("swim_results")
     .select("swimmer_id, time_ms, swimmers(full_name, is_flagged, club)")
     .eq("event_name", nage.eventName)
-    .eq("gender", nage.gender)
+    .eq("gender", "F")
     .eq("pool_length", nage.poolLength)
     .not("time_ms", "is", null)
     .limit(1000);
@@ -653,7 +657,7 @@ async function buildSuiviData(supabase, nage, followedSwimmers) {
       .select("time_ms, swim_competitions(competition_date)")
       .eq("swimmer_id", sw.id)
       .eq("event_name", nage.eventName)
-      .eq("gender", nage.gender)
+      .eq("gender", "F")
       .eq("pool_length", nage.poolLength)
       .not("time_ms", "is", null);
 
@@ -917,6 +921,7 @@ export default async function NatationPage({ searchParams }) {
           "swimmer_id",
           followed.map((s) => s.id)
         )
+        .eq("gender", "F")
         .not("event_name", "is", null);
 
       const nageOptions = buildNageOptions(followedResults);
