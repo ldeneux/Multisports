@@ -1,16 +1,14 @@
 "use client";
 
-import { useRouter, usePathname, useSearchParams } from "next/navigation";
-
-export default function SeasonSelect({ seasons, value }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-
+// Volontairement SANS useRouter/usePathname/useSearchParams : ces hooks
+// nécessitent un <Suspense> autour de tout composant qui les utilise dans
+// l'App Router, sinon Next.js peut faire basculer toute la route en rendu
+// 100% côté client — ce qui se traduit par un lien qui met à jour l'URL et
+// l'onglet actif de la nav, mais laisse l'ancien contenu affiché. Une simple
+// navigation par URL construite côté serveur évite complètement ce piège.
+export default function SeasonSelect({ seasons, value, basePath }) {
   function onChange(e) {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("season", e.target.value);
-    router.push(`${pathname}?${params.toString()}`);
+    window.location.href = `${basePath}&season=${encodeURIComponent(e.target.value)}`;
   }
 
   return (
