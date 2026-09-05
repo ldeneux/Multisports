@@ -9,8 +9,10 @@ import {
   recordScore,
   deleteMatch,
   resetCurrentSeason,
-  updateFfbbId,
-  syncFfbbMatches,
+  addPhase,
+  updatePhase,
+  deletePhase,
+  syncPhase,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -42,52 +44,150 @@ function Crest({ assetId, name }) {
   return <img src={url} alt={name} className="h-8 w-8 shrink-0 rounded-full object-contain" />;
 }
 
-function SyncCard({ ps }) {
+// Barre "compétition jouée" : nom de la compétition + poule (avec lien vers
+// competitions.ffbb.com si renseigné), bascule entre phases quand il y en a
+// plusieurs dans la saison (ex. Saison régulière / Phase 2 / Phase 3), et
+// panneau de gestion (ajout/édition/suppression/synchro par phase). Chaque
+// phase a son propre ID FFBB (engagement) — c'est ce qui permet de suivre
+// plusieurs compétitions successives dans la même saison.
+function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isCurrentSeason }) {
+  const linkBase = `/basket?ps=${selectedPsId}&tab=${tab}&scope=${scope}&season=${encodeURIComponent(season)}`;
+
   return (
-    <div className="rounded-card bg-white p-5 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-display text-lg uppercase tracking-tight text-navy">
-            Synchro FFBB — {ps.participants?.first_name ?? "Basket"}
-          </p>
-          <p className="text-sm text-ink/50">
-            Récupère le calendrier, les résultats et le classement de la poule.
-          </p>
-        </div>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        {phases.length > 1 &&
+          phases.map((p) => (
+            <Link
+              key={p.id}
+              href={`${linkBase}&phase=${p.id}`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                p.id === selectedPhase?.id ? "bg-navy text-white" : "bg-white text-ink/50 hover:text-ink"
+              }`}
+            >
+              {p.phase_name}
+            </Link>
+          ))}
 
-        <form action={syncFfbbMatches}>
-          <input type="hidden" name="participant_sport_id" value={ps.id} />
-          <SyncButton className="rounded-full bg-lagoon px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
-            Synchroniser FFBB
-          </SyncButton>
-        </form>
-      </div>
-
-      <div className="mt-3 rounded-lg bg-sand p-3 text-sm">
-        <form action={updateFfbbId} className="flex flex-wrap items-center gap-2">
-          <input type="hidden" name="participant_sport_id" value={ps.id} />
-          <label className="text-xs font-semibold text-ink/50">ID FFBB (engagement)</label>
-          <input
-            name="ffbb_engagement_id"
-            defaultValue={ps.ffbb_engagement_id ?? ""}
-            placeholder="ex. 200000005251991"
-            className="w-48 rounded-lg border border-ink/15 px-2 py-1 text-sm"
-          />
-          <button
-            type="submit"
-            className="rounded-full bg-navy px-3 py-1 text-xs font-semibold text-white hover:bg-navy-light"
-          >
-            Enregistrer
-          </button>
-        </form>
-
-        {ps.last_ffbb_sync_at && (
-          <p className={`mt-2 text-xs ${ps.last_ffbb_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
-            Dernière synchro : {formatDateTime(ps.last_ffbb_sync_at)}
-            {ps.last_ffbb_sync_error ? ` — ${ps.last_ffbb_sync_error}` : " — OK"}
+        {selectedPhase && (selectedPhase.competition_name || selectedPhase.poule_label) && (
+          <p className="text-sm">
+            {selectedPhase.competition_url ? (
+              <a
+                href={selectedPhase.competition_url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-semibold text-navy underline decoration-dotted hover:text-cardinal"
+              >
+                {selectedPhase.competition_name}
+              </a>
+            ) : (
+              <span className="font-semibold text-navy">{selectedPhase.competition_name}</span>
+            )}
+            {selectedPhase.poule_label && <span className="text-ink/50"> · {selectedPhase.poule_label}</span>}
           </p>
         )}
+
+        {isCurrentSeason && selectedPhase && (
+          <form action={syncPhase} className="ml-auto">
+            <input type="hidden" name="phase_id" value={selectedPhase.id} />
+            <SyncButton className="rounded-full bg-lagoon px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60">
+              Synchroniser
+            </SyncButton>
+          </form>
+        )}
       </div>
+
+      {selectedPhase?.last_sync_at && (
+        <p className={`text-xs ${selectedPhase.last_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
+          Dernière synchro : {formatDateTime(selectedPhase.last_sync_at)}
+          {selectedPhase.last_sync_error ? ` — ${selectedPhase.last_sync_error}` : " — OK"}
+        </p>
+      )}
+
+      {phases.length === 0 && (
+        <div className="rounded-card bg-sand p-3 text-sm text-ink/60">
+          {isCurrentSeason
+            ? "Aucune phase configurée pour cette saison — ajoutes-en une ci-dessous (ex. « Saison régulière »)."
+            : "Aucune phase pour cette saison archivée."}
+        </div>
+      )}
+
+      {isCurrentSeason && (
+        <details className="rounded-card bg-white p-4 shadow-sm">
+          <summary className="cursor-pointer text-sm font-semibold text-navy">
+            Gérer les phases de la saison {season}
+          </summary>
+
+          <div className="mt-3 space-y-3">
+            {phases.map((p) => (
+              <div key={p.id} className="rounded-lg bg-sand p-3">
+                <form action={updatePhase} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                  <input type="hidden" name="phase_id" value={p.id} />
+                  <input
+                    name="phase_name"
+                    defaultValue={p.phase_name}
+                    placeholder="Nom de la phase"
+                    className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                  />
+                  <input
+                    name="ffbb_engagement_id"
+                    defaultValue={p.ffbb_engagement_id ?? ""}
+                    placeholder="ID FFBB (engagement)"
+                    className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                  />
+                  <input
+                    name="competition_url"
+                    defaultValue={p.competition_url ?? ""}
+                    placeholder="Lien competitions.ffbb.com (optionnel)"
+                    className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-full bg-navy px-3 py-1.5 text-xs font-semibold text-white hover:bg-navy-light"
+                  >
+                    Enregistrer
+                  </button>
+                </form>
+                <form action={deletePhase} className="mt-2">
+                  <input type="hidden" name="phase_id" value={p.id} />
+                  <ConfirmSubmitButton
+                    confirmMessage={`Supprimer la phase « ${p.phase_name} » et tous ses matchs/classement ? Cette action est irréversible.`}
+                    className="text-xs font-semibold text-ink/40 hover:text-cardinal"
+                  >
+                    Supprimer cette phase
+                  </ConfirmSubmitButton>
+                </form>
+              </div>
+            ))}
+
+            <form action={addPhase} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+              <input type="hidden" name="participant_sport_id" value={selectedPsId} />
+              <input
+                name="phase_name"
+                placeholder="ex. Phase 2"
+                required
+                className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+              />
+              <input
+                name="ffbb_engagement_id"
+                placeholder="ID FFBB (engagement)"
+                className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+              />
+              <input
+                name="competition_url"
+                placeholder="Lien competitions.ffbb.com (optionnel)"
+                className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+              />
+              <button
+                type="submit"
+                className="rounded-full bg-cardinal px-3 py-1.5 text-xs font-semibold text-white hover:bg-cardinal-dark"
+              >
+                Ajouter une phase
+              </button>
+            </form>
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -618,22 +718,35 @@ export default async function BasketPage({ searchParams }) {
     searchParams?.season && seasonOptions.includes(searchParams.season) ? searchParams.season : currentSeason;
   const isCurrentSeason = selectedSeason === currentSeason;
 
-  let matches = [];
-  let classement = [];
+  // Phases de la saison sélectionnée (ex. Saison régulière / Phase 2 /
+  // Phase 3) — chacune a son propre ID FFBB et sa propre poule.
+  let phases = [];
   if (selectedPsId) {
-    const { data: matchRows } = await supabase
-      .from("basketball_matches")
+    const { data: phaseRows } = await supabase
+      .from("basketball_phases")
       .select("*")
       .eq("participant_sport_id", selectedPsId)
       .eq("season", selectedSeason)
+      .order("position", { ascending: true });
+    phases = phaseRows ?? [];
+  }
+  const selectedPhase =
+    phases.find((p) => p.id === searchParams?.phase) ?? phases[0] ?? null;
+
+  let matches = [];
+  let classement = [];
+  if (selectedPhase) {
+    const { data: matchRows } = await supabase
+      .from("basketball_matches")
+      .select("*")
+      .eq("phase_id", selectedPhase.id)
       .order("match_date", { ascending: true });
     matches = matchRows ?? [];
 
     const { data: classementRows } = await supabase
       .from("basketball_classements")
       .select("*")
-      .eq("participant_sport_id", selectedPsId)
-      .eq("season", selectedSeason);
+      .eq("phase_id", selectedPhase.id);
     classement = classementRows ?? [];
   }
 
@@ -706,51 +819,11 @@ export default async function BasketPage({ searchParams }) {
             </div>
           </div>
 
-          {isCurrentSeason ? (
-            <SyncCard ps={selectedPs} />
-          ) : (
+          {!isCurrentSeason && (
             <div className="rounded-card bg-sand p-4 text-sm text-ink/60 shadow-sm">
               Saison {selectedSeason} — archive en lecture seule. La synchronisation FFBB ne concerne que
               la saison en cours ({currentSeason}).
             </div>
-          )}
-
-          {isCurrentSeason && (
-            <details className="rounded-card bg-white p-4 shadow-sm">
-              <summary className="cursor-pointer text-sm font-semibold text-navy">
-                Ajouter un match manuellement
-              </summary>
-              <form action={addMatch} className="mt-3 grid gap-2 sm:grid-cols-2">
-                <input type="hidden" name="participant_sport_id" value={selectedPsId} />
-                <input
-                  type="datetime-local"
-                  name="match_date"
-                  required
-                  className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-                />
-                <select name="home_away" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm">
-                  <option value="domicile">Domicile</option>
-                  <option value="exterieur">Extérieur</option>
-                </select>
-                <input
-                  name="opponent"
-                  placeholder="Adversaire"
-                  required
-                  className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2"
-                />
-                <input
-                  name="location"
-                  placeholder="Lieu / salle"
-                  className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2"
-                />
-                <button
-                  type="submit"
-                  className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark sm:col-span-2 sm:w-fit"
-                >
-                  Ajouter
-                </button>
-              </form>
-            </details>
           )}
 
           <div className="flex flex-wrap items-center gap-2">
@@ -802,6 +875,67 @@ export default async function BasketPage({ searchParams }) {
               </div>
             )}
           </div>
+
+          <PhaseBar
+            phases={phases}
+            selectedPhase={selectedPhase}
+            selectedPsId={selectedPsId}
+            tab={tab}
+            scope={scope}
+            season={selectedSeason}
+            isCurrentSeason={isCurrentSeason}
+          />
+
+          {isCurrentSeason && tab === "calendrier" && (
+            <details className="rounded-card bg-white p-4 shadow-sm">
+              <summary className="cursor-pointer text-sm font-semibold text-navy">
+                Ajouter un match manuellement
+              </summary>
+              {phases.length === 0 ? (
+                <p className="mt-3 text-sm text-ink/50">
+                  Ajoute d'abord une phase ci-dessus (ex. « Saison régulière ») pour pouvoir y rattacher un match.
+                </p>
+              ) : (
+                <form action={addMatch} className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <input type="hidden" name="participant_sport_id" value={selectedPsId} />
+                  <select name="phase_id" defaultValue={selectedPhase?.id} className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2">
+                    {phases.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.phase_name}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="datetime-local"
+                    name="match_date"
+                    required
+                    className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                  />
+                  <select name="home_away" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm">
+                    <option value="domicile">Domicile</option>
+                    <option value="exterieur">Extérieur</option>
+                  </select>
+                  <input
+                    name="opponent"
+                    placeholder="Adversaire"
+                    required
+                    className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2"
+                  />
+                  <input
+                    name="location"
+                    placeholder="Lieu / salle"
+                    className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2"
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark sm:col-span-2 sm:w-fit"
+                  >
+                    Ajouter
+                  </button>
+                </form>
+              )}
+            </details>
+          )}
 
           {tab === "calendrier" && (
             <CalendrierTab
