@@ -101,20 +101,31 @@ export async function deletePhase(formData) {
 export async function addMatch(formData) {
   const supabase = createClient();
 
+  const participantSportId = formData.get("participant_sport_id");
   const homeAway = formData.get("home_away");
   const opponent = formData.get("opponent");
   const usIsTeam1 = homeAway === "domicile";
 
+  // MatchCard n'effectue plus aucune substitution de nom à l'affichage — on
+  // enregistre donc le vrai nom du club directement dans team1_name/
+  // team2_name, comme le ferait une synchro FFBB.
+  const { data: ps } = await supabase
+    .from("participant_sports")
+    .select("club")
+    .eq("id", participantSportId)
+    .maybeSingle();
+  const clubName = ps?.club || "Nous";
+
   const { error } = await supabase.from("basketball_matches").insert({
-    participant_sport_id: formData.get("participant_sport_id"),
+    participant_sport_id: participantSportId,
     phase_id: formData.get("phase_id") || null,
     match_date: formData.get("match_date"),
     opponent,
     location: formData.get("location") || null,
     home_away: homeAway,
     us_is_team1: usIsTeam1,
-    team1_name: usIsTeam1 ? null : opponent,
-    team2_name: usIsTeam1 ? opponent : null,
+    team1_name: usIsTeam1 ? clubName : opponent,
+    team2_name: usIsTeam1 ? opponent : clubName,
     season: computeCurrentSeasonLabel(),
     status: "a_venir",
     source: "manuel",
@@ -205,6 +216,17 @@ export async function resetCurrentSeason(formData) {
   revalidatePath("/basket");
 }
 
+// Comparaison tolérante (casse, accents, ponctuation) pour repérer si l'ID
+// FFBB renseigné correspond bien au club attendu — ex. détecter qu'un ID
+// copié par erreur pointe vers l'équipe adverse plutôt que la nôtre.
+function normalizeClubName(s) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
 // ---- Synchronisation FFBB (expérimentale, API non officielle) -------------
 // Une synchro cible toujours UNE phase précise (donc un ID FFBB précis) —
 // c'est ce qui permet d'avoir plusieurs compétitions actives dans la même
@@ -262,6 +284,22 @@ export async function syncPhase(formData) {
     const pouleId = String(engagement.idPoule.id);
     const competitionName = engagement.idCompetition?.nom || null;
     const pouleLabel = engagement.idPoule?.nom || null;
+
+    // Garde-fou : l'ID FFBB renseigné pointe-t-il vers LE BON club ? Piège
+    // fréquent en copiant l'ID depuis le site FFBB : cliquer sur l'équipe
+    // adverse croisée dans un tableau plutôt que sur sa propre équipe.
+    const { data: psRow } = await supabase
+      .from("participant_sports")
+      .select("club")
+      .eq("id", participantSportId)
+      .maybeSingle();
+    const expectedClub = normalizeClubName(psRow?.club);
+    const actualTeam = normalizeClubName(engagement.nom);
+    const clubMismatch =
+      expectedClub &&
+      actualTeam &&
+      !actualTeam.includes(expectedClub) &&
+      !expectedClub.includes(actualTeam);
 
     const poule = await client.getPoule(engagement.idPoule.id, {
       fields: [
@@ -342,10 +380,18 @@ export async function syncPhase(formData) {
       };
     });
 
+    // Remplacement complet (pas un simple upsert) : ça garantit qu'un match
+    // qui disparaît côté FFBB (annulé, ID corrigé après une erreur de
+    // saisie...) disparaît aussi de cette phase, plutôt que de laisser une
+    // ligne orpheline en base.
+    const { error: delMatchesError } = await supabase
+      .from("basketball_matches")
+      .delete()
+      .eq("phase_id", phaseId);
+    assertNoError("Nettoyage des anciens matchs de cette phase", delMatchesError);
+
     if (matchPayload.length > 0) {
-      const { error: writeError } = await supabase
-        .from("basketball_matches")
-        .upsert(matchPayload, { onConflict: "participant_sport_id,ffbb_rencontre_id" });
+      const { error: writeError } = await supabase.from("basketball_matches").insert(matchPayload);
       if (writeError) {
         throw new Error(`Écriture des matchs impossible (${writeError.message}).`);
       }
@@ -400,19 +446,32 @@ export async function syncPhase(formData) {
         competition_name: competitionName,
         poule_label: pouleLabel,
         last_sync_at: new Date().toISOString(),
-        last_sync_error:
-          ourMatchesCount === 0
+        last_sync_error: clubMismatch
+          ? `⚠️ Cet ID FFBB correspond à « ${engagement.nom} », qui ne ressemble pas à « ${psRow.club} ». As-tu bien pris l'ID de TON équipe (et pas celui d'un adversaire croisé sur le site FFBB) ?`
+          : ourMatchesCount === 0
             ? "Synchro OK mais aucun match trouvé pour cet ID — vérifie qu'il s'agit bien du bon engagement."
             : null,
       })
       .eq("id", phaseId);
     assertNoError("Mise à jour du statut de synchro", okError);
   } catch (err) {
+    // La lib ffbb-api-client classe tout HTTP 403 comme une "erreur
+    // d'authentification", mais en pratique un 403 sur
+    // /items/ffbbserver_engagements/<id> signifie presque toujours que l'ID
+    // fourni n'est pas un ID d'ENGAGEMENT valide (ex. un ID de poule ou de
+    // phase copié depuis l'URL d'une page de compétition, du style
+    // ?poule=... ou ?phase=...) plutôt qu'un vrai souci de jeton d'accès.
+    const rawMessage = String(err?.message || err);
+    const looksLikeWrongId = rawMessage.includes("403") && rawMessage.includes("engagements");
+    const message = looksLikeWrongId
+      ? "Cet ID FFBB ne correspond à aucun engagement d'équipe (erreur 403). Vérifie que tu as bien copié l'ID depuis l'URL de la page de L'ÉQUIPE (.../equipes/<ID>) et non depuis un lien de compétition ou de poule (paramètres ?poule=... ou ?phase=... dans l'URL)."
+      : rawMessage.slice(0, 300);
+
     await supabase
       .from("basketball_phases")
       .update({
         last_sync_at: new Date().toISOString(),
-        last_sync_error: String(err?.message || err).slice(0, 300),
+        last_sync_error: message,
       })
       .eq("id", phaseId);
   }
