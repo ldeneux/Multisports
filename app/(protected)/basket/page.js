@@ -7,6 +7,7 @@ import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import {
   addMatch,
   recordScore,
+  saveMatchReport,
   deleteMatch,
   resetCurrentSeason,
   addPhase,
@@ -52,6 +53,7 @@ function Crest({ assetId, name }) {
 // plusieurs compétitions successives dans la même saison.
 function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isCurrentSeason }) {
   const linkBase = `/basket?ps=${selectedPsId}&tab=${tab}&scope=${scope}&season=${encodeURIComponent(season)}`;
+  const isAmical = selectedPhase?.phase_type === "amical";
 
   return (
     <div className="space-y-3">
@@ -69,25 +71,32 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
             </Link>
           ))}
 
-        {selectedPhase && (selectedPhase.competition_name || selectedPhase.poule_label) && (
-          <p className="text-sm">
-            {selectedPhase.competition_url ? (
-              <a
-                href={selectedPhase.competition_url}
-                target="_blank"
-                rel="noreferrer"
-                className="font-semibold text-navy underline decoration-dotted hover:text-cardinal"
-              >
-                {selectedPhase.competition_name}
-              </a>
-            ) : (
-              <span className="font-semibold text-navy">{selectedPhase.competition_name}</span>
-            )}
-            {selectedPhase.poule_label && <span className="text-ink/50"> · {selectedPhase.poule_label}</span>}
-          </p>
-        )}
+        {selectedPhase &&
+          (isAmical ? (
+            <p className="text-sm text-ink/50">🤝 Matchs saisis à la main, jamais synchronisés.</p>
+          ) : (
+            (selectedPhase.competition_name || selectedPhase.poule_label) && (
+              <p className="text-sm">
+                {selectedPhase.competition_url ? (
+                  <a
+                    href={selectedPhase.competition_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold text-navy underline decoration-dotted hover:text-cardinal"
+                  >
+                    {selectedPhase.competition_name}
+                  </a>
+                ) : (
+                  <span className="font-semibold text-navy">{selectedPhase.competition_name}</span>
+                )}
+                {selectedPhase.poule_label && (
+                  <span className="text-ink/50"> · {selectedPhase.poule_label}</span>
+                )}
+              </p>
+            )
+          ))}
 
-        {isCurrentSeason && selectedPhase && (
+        {isCurrentSeason && selectedPhase && !isAmical && (
           <form action={syncPhase} className="ml-auto">
             <input type="hidden" name="phase_id" value={selectedPhase.id} />
             <SyncButton className="rounded-full bg-lagoon px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60">
@@ -97,7 +106,7 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
         )}
       </div>
 
-      {selectedPhase?.last_sync_at && (
+      {!isAmical && selectedPhase?.last_sync_at && (
         <p className={`text-xs ${selectedPhase.last_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
           Dernière synchro : {formatDateTime(selectedPhase.last_sync_at)}
           {selectedPhase.last_sync_error ? ` — ${selectedPhase.last_sync_error}` : " — OK"}
@@ -129,18 +138,26 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
                     placeholder="Nom de la phase"
                     className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
                   />
-                  <input
-                    name="ffbb_engagement_id"
-                    defaultValue={p.ffbb_engagement_id ?? ""}
-                    placeholder="ID FFBB (engagement)"
-                    className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-                  />
-                  <input
-                    name="competition_url"
-                    defaultValue={p.competition_url ?? ""}
-                    placeholder="Lien competitions.ffbb.com (optionnel)"
-                    className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-                  />
+                  {p.phase_type === "amical" ? (
+                    <p className="flex items-center text-xs text-ink/40 sm:col-span-2">
+                      🤝 Phase amicale — pas d'ID FFBB, jamais synchronisée.
+                    </p>
+                  ) : (
+                    <>
+                      <input
+                        name="ffbb_engagement_id"
+                        defaultValue={p.ffbb_engagement_id ?? ""}
+                        placeholder="ID FFBB (engagement)"
+                        className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                      />
+                      <input
+                        name="competition_url"
+                        defaultValue={p.competition_url ?? ""}
+                        placeholder="Lien competitions.ffbb.com (optionnel)"
+                        className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                      />
+                    </>
+                  )}
                   <button
                     type="submit"
                     className="rounded-full bg-navy px-3 py-1.5 text-xs font-semibold text-white hover:bg-navy-light"
@@ -160,17 +177,21 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
               </div>
             ))}
 
-            <form action={addPhase} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+            <form action={addPhase} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_1fr_auto]">
               <input type="hidden" name="participant_sport_id" value={selectedPsId} />
               <input
                 name="phase_name"
-                placeholder="ex. Phase 2"
+                placeholder="ex. Phase 2 / Matchs amicaux"
                 required
                 className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
               />
+              <select name="phase_type" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm">
+                <option value="ffbb">Compétition FFBB</option>
+                <option value="amical">Matchs amicaux (saisie manuelle)</option>
+              </select>
               <input
                 name="ffbb_engagement_id"
-                placeholder="ID FFBB (engagement)"
+                placeholder="ID FFBB (engagement, si compétition FFBB)"
                 className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
               />
               <input
@@ -230,11 +251,12 @@ function defaultJournee(matches, journeeOptions) {
   return journeeOptions[0];
 }
 
-function MatchCard({ m, clubName }) {
+function MatchCard({ m, clubName, typeIcon }) {
   const isPlayed = m.status === "joue";
   const usIsLeft = m.us_is_team1 === true;
   const usIsRight = m.us_is_team1 === false;
   const concernsUs = m.us_is_team1 !== null;
+  const report = m.match_report;
 
   // Le nom affiché est TOUJOURS celui renvoyé par la FFBB (ou saisi à la
   // main pour un match manuel) — jamais remplacé automatiquement par le nom
@@ -271,87 +293,148 @@ function MatchCard({ m, clubName }) {
     : null;
 
   return (
-    <div className="flex flex-col gap-2 rounded-card bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-        <span
-          title={leftName}
-          className={`min-w-0 flex-1 truncate text-right text-sm ${
-            usIsLeft ? "font-bold text-navy" : "text-ink/70"
-          }`}
-        >
-          {leftName}
-        </span>
-        <Crest assetId={m.team1_logo_asset} name={leftName} />
+    <div className="flex flex-col gap-2 rounded-card bg-white p-3 shadow-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+          {typeIcon &&
+            (typeIcon.startsWith("http") ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={typeIcon} alt="" className="h-6 w-6 shrink-0 rounded object-contain" />
+            ) : (
+              <span className="shrink-0 text-lg leading-none" aria-hidden="true">
+                {typeIcon}
+              </span>
+            ))}
+          <span
+            title={leftName}
+            className={`min-w-0 flex-1 truncate text-right text-sm ${
+              usIsLeft ? "font-bold text-navy" : "text-ink/70"
+            }`}
+          >
+            {leftName}
+          </span>
+          <Crest assetId={m.team1_logo_asset} name={leftName} />
 
-        <div className="flex min-w-[68px] shrink-0 flex-col items-center px-1">
-          {isPlayed ? (
-            <span className="font-display text-lg font-bold">
-              <span className={leftColor}>{leftScore ?? "–"}</span>
-              <span className="text-navy"> - </span>
-              <span className={rightColor}>{rightScore ?? "–"}</span>
-            </span>
-          ) : (
-            <span className="flex flex-col items-center leading-tight">
-              {shortDate && (
-                <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
-              )}
-              <span className="font-display text-sm text-ink/60">{shortTime ?? "?"}</span>
-            </span>
-          )}
+          <div className="flex min-w-[68px] shrink-0 flex-col items-center px-1">
+            {isPlayed ? (
+              <span className="font-display text-lg font-bold">
+                <span className={leftColor}>{leftScore ?? "–"}</span>
+                <span className="text-navy"> - </span>
+                <span className={rightColor}>{rightScore ?? "–"}</span>
+              </span>
+            ) : (
+              <span className="flex flex-col items-center leading-tight">
+                {shortDate && (
+                  <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
+                )}
+                <span className="font-display text-sm text-ink/60">{shortTime ?? "?"}</span>
+              </span>
+            )}
+          </div>
+
+          <Crest assetId={m.team2_logo_asset} name={rightName} />
+          <span
+            title={rightName}
+            className={`min-w-0 flex-1 truncate text-sm ${
+              usIsRight ? "font-bold text-navy" : "text-ink/70"
+            }`}
+          >
+            {rightName}
+          </span>
         </div>
 
-        <Crest assetId={m.team2_logo_asset} name={rightName} />
-        <span
-          title={rightName}
-          className={`min-w-0 flex-1 truncate text-sm ${
-            usIsRight ? "font-bold text-navy" : "text-ink/70"
-          }`}
-        >
-          {rightName}
-        </span>
+        <div className="flex items-center justify-between gap-3 sm:justify-end">
+          <p className="text-xs text-ink/40">{m.location || "Lieu inconnu"}</p>
+
+          {!isPlayed && m.source === "manuel" && (
+            <form action={recordScore} className="flex items-center gap-1">
+              <input type="hidden" name="match_id" value={m.id} />
+              <input
+                type="number"
+                min="0"
+                name="team_score_us"
+                placeholder={clubName || "Nous"}
+                className="w-12 rounded-lg border border-ink/15 px-1 py-0.5 text-xs"
+              />
+              <input
+                type="number"
+                min="0"
+                name="team_score_them"
+                placeholder="Eux"
+                className="w-12 rounded-lg border border-ink/15 px-1 py-0.5 text-xs"
+              />
+              <button
+                type="submit"
+                className="rounded-full bg-navy px-2 py-0.5 text-xs font-semibold text-white hover:bg-navy-light"
+              >
+                OK
+              </button>
+            </form>
+          )}
+
+          {/* Un match issu d'une synchro FFBB n'est jamais supprimable — seuls
+              les matchs ajoutés à la main le sont (voir aussi le garde-fou
+              côté serveur dans deleteMatch). */}
+          {m.source === "manuel" && (
+            <form action={deleteMatch}>
+              <input type="hidden" name="match_id" value={m.id} />
+              <button type="submit" className="text-xs font-semibold text-ink/30 hover:text-cardinal">
+                ✕
+              </button>
+            </form>
+          )}
+        </div>
       </div>
 
-      <div className="flex items-center justify-between gap-3 sm:justify-end">
-        <p className="text-xs text-ink/40">{m.location || "Lieu inconnu"}</p>
-
-        {!isPlayed && m.source === "manuel" && (
-          <form action={recordScore} className="flex items-center gap-1">
+      {/* Feuille de match libre (quarts-temps + notes) — disponible pour tout
+          match joué saisi à la main, typiquement un match amical. */}
+      {isPlayed && m.source === "manuel" && (
+        <details className="border-t border-ink/5 pt-2">
+          <summary className="cursor-pointer text-xs font-semibold text-ink/40 hover:text-navy">
+            Feuille de match{report ? " (enregistrée)" : ""}
+          </summary>
+          <form action={saveMatchReport} className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5 sm:items-end">
             <input type="hidden" name="match_id" value={m.id} />
-            <input
-              type="number"
-              min="0"
-              name="team_score_us"
-              placeholder={clubName || "Nous"}
-              className="w-12 rounded-lg border border-ink/15 px-1 py-0.5 text-xs"
-            />
-            <input
-              type="number"
-              min="0"
-              name="team_score_them"
-              placeholder="Eux"
-              className="w-12 rounded-lg border border-ink/15 px-1 py-0.5 text-xs"
-            />
+            {[1, 2, 3, 4].map((q) => (
+              <div key={q} className="flex flex-col gap-1">
+                <span className="text-[10px] uppercase text-ink/40">Quart-temps {q}</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="0"
+                    name={`q${q}_us`}
+                    defaultValue={report?.quarters?.[q - 1]?.us ?? ""}
+                    placeholder={clubName || "Nous"}
+                    className="w-14 rounded-lg border border-ink/15 px-1 py-0.5"
+                  />
+                  <span className="text-ink/30">-</span>
+                  <input
+                    type="number"
+                    min="0"
+                    name={`q${q}_them`}
+                    defaultValue={report?.quarters?.[q - 1]?.them ?? ""}
+                    placeholder="Eux"
+                    className="w-14 rounded-lg border border-ink/15 px-1 py-0.5"
+                  />
+                </div>
+              </div>
+            ))}
             <button
               type="submit"
-              className="rounded-full bg-navy px-2 py-0.5 text-xs font-semibold text-white hover:bg-navy-light"
+              className="col-span-2 rounded-full bg-navy px-3 py-1.5 font-semibold text-white hover:bg-navy-light sm:col-span-1"
             >
-              OK
+              Enregistrer
             </button>
+            <textarea
+              name="notes"
+              defaultValue={report?.notes ?? ""}
+              placeholder="Notes (arbitre, ambiance, faits marquants...)"
+              rows={2}
+              className="col-span-2 rounded-lg border border-ink/15 px-2 py-1.5 sm:col-span-5"
+            />
           </form>
-        )}
-
-        {/* Un match issu d'une synchro FFBB n'est jamais supprimable — seuls
-            les matchs ajoutés à la main le sont (voir aussi le garde-fou
-            côté serveur dans deleteMatch). */}
-        {m.source === "manuel" && (
-          <form action={deleteMatch}>
-            <input type="hidden" name="match_id" value={m.id} />
-            <button type="submit" className="text-xs font-semibold text-ink/30 hover:text-cardinal">
-              ✕
-            </button>
-          </form>
-        )}
-      </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -370,6 +453,7 @@ function CalendrierTab({
   season,
   journeesMode,
   clubName,
+  typeIcon,
 }) {
   if (matches.length === 0) {
     return (
@@ -466,7 +550,7 @@ function CalendrierTab({
               </p>
               <div className="space-y-2">
                 {rows.map((m) => (
-                  <MatchCard key={m.id} m={m} clubName={clubName} />
+                  <MatchCard key={m.id} m={m} clubName={clubName} typeIcon={typeIcon} />
                 ))}
               </div>
             </div>
@@ -475,7 +559,7 @@ function CalendrierTab({
       ) : (
         <div className="space-y-2">
           {journeeMatches.map((m) => (
-            <MatchCard key={m.id} m={m} clubName={clubName} />
+            <MatchCard key={m.id} m={m} clubName={clubName} typeIcon={typeIcon} />
           ))}
           {journeeMatches.length === 0 && (
             <p className="rounded-card bg-white p-4 text-center text-sm text-ink/40 shadow-sm">
@@ -492,7 +576,7 @@ function CalendrierTab({
           </p>
           <div className="space-y-2">
             {undated.map((m) => (
-              <MatchCard key={m.id} m={m} clubName={clubName} />
+              <MatchCard key={m.id} m={m} clubName={clubName} typeIcon={typeIcon} />
             ))}
           </div>
         </div>
@@ -739,6 +823,16 @@ export default async function BasketPage({ searchParams }) {
   const selectedPhase =
     phases.find((p) => p.id === searchParams?.phase) ?? phases[0] ?? null;
 
+  // Icône affichée devant chaque match du calendrier : le badge du niveau de
+  // compétition récupéré à la synchro pour une phase FFBB, un simple
+  // pictogramme pour une phase de matchs amicaux (pas d'asset FFBB associé).
+  const phaseTypeIcon =
+    selectedPhase?.phase_type === "amical"
+      ? "🤝"
+      : selectedPhase?.competition_logo_asset
+        ? ffbbAssetUrl(selectedPhase.competition_logo_asset, { width: 64 })
+        : null;
+
   let matches = [];
   let classement = [];
   if (selectedPhase) {
@@ -954,6 +1048,7 @@ export default async function BasketPage({ searchParams }) {
               season={selectedSeason}
               journeesMode={journeesMode}
               clubName={selectedPs?.club}
+              typeIcon={phaseTypeIcon}
             />
           )}
           {tab === "classement" && <ClassementTab classement={classement} />}
