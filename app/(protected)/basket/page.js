@@ -6,8 +6,10 @@ import SeasonSelect from "@/components/SeasonSelect";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import {
   addMatch,
-  recordScore,
-  saveMatchReport,
+  saveMatchSheet,
+  saveMatchStats,
+  addPlayer,
+  deletePlayer,
   deleteMatch,
   resetCurrentSeason,
   addPhase,
@@ -251,12 +253,11 @@ function defaultJournee(matches, journeeOptions) {
   return journeeOptions[0];
 }
 
-function MatchCard({ m, clubName, typeIcon }) {
+function MatchCard({ m, typeIcon, sheetBaseHref }) {
   const isPlayed = m.status === "joue";
   const usIsLeft = m.us_is_team1 === true;
   const usIsRight = m.us_is_team1 === false;
   const concernsUs = m.us_is_team1 !== null;
-  const report = m.match_report;
 
   // Le nom affiché est TOUJOURS celui renvoyé par la FFBB (ou saisi à la
   // main pour un match manuel) — jamais remplacé automatiquement par le nom
@@ -293,148 +294,77 @@ function MatchCard({ m, clubName, typeIcon }) {
     : null;
 
   return (
-    <div className="flex flex-col gap-2 rounded-card bg-white p-3 shadow-sm">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-          {typeIcon &&
-            (typeIcon.startsWith("http") ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={typeIcon} alt="" className="h-6 w-6 shrink-0 rounded object-contain" />
-            ) : (
-              <span className="shrink-0 text-lg leading-none" aria-hidden="true">
-                {typeIcon}
-              </span>
-            ))}
-          <span
-            title={leftName}
-            className={`min-w-0 flex-1 truncate text-right text-sm ${
-              usIsLeft ? "font-bold text-navy" : "text-ink/70"
-            }`}
-          >
-            {leftName}
-          </span>
-          <Crest assetId={m.team1_logo_asset} name={leftName} />
+    <div className="flex flex-col gap-2 rounded-card bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+        {typeIcon &&
+          (typeIcon.startsWith("http") ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={typeIcon} alt="" className="h-6 w-6 shrink-0 rounded object-contain" />
+          ) : (
+            <span className="shrink-0 text-lg leading-none" aria-hidden="true">
+              {typeIcon}
+            </span>
+          ))}
+        <span
+          title={leftName}
+          className={`min-w-0 flex-1 truncate text-right text-sm ${
+            usIsLeft ? "font-bold text-navy" : "text-ink/70"
+          }`}
+        >
+          {leftName}
+        </span>
+        <Crest assetId={m.team1_logo_asset} name={leftName} />
 
-          <div className="flex min-w-[68px] shrink-0 flex-col items-center px-1">
-            {isPlayed ? (
-              <span className="font-display text-lg font-bold">
-                <span className={leftColor}>{leftScore ?? "–"}</span>
-                <span className="text-navy"> - </span>
-                <span className={rightColor}>{rightScore ?? "–"}</span>
-              </span>
-            ) : (
-              <span className="flex flex-col items-center leading-tight">
-                {shortDate && (
-                  <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
-                )}
-                <span className="font-display text-sm text-ink/60">{shortTime ?? "?"}</span>
-              </span>
-            )}
-          </div>
-
-          <Crest assetId={m.team2_logo_asset} name={rightName} />
-          <span
-            title={rightName}
-            className={`min-w-0 flex-1 truncate text-sm ${
-              usIsRight ? "font-bold text-navy" : "text-ink/70"
-            }`}
-          >
-            {rightName}
-          </span>
-        </div>
-
-        <div className="flex items-center justify-between gap-3 sm:justify-end">
-          <p className="text-xs text-ink/40">{m.location || "Lieu inconnu"}</p>
-
-          {!isPlayed && m.source === "manuel" && (
-            <form action={recordScore} className="flex items-center gap-1">
-              <input type="hidden" name="match_id" value={m.id} />
-              <input
-                type="number"
-                min="0"
-                name="team_score_us"
-                placeholder={clubName || "Nous"}
-                className="w-12 rounded-lg border border-ink/15 px-1 py-0.5 text-xs"
-              />
-              <input
-                type="number"
-                min="0"
-                name="team_score_them"
-                placeholder="Eux"
-                className="w-12 rounded-lg border border-ink/15 px-1 py-0.5 text-xs"
-              />
-              <button
-                type="submit"
-                className="rounded-full bg-navy px-2 py-0.5 text-xs font-semibold text-white hover:bg-navy-light"
-              >
-                OK
-              </button>
-            </form>
+        {/* Cliquer sur la date (match à venir) ou le score (match joué) ouvre
+            la feuille de match complète — plus aucune saisie sur la ligne. */}
+        <Link
+          href={`${sheetBaseHref}&feuille=${m.id}`}
+          scroll={false}
+          className="flex min-w-[68px] shrink-0 flex-col items-center rounded-lg px-1 py-0.5 hover:bg-sand"
+          title="Ouvrir la feuille de match"
+        >
+          {isPlayed ? (
+            <span className="font-display text-lg font-bold">
+              <span className={leftColor}>{leftScore ?? "–"}</span>
+              <span className="text-navy"> - </span>
+              <span className={rightColor}>{rightScore ?? "–"}</span>
+            </span>
+          ) : (
+            <span className="flex flex-col items-center leading-tight">
+              {shortDate && (
+                <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
+              )}
+              <span className="font-display text-sm text-ink/60">{shortTime ?? "?"}</span>
+            </span>
           )}
+        </Link>
 
-          {/* Un match issu d'une synchro FFBB n'est jamais supprimable — seuls
-              les matchs ajoutés à la main le sont (voir aussi le garde-fou
-              côté serveur dans deleteMatch). */}
-          {m.source === "manuel" && (
-            <form action={deleteMatch}>
-              <input type="hidden" name="match_id" value={m.id} />
-              <button type="submit" className="text-xs font-semibold text-ink/30 hover:text-cardinal">
-                ✕
-              </button>
-            </form>
-          )}
-        </div>
+        <Crest assetId={m.team2_logo_asset} name={rightName} />
+        <span
+          title={rightName}
+          className={`min-w-0 flex-1 truncate text-sm ${
+            usIsRight ? "font-bold text-navy" : "text-ink/70"
+          }`}
+        >
+          {rightName}
+        </span>
       </div>
 
-      {/* Feuille de match libre (quarts-temps + notes) — disponible pour tout
-          match joué saisi à la main, typiquement un match amical. */}
-      {isPlayed && m.source === "manuel" && (
-        <details className="border-t border-ink/5 pt-2">
-          <summary className="cursor-pointer text-xs font-semibold text-ink/40 hover:text-navy">
-            Feuille de match{report ? " (enregistrée)" : ""}
-          </summary>
-          <form action={saveMatchReport} className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5 sm:items-end">
+      <div className="flex items-center justify-between gap-3 sm:justify-end">
+        <p className="text-xs text-ink/40">{m.location || "Lieu inconnu"}</p>
+
+        {/* Un match issu d'une synchro FFBB n'est jamais supprimable — seuls
+            les matchs ajoutés à la main le sont (voir aussi le garde-fou
+            côté serveur dans deleteMatch). */}
+        {m.source === "manuel" && (
+          <form action={deleteMatch}>
             <input type="hidden" name="match_id" value={m.id} />
-            {[1, 2, 3, 4].map((q) => (
-              <div key={q} className="flex flex-col gap-1">
-                <span className="text-[10px] uppercase text-ink/40">Quart-temps {q}</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    min="0"
-                    name={`q${q}_us`}
-                    defaultValue={report?.quarters?.[q - 1]?.us ?? ""}
-                    placeholder={clubName || "Nous"}
-                    className="w-14 rounded-lg border border-ink/15 px-1 py-0.5"
-                  />
-                  <span className="text-ink/30">-</span>
-                  <input
-                    type="number"
-                    min="0"
-                    name={`q${q}_them`}
-                    defaultValue={report?.quarters?.[q - 1]?.them ?? ""}
-                    placeholder="Eux"
-                    className="w-14 rounded-lg border border-ink/15 px-1 py-0.5"
-                  />
-                </div>
-              </div>
-            ))}
-            <button
-              type="submit"
-              className="col-span-2 rounded-full bg-navy px-3 py-1.5 font-semibold text-white hover:bg-navy-light sm:col-span-1"
-            >
-              Enregistrer
+            <button type="submit" className="text-xs font-semibold text-ink/30 hover:text-cardinal">
+              ✕
             </button>
-            <textarea
-              name="notes"
-              defaultValue={report?.notes ?? ""}
-              placeholder="Notes (arbitre, ambiance, faits marquants...)"
-              rows={2}
-              className="col-span-2 rounded-lg border border-ink/15 px-2 py-1.5 sm:col-span-5"
-            />
           </form>
-        </details>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -451,8 +381,8 @@ function CalendrierTab({
   tab,
   scope,
   season,
+  phaseId,
   journeesMode,
-  clubName,
   typeIcon,
 }) {
   if (matches.length === 0) {
@@ -465,7 +395,9 @@ function CalendrierTab({
     );
   }
 
-  const baseParams = `ps=${participantSportId}&tab=${tab}&scope=${scope}&season=${encodeURIComponent(season)}`;
+  // phase= est indispensable ici : sans lui, changer de journée ou basculer
+  // "Toutes" retombe systématiquement sur la première phase de la saison.
+  const baseParams = `ps=${participantSportId}&tab=${tab}&scope=${scope}&season=${encodeURIComponent(season)}&phase=${phaseId ?? ""}`;
   const journeeHref = (j) => `/basket?${baseParams}&journees=une&journee=${encodeURIComponent(j)}`;
   const toutesHref = `/basket?${baseParams}&journees=toutes`;
   const uneHref = `/basket?${baseParams}&journees=une&journee=${encodeURIComponent(selectedJournee ?? "")}`;
@@ -477,6 +409,9 @@ function CalendrierTab({
 
   const undated = matches.filter((m) => !m.numero_journee);
   const showAll = journeesMode === "toutes";
+  // Base d'URL réutilisée par chaque MatchCard pour ouvrir sa feuille de
+  // match tout en préservant la vue actuelle (journée sélectionnée ou "toutes").
+  const sheetBaseHref = showAll ? toutesHref : uneHref;
 
   // journée par journée, dans l'ordre — utilisé seulement en mode "toutes".
   const byJournee = journeeOptions.map((j) => ({
@@ -550,7 +485,7 @@ function CalendrierTab({
               </p>
               <div className="space-y-2">
                 {rows.map((m) => (
-                  <MatchCard key={m.id} m={m} clubName={clubName} typeIcon={typeIcon} />
+                  <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} />
                 ))}
               </div>
             </div>
@@ -559,7 +494,7 @@ function CalendrierTab({
       ) : (
         <div className="space-y-2">
           {journeeMatches.map((m) => (
-            <MatchCard key={m.id} m={m} clubName={clubName} typeIcon={typeIcon} />
+            <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} />
           ))}
           {journeeMatches.length === 0 && (
             <p className="rounded-card bg-white p-4 text-center text-sm text-ink/40 shadow-sm">
@@ -576,7 +511,7 @@ function CalendrierTab({
           </p>
           <div className="space-y-2">
             {undated.map((m) => (
-              <MatchCard key={m.id} m={m} clubName={clubName} typeIcon={typeIcon} />
+              <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} />
             ))}
           </div>
         </div>
@@ -768,8 +703,307 @@ function StatsTab({ playedMatches }) {
   );
 }
 
+// Feuille de match complète — remplace toute la page quand ?feuille=<id> est
+// présent dans l'URL. Ouverte en cliquant sur la date ou le score d'un match
+// dans le calendrier. Le score officiel FFBB (s'il y en a un) n'est jamais
+// modifiable ici ; seuls les quarts-temps/notes et les statistiques par
+// joueuse le sont. Pour un match manuel (amical), le score total ET le
+// statut joué/à venir sont recalculés depuis les quarts-temps saisis.
+async function MatchSheetPage({ matchId, backHref }) {
+  const supabase = createClient();
+
+  const { data: match } = await supabase
+    .from("basketball_matches")
+    .select("*")
+    .eq("id", matchId)
+    .maybeSingle();
+
+  if (!match) {
+    return (
+      <div className="space-y-4">
+        <Link href={backHref} className="inline-block text-sm font-semibold text-navy hover:text-cardinal">
+          ← Retour au calendrier
+        </Link>
+        <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+          Ce match n'existe plus.
+        </div>
+      </div>
+    );
+  }
+
+  const [{ data: phase }, { data: players }, { data: statsRows }] = await Promise.all([
+    match.phase_id
+      ? supabase
+          .from("basketball_phases")
+          .select("phase_name, competition_name, poule_label")
+          .eq("id", match.phase_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabase
+      .from("basketball_players")
+      .select("*")
+      .eq("participant_sport_id", match.participant_sport_id)
+      .order("name", { ascending: true }),
+    supabase.from("basketball_match_stats").select("*").eq("match_id", matchId),
+  ]);
+
+  const statsByPlayer = new Map((statsRows ?? []).map((s) => [s.player_id, s]));
+  const isPlayed = match.status === "joue";
+  const usIsLeft = match.us_is_team1 === true;
+  const usIsRight = match.us_is_team1 === false;
+  const leftName = match.team1_name || "Équipe inconnue";
+  const rightName = match.team2_name || "Équipe inconnue";
+  const report = match.match_report;
+  const isManual = match.source === "manuel";
+
+  const pointsFor = (s) => (s ? s.two_made * 2 + s.three_made * 3 + s.ft_made : 0);
+  const totalTeamPoints = (players ?? []).reduce((sum, p) => sum + pointsFor(statsByPlayer.get(p.id)), 0);
+
+  return (
+    <div className="space-y-6">
+      <Link href={backHref} className="inline-block text-sm font-semibold text-navy hover:text-cardinal">
+        ← Retour au calendrier
+      </Link>
+
+      <div className="rounded-card bg-white p-5 shadow-sm">
+        <p className="text-xs font-semibold uppercase tracking-wide text-ink/40">
+          {phase?.competition_name || phase?.phase_name || "Match"}
+          {phase?.poule_label ? ` · ${phase.poule_label}` : ""}
+        </p>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <h1 className="font-display text-xl uppercase tracking-tight text-navy">
+            <span className={usIsLeft ? "font-bold" : ""}>{leftName}</span>
+            <span className="mx-2 text-ink/30">vs</span>
+            <span className={usIsRight ? "font-bold" : ""}>{rightName}</span>
+          </h1>
+          <p className="text-sm text-ink/50">{match.location || "Lieu inconnu"}</p>
+        </div>
+        <p className="mt-1 text-sm text-ink/50">
+          {match.match_date ? formatDateTime(match.match_date) : "Date à confirmer"}
+        </p>
+      </div>
+
+      <div className="rounded-card bg-white p-5 shadow-sm">
+        <p className="font-display text-sm uppercase tracking-tight text-navy">Score</p>
+
+        {!isManual && (
+          <p className="mt-1 text-xs text-ink/40">
+            Score officiel FFBB — {isPlayed ? `${match.team1_score ?? "–"} - ${match.team2_score ?? "–"}` : "match non joué"}.
+            Les quarts-temps ci-dessous sont juste indicatifs, ils ne changent pas le score officiel.
+          </p>
+        )}
+
+        <form action={saveMatchSheet} className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <input type="hidden" name="match_id" value={match.id} />
+          {[1, 2, 3, 4].map((q) => (
+            <div key={q} className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase text-ink/40">Quart-temps {q}</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min="0"
+                  name={`q${q}_us`}
+                  defaultValue={report?.quarters?.[q - 1]?.us ?? ""}
+                  placeholder={usIsLeft ? leftName : rightName}
+                  className="w-16 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+                />
+                <span className="text-ink/30">-</span>
+                <input
+                  type="number"
+                  min="0"
+                  name={`q${q}_them`}
+                  defaultValue={report?.quarters?.[q - 1]?.them ?? ""}
+                  placeholder="Adv."
+                  className="w-16 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+                />
+              </div>
+            </div>
+          ))}
+
+          {isManual && (
+            <label className="col-span-2 flex items-center gap-2 text-sm text-ink/60 sm:col-span-4">
+              <input type="checkbox" name="played" defaultChecked={isPlayed} className="h-4 w-4" />
+              Match joué (le score total est recalculé depuis les quarts-temps ci-dessus)
+            </label>
+          )}
+
+          <textarea
+            name="notes"
+            defaultValue={report?.notes ?? ""}
+            placeholder="Notes (arbitre, ambiance, faits marquants...)"
+            rows={2}
+            className="col-span-2 rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-4"
+          />
+
+          <button
+            type="submit"
+            className="col-span-2 rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light sm:col-span-1 sm:w-fit"
+          >
+            Enregistrer
+          </button>
+        </form>
+      </div>
+
+      <div className="rounded-card bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="font-display text-sm uppercase tracking-tight text-navy">Feuille de match — joueuses</p>
+          <p className="text-xs text-ink/40">Total calculé : {totalTeamPoints} pts</p>
+        </div>
+
+        {(players ?? []).length === 0 ? (
+          <p className="mt-3 text-sm text-ink/50">Aucune joueuse dans l'effectif — ajoute-en une ci-dessous.</p>
+        ) : (
+          <form action={saveMatchStats} className="mt-3 overflow-x-auto">
+            <input type="hidden" name="match_id" value={match.id} />
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="border-b border-ink/10 text-left text-[10px] uppercase tracking-wide text-ink/40">
+                  <th className="py-1.5 pr-2">Joueuse</th>
+                  <th className="px-1.5 text-center">Fautes</th>
+                  <th className="px-1.5 text-center">LF (réuss./tent.)</th>
+                  <th className="px-1.5 text-center">2 pts (réuss./tent.)</th>
+                  <th className="px-1.5 text-center">3 pts (réuss./tent.)</th>
+                  <th className="px-1.5 text-center">Pts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(players ?? []).map((p) => {
+                  const s = statsByPlayer.get(p.id);
+                  return (
+                    <tr key={p.id} className="border-b border-ink/5 last:border-0">
+                      <td className="py-1.5 pr-2 font-semibold text-ink">
+                        {p.name}
+                        <input type="hidden" name="player_id" value={p.id} />
+                      </td>
+                      <td className="px-1.5">
+                        <input
+                          type="number"
+                          min="0"
+                          name={`fouls_${p.id}`}
+                          defaultValue={s?.fouls ?? 0}
+                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                        />
+                      </td>
+                      <td className="px-1.5">
+                        <div className="flex items-center justify-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            name={`ft_made_${p.id}`}
+                            defaultValue={s?.ft_made ?? 0}
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                          <span className="text-ink/30">/</span>
+                          <input
+                            type="number"
+                            min="0"
+                            name={`ft_att_${p.id}`}
+                            defaultValue={s?.ft_att ?? 0}
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-1.5">
+                        <div className="flex items-center justify-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            name={`two_made_${p.id}`}
+                            defaultValue={s?.two_made ?? 0}
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                          <span className="text-ink/30">/</span>
+                          <input
+                            type="number"
+                            min="0"
+                            name={`two_att_${p.id}`}
+                            defaultValue={s?.two_att ?? 0}
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-1.5">
+                        <div className="flex items-center justify-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            name={`three_made_${p.id}`}
+                            defaultValue={s?.three_made ?? 0}
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                          <span className="text-ink/30">/</span>
+                          <input
+                            type="number"
+                            min="0"
+                            name={`three_att_${p.id}`}
+                            defaultValue={s?.three_att ?? 0}
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-1.5 text-center font-display font-bold text-navy">{pointsFor(s)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <button
+              type="submit"
+              className="mt-3 rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
+            >
+              Enregistrer les statistiques
+            </button>
+          </form>
+        )}
+
+        <div className="mt-4 border-t border-ink/5 pt-3">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">Effectif</p>
+          <div className="flex flex-wrap gap-2">
+            {(players ?? []).map((p) => (
+              <form key={p.id} action={deletePlayer} className="flex items-center gap-1 rounded-full bg-sand px-2 py-1 text-xs">
+                <input type="hidden" name="player_id" value={p.id} />
+                <span>{p.name}</span>
+                <button type="submit" className="font-semibold text-ink/30 hover:text-cardinal" title="Retirer de l'effectif">
+                  ✕
+                </button>
+              </form>
+            ))}
+          </div>
+          <form action={addPlayer} className="mt-2 flex flex-wrap items-center gap-2">
+            <input type="hidden" name="participant_sport_id" value={match.participant_sport_id} />
+            <input
+              name="name"
+              placeholder="Nom de la nouvelle joueuse"
+              required
+              className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+            />
+            <button
+              type="submit"
+              className="rounded-full bg-cardinal px-3 py-1.5 text-xs font-semibold text-white hover:bg-cardinal-dark"
+            >
+              Ajouter à l'effectif
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default async function BasketPage({ searchParams }) {
   const supabase = createClient();
+
+  // La feuille de match remplace tout le contenu de la page tant qu'elle est
+  // ouverte — on garde tous les autres paramètres d'URL (participant, saison,
+  // phase, journée...) pour revenir exactement là d'où on vient.
+  if (searchParams?.feuille) {
+    const backParams = new URLSearchParams();
+    Object.entries(searchParams).forEach(([key, value]) => {
+      if (key !== "feuille" && typeof value === "string") backParams.set(key, value);
+    });
+    return <MatchSheetPage matchId={searchParams.feuille} backHref={`/basket?${backParams.toString()}`} />;
+  }
+
   const currentSeason = computeCurrentSeasonLabel();
 
   const { data: sport } = await supabase
@@ -1046,8 +1280,8 @@ export default async function BasketPage({ searchParams }) {
               tab={tab}
               scope={scope}
               season={selectedSeason}
+              phaseId={selectedPhase?.id}
               journeesMode={journeesMode}
-              clubName={selectedPs?.club}
               typeIcon={phaseTypeIcon}
             />
           )}
