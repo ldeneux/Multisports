@@ -227,13 +227,24 @@ export default async function DocumentsPage({ searchParams }) {
     (participants ?? [])[0]?.id ??
     null;
 
-  const { data: documents } = selectedParticipantId
-    ? await supabase
-        .from("documents")
-        .select("*, sports(name)")
-        .eq("participant_id", selectedParticipantId)
-        .order("obtained_date", { ascending: false })
-    : { data: [] };
+  const kindParam = searchParams?.kind;
+  const kindFilterActive = kindParam !== undefined;
+  const selectedKinds = !kindFilterActive
+    ? Object.keys(KIND_STYLES)
+    : Array.isArray(kindParam)
+      ? kindParam
+      : [kindParam];
+
+  const { data: documentsRaw } =
+    selectedParticipantId && selectedKinds.length > 0
+      ? await supabase
+          .from("documents")
+          .select("*, sports(name)")
+          .eq("participant_id", selectedParticipantId)
+          .in("kind", selectedKinds)
+          .order("obtained_date", { ascending: false })
+      : { data: [] };
+  const documents = documentsRaw ?? [];
 
   return (
     <div className="space-y-6">
@@ -253,17 +264,22 @@ export default async function DocumentsPage({ searchParams }) {
       ) : (
         <>
           <div className="flex flex-wrap gap-2">
-            {participants.map((p) => (
-              <Link
-                key={p.id}
-                href={`/documents?participant=${p.id}`}
-                className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
-                  p.id === selectedParticipantId ? "bg-cardinal text-white" : "bg-white text-ink/60"
-                }`}
-              >
-                {p.first_name}
-              </Link>
-            ))}
+            {participants.map((p) => {
+              const params = new URLSearchParams();
+              params.set("participant", p.id);
+              selectedKinds.forEach((k) => params.append("kind", k));
+              return (
+                <Link
+                  key={p.id}
+                  href={`/documents?${params.toString()}`}
+                  className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
+                    p.id === selectedParticipantId ? "bg-cardinal text-white" : "bg-white text-ink/60"
+                  }`}
+                >
+                  {p.first_name}
+                </Link>
+              );
+            })}
           </div>
 
           <details className="rounded-card bg-white p-4 shadow-sm">
@@ -286,10 +302,38 @@ export default async function DocumentsPage({ searchParams }) {
             </form>
           </details>
 
+          <form
+            method="GET"
+            className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-card bg-white p-4 text-sm shadow-sm"
+          >
+            <input type="hidden" name="participant" value={selectedParticipantId ?? ""} />
+            <span className="text-xs font-semibold uppercase tracking-wide text-ink/40">Afficher :</span>
+            {Object.entries(KIND_STYLES).map(([value, k]) => (
+              <label key={value} className="flex items-center gap-1.5 text-ink/70">
+                <input
+                  type="checkbox"
+                  name="kind"
+                  value={value}
+                  defaultChecked={selectedKinds.includes(value)}
+                  className="h-4 w-4 rounded border-ink/30"
+                />
+                {k.label}
+              </label>
+            ))}
+            <button
+              type="submit"
+              className="rounded-full bg-navy px-4 py-1.5 text-xs font-semibold text-white hover:bg-navy-light"
+            >
+              Filtrer
+            </button>
+          </form>
+
           <section className="grid gap-4 sm:grid-cols-2">
             {(!documents || documents.length === 0) ? (
               <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm sm:col-span-2">
-                Aucun document enregistré pour l'instant.
+                {kindFilterActive
+                  ? "Aucun document ne correspond aux filtres sélectionnés."
+                  : "Aucun document enregistré pour l'instant."}
               </p>
             ) : (
               documents.map((d) => <DocumentCard key={d.id} doc={d} sports={sports} />)
