@@ -223,9 +223,22 @@ export async function addPlayer(formData) {
 
   const role = formData.get("role") === "entraineur" ? "entraineur" : "joueur";
   const name = [lastName, firstName].filter(Boolean).join(" ") || "Sans nom";
+  const participantSportId = formData.get("participant_sport_id");
+  const isSelf = formData.get("is_self") === "on";
+
+  // Une seule joueuse "moi-même" possible par équipe : on désélectionne
+  // l'ancienne avant d'insérer la nouvelle plutôt que de compter sur la
+  // contrainte unique en base (qui, elle, ne fait que garantir qu'on ne se
+  // retrouve jamais avec deux lignes à true en cas d'oubli ici).
+  if (isSelf && participantSportId) {
+    await supabase
+      .from("basketball_players")
+      .update({ is_self: false })
+      .eq("participant_sport_id", participantSportId);
+  }
 
   const { error } = await supabase.from("basketball_players").insert({
-    participant_sport_id: formData.get("participant_sport_id"),
+    participant_sport_id: participantSportId,
     role,
     name,
     last_name: lastName || null,
@@ -235,6 +248,7 @@ export async function addPlayer(formData) {
     national_number: formData.get("national_number") || null,
     licence_type: formData.get("licence_type") || null,
     licence_not_presented: formData.get("licence_not_presented") === "on",
+    is_self: isSelf,
     // Champs propres au rôle "joueur" — ignorés (mis à vide) pour un
     // entraîneur, même s'ils ont été soumis par erreur.
     jersey_number:
@@ -266,6 +280,25 @@ export async function updatePlayer(formData) {
 
   const role = formData.get("role") === "entraineur" ? "entraineur" : "joueur";
   const name = [lastName, firstName].filter(Boolean).join(" ") || "Sans nom";
+  const isSelf = formData.get("is_self") === "on";
+
+  // Récupère l'équipe de cette joueuse pour pouvoir désélectionner l'ancienne
+  // "moi-même" si besoin (participant_sport_id n'est pas dans ce formulaire,
+  // volontairement non modifiable depuis la fiche d'une joueuse existante).
+  if (isSelf) {
+    const { data: current } = await supabase
+      .from("basketball_players")
+      .select("participant_sport_id")
+      .eq("id", playerId)
+      .maybeSingle();
+    if (current?.participant_sport_id) {
+      await supabase
+        .from("basketball_players")
+        .update({ is_self: false })
+        .eq("participant_sport_id", current.participant_sport_id)
+        .neq("id", playerId);
+    }
+  }
 
   const { error } = await supabase
     .from("basketball_players")
@@ -279,6 +312,7 @@ export async function updatePlayer(formData) {
       national_number: formData.get("national_number") || null,
       licence_type: formData.get("licence_type") || null,
       licence_not_presented: formData.get("licence_not_presented") === "on",
+      is_self: isSelf,
       jersey_number:
         role === "joueur" && formData.get("jersey_number") !== "" ? Number(formData.get("jersey_number")) : null,
       surclassement: role === "joueur" ? formData.get("surclassement") || null : null,
@@ -322,9 +356,7 @@ export async function saveMatchStats(formData) {
     ft_made: numberOr0(formData.get(`ft_made_${playerId}`)),
     ft_att: numberOr0(formData.get(`ft_att_${playerId}`)),
     two_made: numberOr0(formData.get(`two_made_${playerId}`)),
-    two_att: numberOr0(formData.get(`two_att_${playerId}`)),
     three_made: numberOr0(formData.get(`three_made_${playerId}`)),
-    three_att: numberOr0(formData.get(`three_att_${playerId}`)),
     is_captain: formData.get(`captain_${playerId}`) === "on",
     is_starting_five: formData.get(`starting_${playerId}`) === "on",
     minutes_played: formData.get(`minutes_${playerId}`) || null,
