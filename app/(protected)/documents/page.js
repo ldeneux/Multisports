@@ -171,9 +171,7 @@ function DocumentCard({ doc, sports }) {
       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs font-semibold">
         {doc.document_url && (
           <a
-            href={doc.document_url}
-            target="_blank"
-            rel="noreferrer"
+            href={`${doc.document_url}${doc.document_url.includes("?") ? "&" : "?"}download=`}
             className="text-cardinal hover:underline"
           >
             Télécharger
