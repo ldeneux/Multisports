@@ -7,6 +7,7 @@ import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import {
   addMatch,
   saveMatchSheet,
+  resetMatchSheet,
   saveMatchStats,
   addPlayer,
   deletePlayer,
@@ -731,14 +732,15 @@ async function MatchSheetPage({ matchId, backHref }) {
     );
   }
 
-  const [{ data: phase }, { data: players }, { data: statsRows }] = await Promise.all([
+  const [{ data: phase }, { data: ps }, { data: allPeople }, { data: statsRows }] = await Promise.all([
     match.phase_id
       ? supabase
           .from("basketball_phases")
-          .select("phase_name, competition_name, poule_label")
+          .select("phase_name, competition_name, poule_label, our_team_name")
           .eq("id", match.phase_id)
           .maybeSingle()
       : Promise.resolve({ data: null }),
+    supabase.from("participant_sports").select("club").eq("id", match.participant_sport_id).maybeSingle(),
     supabase
       .from("basketball_players")
       .select("*")
@@ -746,6 +748,10 @@ async function MatchSheetPage({ matchId, backHref }) {
       .order("name", { ascending: true }),
     supabase.from("basketball_match_stats").select("*").eq("match_id", matchId),
   ]);
+
+  const players = (allPeople ?? []).filter((p) => p.role !== "entraineur");
+  const staff = (allPeople ?? []).filter((p) => p.role === "entraineur");
+  const defaultClub = phase?.our_team_name || ps?.club || "";
 
   const statsByPlayer = new Map((statsRows ?? []).map((s) => [s.player_id, s]));
   const isPlayed = match.status === "joue";
@@ -757,13 +763,41 @@ async function MatchSheetPage({ matchId, backHref }) {
   const isManual = match.source === "manuel";
 
   const pointsFor = (s) => (s ? s.two_made * 2 + s.three_made * 3 + s.ft_made : 0);
-  const totalTeamPoints = (players ?? []).reduce((sum, p) => sum + pointsFor(statsByPlayer.get(p.id)), 0);
+  const totalTeamPoints = players.reduce((sum, p) => sum + pointsFor(statsByPlayer.get(p.id)), 0);
 
   return (
     <div className="space-y-6">
-      <Link href={backHref} className="inline-block text-sm font-semibold text-navy hover:text-cardinal">
-        ← Retour au calendrier
-      </Link>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Link href={backHref} className="inline-block text-sm font-semibold text-navy hover:text-cardinal">
+          ← Retour au calendrier
+        </Link>
+        <div className="flex items-center gap-2">
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              isManual ? "bg-sand text-ink/60" : "bg-lagoon-light text-navy"
+            }`}
+          >
+            {isManual ? "🤝 Manuel" : "🔄 Synchronisé"}
+          </span>
+          <form action={resetMatchSheet}>
+            <input type="hidden" name="match_id" value={match.id} />
+            <ConfirmSubmitButton
+              confirmMessage="Réinitialiser cette feuille de match ? Quarts-temps, notes et statistiques par joueuse seront effacés (l'effectif de l'équipe n'est pas touché). Cette action est irréversible."
+              className="text-xs font-semibold text-ink/40 hover:text-cardinal"
+            >
+              Réinitialiser la feuille
+            </ConfirmSubmitButton>
+          </form>
+        </div>
+      </div>
+
+      {!isManual && (
+        <p className="text-xs text-ink/40">
+          Ce match est synchronisé depuis la FFBB : la date, le lieu et le score officiel seront
+          remis à jour à chaque synchro. Seules la feuille de match et les statistiques par joueuse,
+          saisies ici, ne sont jamais écrasées.
+        </p>
+      )}
 
       <div className="rounded-card bg-white p-5 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-wide text-ink/40">
@@ -850,15 +884,18 @@ async function MatchSheetPage({ matchId, backHref }) {
           <p className="text-xs text-ink/40">Total calculé : {totalTeamPoints} pts</p>
         </div>
 
-        {(players ?? []).length === 0 ? (
+        {players.length === 0 ? (
           <p className="mt-3 text-sm text-ink/50">Aucune joueuse dans l'effectif — ajoute-en une ci-dessous.</p>
         ) : (
           <form action={saveMatchStats} className="mt-3 overflow-x-auto">
             <input type="hidden" name="match_id" value={match.id} />
-            <table className="w-full min-w-[640px] text-sm">
+            <table className="w-full min-w-[820px] text-sm">
               <thead>
                 <tr className="border-b border-ink/10 text-left text-[10px] uppercase tracking-wide text-ink/40">
                   <th className="py-1.5 pr-2">Joueuse</th>
+                  <th className="px-1.5 text-center">Cap.</th>
+                  <th className="px-1.5 text-center">5 majeur</th>
+                  <th className="px-1.5 text-center">Temps (MM:SS)</th>
                   <th className="px-1.5 text-center">Fautes</th>
                   <th className="px-1.5 text-center">LF (réuss./tent.)</th>
                   <th className="px-1.5 text-center">2 pts (réuss./tent.)</th>
@@ -867,13 +904,41 @@ async function MatchSheetPage({ matchId, backHref }) {
                 </tr>
               </thead>
               <tbody>
-                {(players ?? []).map((p) => {
+                {players.map((p) => {
                   const s = statsByPlayer.get(p.id);
                   return (
                     <tr key={p.id} className="border-b border-ink/5 last:border-0">
                       <td className="py-1.5 pr-2 font-semibold text-ink">
+                        {p.jersey_number != null ? `#${p.jersey_number} ` : ""}
                         {p.name}
                         <input type="hidden" name="player_id" value={p.id} />
+                      </td>
+                      <td className="px-1.5 text-center">
+                        <input
+                          type="checkbox"
+                          name={`captain_${p.id}`}
+                          defaultChecked={s?.is_captain ?? false}
+                          className="h-4 w-4"
+                        />
+                      </td>
+                      <td className="px-1.5 text-center">
+                        <input
+                          type="checkbox"
+                          name={`starting_${p.id}`}
+                          defaultChecked={s?.is_starting_five ?? false}
+                          className="h-4 w-4"
+                        />
+                      </td>
+                      <td className="px-1.5">
+                        <input
+                          type="text"
+                          name={`minutes_${p.id}`}
+                          defaultValue={s?.minutes_played ?? ""}
+                          placeholder="MM:SS"
+                          pattern="^[0-9]{1,3}:[0-5][0-9]$"
+                          title="Format MM:SS, ex. 12:30"
+                          className="w-20 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                        />
                       </td>
                       <td className="px-1.5">
                         <input
@@ -956,30 +1021,119 @@ async function MatchSheetPage({ matchId, backHref }) {
           </form>
         )}
 
+        {staff.length > 0 && (
+          <div className="mt-4 border-t border-ink/5 pt-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">Encadrement</p>
+            <ul className="space-y-1 text-sm text-ink/70">
+              {staff.map((p) => (
+                <li key={p.id}>
+                  {p.name}
+                  {p.diplome ? ` — ${p.diplome}` : ""}
+                  {p.is_adjoint ? " (adjoint)" : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <div className="mt-4 border-t border-ink/5 pt-3">
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">Effectif</p>
           <div className="flex flex-wrap gap-2">
-            {(players ?? []).map((p) => (
-              <form key={p.id} action={deletePlayer} className="flex items-center gap-1 rounded-full bg-sand px-2 py-1 text-xs">
+            {(allPeople ?? []).map((p) => (
+              <form
+                key={p.id}
+                action={deletePlayer}
+                className="flex items-center gap-1 rounded-full bg-sand px-2 py-1 text-xs"
+              >
                 <input type="hidden" name="player_id" value={p.id} />
-                <span>{p.name}</span>
-                <button type="submit" className="font-semibold text-ink/30 hover:text-cardinal" title="Retirer de l'effectif">
+                <span>
+                  {p.name}
+                  {p.role === "entraineur" ? " (entraîneur)" : ""}
+                </span>
+                <button
+                  type="submit"
+                  className="font-semibold text-ink/30 hover:text-cardinal"
+                  title="Retirer de l'effectif"
+                >
                   ✕
                 </button>
               </form>
             ))}
           </div>
-          <form action={addPlayer} className="mt-2 flex flex-wrap items-center gap-2">
+
+          {/* Un seul formulaire pour joueuse ou entraîneur (façon fiche
+              FFBB) : le rôle choisi détermine, côté serveur, quels champs
+              sont réellement conservés (n° maillot/surclassement/capitaine
+              pour une joueuse, diplôme/adjoint pour un entraîneur). */}
+          <form action={addPlayer} className="mt-3 space-y-2 rounded-lg bg-sand p-3">
             <input type="hidden" name="participant_sport_id" value={match.participant_sport_id} />
-            <input
-              name="name"
-              placeholder="Nom de la nouvelle joueuse"
-              required
-              className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-            />
+
+            <div className="flex items-center gap-4 text-sm">
+              <label className="flex items-center gap-1.5">
+                <input type="radio" name="role" value="joueur" defaultChecked className="h-4 w-4" />
+                Joueuse
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input type="radio" name="role" value="entraineur" className="h-4 w-4" />
+                Entraîneur·e
+              </label>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input name="last_name" placeholder="Nom *" required className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
+              <input name="first_name" placeholder="Prénom *" required className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
+              <input name="licence_number" placeholder="N° licence" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
+              <input name="national_number" placeholder="N° national" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
+              <input name="licence_type" placeholder="Type de licence" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
+              <input
+                name="club"
+                defaultValue={defaultClub}
+                placeholder="Club"
+                className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+              />
+            </div>
+
+            <label className="flex items-center gap-1.5 text-sm text-ink/60">
+              <input type="checkbox" name="licence_not_presented" className="h-4 w-4" />
+              Licence non présentée
+            </label>
+
+            <div className="grid gap-2 border-t border-ink/10 pt-2 sm:grid-cols-2">
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">Si joueuse</p>
+                <input
+                  type="number"
+                  name="jersey_number"
+                  placeholder="N° de maillot"
+                  className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                />
+                <input
+                  name="surclassement"
+                  placeholder="Surclassement (ex. Aucun, 1 an, 2 ans)"
+                  className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                />
+                <label className="flex items-center gap-1.5 text-sm text-ink/60">
+                  <input type="checkbox" name="is_default_captain" className="h-4 w-4" />
+                  Capitaine habituelle
+                </label>
+              </div>
+              <div className="space-y-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">Si entraîneur·e</p>
+                <input
+                  name="diplome"
+                  placeholder="Diplôme"
+                  className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+                />
+                <label className="flex items-center gap-1.5 text-sm text-ink/60">
+                  <input type="checkbox" name="is_adjoint" className="h-4 w-4" />
+                  Adjoint
+                </label>
+              </div>
+            </div>
+
             <button
               type="submit"
-              className="rounded-full bg-cardinal px-3 py-1.5 text-xs font-semibold text-white hover:bg-cardinal-dark"
+              className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark"
             >
               Ajouter à l'effectif
             </button>
