@@ -297,6 +297,24 @@ export async function saveMatchStats(formData) {
   revalidatePath("/basket");
 }
 
+// Absence ponctuelle : retire une joueuse de LA feuille de CE match sans la
+// supprimer de l'effectif ni toucher ses stats sur les autres matchs.
+// Symétrique : on_sheet=true réintègre une joueuse précédemment absente.
+export async function togglePlayerOnSheet(formData) {
+  const supabase = createClient();
+  const matchId = formData.get("match_id");
+  const playerId = formData.get("player_id");
+  const onSheet = formData.get("on_sheet") === "true";
+
+  const { error } = await supabase.from("basketball_match_stats").upsert(
+    { match_id: matchId, player_id: playerId, on_sheet: onSheet, updated_at: new Date().toISOString() },
+    { onConflict: "match_id,player_id" }
+  );
+  assertNoError("Mise à jour de la feuille de match", error);
+
+  revalidatePath("/basket");
+}
+
 // Repart de zéro pour CE match uniquement (jamais l'effectif, jamais les
 // autres matchs) : quarts-temps, notes, statistiques par joueuse effacés.
 // Pour un match manuel, le score et le statut joué/à venir sont aussi
