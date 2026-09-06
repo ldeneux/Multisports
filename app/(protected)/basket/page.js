@@ -236,9 +236,15 @@ function MatchCard({ m, clubName }) {
   const usIsRight = m.us_is_team1 === false;
   const concernsUs = m.us_is_team1 !== null;
 
+  // Le nom affiché est TOUJOURS celui renvoyé par la FFBB (ou saisi à la
+  // main pour un match manuel) — jamais remplacé automatiquement par le nom
+  // du club configuré dans Paramètres. Ça permet de repérer tout de suite
+  // une erreur d'ID FFBB (le mauvais club apparaît sous son vrai nom au lieu
+  // d'être maquillé en "Sathonay Camp"), et de consulter ponctuellement le
+  // calendrier d'une autre poule sans que l'app ne le déguise en "nous".
   // Convention FFBB : "équipe 1" = domicile -> toujours affichée à gauche.
-  const leftName = usIsLeft ? clubName || "Nous" : m.team1_name || "Équipe inconnue";
-  const rightName = usIsRight ? clubName || "Nous" : m.team2_name || "Équipe inconnue";
+  const leftName = m.team1_name || "Équipe inconnue";
+  const rightName = m.team2_name || "Équipe inconnue";
   const leftScore = m.team1_score;
   const rightScore = m.team2_score;
 
@@ -269,7 +275,7 @@ function MatchCard({ m, clubName }) {
       <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
         <span
           title={leftName}
-          className={`w-20 shrink-0 truncate text-right text-sm sm:w-32 md:w-40 ${
+          className={`min-w-0 flex-1 truncate text-right text-sm ${
             usIsLeft ? "font-bold text-navy" : "text-ink/70"
           }`}
         >
@@ -297,7 +303,7 @@ function MatchCard({ m, clubName }) {
         <Crest assetId={m.team2_logo_asset} name={rightName} />
         <span
           title={rightName}
-          className={`w-20 shrink-0 truncate text-sm sm:w-32 md:w-40 ${
+          className={`min-w-0 flex-1 truncate text-sm ${
             usIsRight ? "font-bold text-navy" : "text-ink/70"
           }`}
         >
