@@ -716,7 +716,7 @@ function StatsTab({ playedMatches }) {
 // existante — un seul jeu de champs, pré-rempli via defaultValue quand
 // `player` est fourni. Le rôle choisi détermine, côté serveur (addPlayer /
 // updatePlayer), quels champs sont réellement conservés.
-function PlayerFormFields({ defaultClub, player }) {
+function PlayerFormFields({ defaultClub, participantFirstName, player }) {
   const role = player?.role === "entraineur" ? "entraineur" : "joueur";
   return (
     <>
@@ -736,6 +736,13 @@ function PlayerFormFields({ defaultClub, player }) {
           Entraîneur·e
         </label>
       </div>
+
+      {participantFirstName && (
+        <label className="flex items-center gap-1.5 text-sm text-ink/60">
+          <input type="checkbox" name="is_self" defaultChecked={player?.is_self ?? false} className="h-4 w-4" />
+          {`C'est ${participantFirstName} elle-même (utilisée par défaut dans les statistiques individuelles)`}
+        </label>
+      )}
 
       <div className="grid gap-2 sm:grid-cols-2">
         <input
@@ -867,7 +874,11 @@ async function MatchSheetPage({ matchId, backHref }) {
           .eq("id", match.phase_id)
           .maybeSingle()
       : Promise.resolve({ data: null }),
-    supabase.from("participant_sports").select("club").eq("id", match.participant_sport_id).maybeSingle(),
+    supabase
+      .from("participant_sports")
+      .select("club, participants(first_name)")
+      .eq("id", match.participant_sport_id)
+      .maybeSingle(),
     supabase
       .from("basketball_players")
       .select("*")
@@ -879,6 +890,7 @@ async function MatchSheetPage({ matchId, backHref }) {
   const players = (allPeople ?? []).filter((p) => p.role !== "entraineur");
   const staff = (allPeople ?? []).filter((p) => p.role === "entraineur");
   const defaultClub = phase?.our_team_name || ps?.club || "";
+  const participantFirstName = ps?.participants?.first_name || "";
 
   const statsByPlayer = new Map((statsRows ?? []).map((s) => [s.player_id, s]));
   // Une joueuse est sur la feuille par défaut (on_sheet absent ou true) —
@@ -1030,8 +1042,8 @@ async function MatchSheetPage({ matchId, backHref }) {
                   <th className="px-1.5 text-center">Temps (MM:SS)</th>
                   <th className="px-1.5 text-center">Fautes</th>
                   <th className="px-1.5 text-center">LF (réuss./tent.)</th>
-                  <th className="px-1.5 text-center">2 pts (réuss./tent.)</th>
-                  <th className="px-1.5 text-center">3 pts (réuss./tent.)</th>
+                  <th className="px-1.5 text-center">2 pts marqués</th>
+                  <th className="px-1.5 text-center">3 pts marqués</th>
                   <th className="px-1.5 text-center">Pts</th>
                   <th className="px-1.5 text-center"></th>
                 </tr>
@@ -1102,42 +1114,24 @@ async function MatchSheetPage({ matchId, backHref }) {
                         </div>
                       </td>
                       <td className="px-1.5">
-                        <div className="flex items-center justify-center gap-1">
-                          <input
-                            type="number"
-                            min="0"
-                            name={`two_made_${p.id}`}
-                            defaultValue={s?.two_made ?? 0}
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                          <span className="text-ink/30">/</span>
-                          <input
-                            type="number"
-                            min="0"
-                            name={`two_att_${p.id}`}
-                            defaultValue={s?.two_att ?? 0}
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                        </div>
+                        <input
+                          type="number"
+                          min="0"
+                          name={`two_made_${p.id}`}
+                          defaultValue={s?.two_made ?? 0}
+                          title="Nombre de paniers à 2 points marqués"
+                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                        />
                       </td>
                       <td className="px-1.5">
-                        <div className="flex items-center justify-center gap-1">
-                          <input
-                            type="number"
-                            min="0"
-                            name={`three_made_${p.id}`}
-                            defaultValue={s?.three_made ?? 0}
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                          <span className="text-ink/30">/</span>
-                          <input
-                            type="number"
-                            min="0"
-                            name={`three_att_${p.id}`}
-                            defaultValue={s?.three_att ?? 0}
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                        </div>
+                        <input
+                          type="number"
+                          min="0"
+                          name={`three_made_${p.id}`}
+                          defaultValue={s?.three_made ?? 0}
+                          title="Nombre de paniers à 3 points marqués"
+                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                        />
                       </td>
                       <td className="px-1.5 text-center font-display font-bold text-navy">{pointsFor(s)}</td>
                       <td className="px-1.5 text-center">
@@ -1234,7 +1228,7 @@ async function MatchSheetPage({ matchId, backHref }) {
                 <div className="mt-2 space-y-3 rounded-lg bg-sand p-3">
                   <form action={updatePlayer} className="space-y-2">
                     <input type="hidden" name="player_id" value={p.id} />
-                    <PlayerFormFields defaultClub={defaultClub} player={p} />
+                    <PlayerFormFields defaultClub={defaultClub} participantFirstName={participantFirstName} player={p} />
                     <button
                       type="submit"
                       className="rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
@@ -1263,7 +1257,7 @@ async function MatchSheetPage({ matchId, backHref }) {
             </summary>
             <form action={addPlayer} className="mt-3 space-y-2 rounded-lg bg-sand p-3">
               <input type="hidden" name="participant_sport_id" value={match.participant_sport_id} />
-              <PlayerFormFields defaultClub={defaultClub} />
+              <PlayerFormFields defaultClub={defaultClub} participantFirstName={participantFirstName} />
               <button
                 type="submit"
                 className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark"
