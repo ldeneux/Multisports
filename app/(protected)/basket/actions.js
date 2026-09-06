@@ -206,20 +206,46 @@ export async function saveMatchSheet(formData) {
   revalidatePath("/basket");
 }
 
-// Effectif de l'équipe — persistant, réutilisable d'un match à l'autre.
+// Effectif de l'équipe — persistant, réutilisable d'un match à l'autre (et
+// d'une saison à l'autre : la liste est rattachée au participant, pas à une
+// phase ou une saison précise). Fiche façon FFBB (e-marque) : les champs
+// "joueur" (n° de maillot, surclassement, capitaine habituel) et
+// "entraîneur" (diplôme, adjoint) sont tous les deux acceptés dans le même
+// formulaire, seuls ceux du rôle choisi sont conservés.
 export async function addPlayer(formData) {
   const supabase = createClient();
-  const name = formData.get("name");
-  if (!name) {
+  const lastName = formData.get("last_name");
+  const firstName = formData.get("first_name");
+  if (!lastName && !firstName) {
     revalidatePath("/basket");
     return;
   }
 
+  const role = formData.get("role") === "entraineur" ? "entraineur" : "joueur";
+  const name = [lastName, firstName].filter(Boolean).join(" ") || "Sans nom";
+
   const { error } = await supabase.from("basketball_players").insert({
     participant_sport_id: formData.get("participant_sport_id"),
+    role,
     name,
+    last_name: lastName || null,
+    first_name: firstName || null,
+    club: formData.get("club") || null,
+    licence_number: formData.get("licence_number") || null,
+    national_number: formData.get("national_number") || null,
+    licence_type: formData.get("licence_type") || null,
+    licence_not_presented: formData.get("licence_not_presented") === "on",
+    // Champs propres au rôle "joueur" — ignorés (mis à vide) pour un
+    // entraîneur, même s'ils ont été soumis par erreur.
+    jersey_number:
+      role === "joueur" && formData.get("jersey_number") !== "" ? Number(formData.get("jersey_number")) : null,
+    surclassement: role === "joueur" ? formData.get("surclassement") || null : null,
+    is_default_captain: role === "joueur" && formData.get("is_default_captain") === "on",
+    // Champs propres au rôle "entraîneur" :
+    diplome: role === "entraineur" ? formData.get("diplome") || null : null,
+    is_adjoint: role === "entraineur" && formData.get("is_adjoint") === "on",
   });
-  assertNoError("Ajout de la joueuse", error);
+  assertNoError("Ajout de la fiche", error);
 
   revalidatePath("/basket");
 }
@@ -257,6 +283,9 @@ export async function saveMatchStats(formData) {
     two_att: numberOr0(formData.get(`two_att_${playerId}`)),
     three_made: numberOr0(formData.get(`three_made_${playerId}`)),
     three_att: numberOr0(formData.get(`three_att_${playerId}`)),
+    is_captain: formData.get(`captain_${playerId}`) === "on",
+    is_starting_five: formData.get(`starting_${playerId}`) === "on",
+    minutes_played: formData.get(`minutes_${playerId}`) || null,
     updated_at: new Date().toISOString(),
   }));
 
@@ -264,6 +293,36 @@ export async function saveMatchStats(formData) {
     .from("basketball_match_stats")
     .upsert(rows, { onConflict: "match_id,player_id" });
   assertNoError("Enregistrement des statistiques", error);
+
+  revalidatePath("/basket");
+}
+
+// Repart de zéro pour CE match uniquement (jamais l'effectif, jamais les
+// autres matchs) : quarts-temps, notes, statistiques par joueuse effacés.
+// Pour un match manuel, le score et le statut joué/à venir sont aussi
+// réinitialisés (ils étaient déduits des quarts-temps) ; pour un match FFBB,
+// le score officiel reste inchangé — seule la saisie personnelle est vidée.
+export async function resetMatchSheet(formData) {
+  const supabase = createClient();
+  const matchId = formData.get("match_id");
+
+  const { data: match } = await supabase
+    .from("basketball_matches")
+    .select("source")
+    .eq("id", matchId)
+    .maybeSingle();
+
+  await supabase.from("basketball_match_stats").delete().eq("match_id", matchId);
+
+  const update = { match_report: null };
+  if (match?.source === "manuel") {
+    update.team1_score = null;
+    update.team2_score = null;
+    update.status = "a_venir";
+  }
+
+  const { error } = await supabase.from("basketball_matches").update(update).eq("id", matchId);
+  assertNoError("Réinitialisation de la feuille de match", error);
 
   revalidatePath("/basket");
 }
@@ -507,22 +566,34 @@ export async function syncPhase(formData) {
       };
     });
 
-    // Remplacement complet (pas un simple upsert) : ça garantit qu'un match
-    // qui disparaît côté FFBB (annulé, ID corrigé après une erreur de
-    // saisie...) disparaît aussi de cette phase, plutôt que de laisser une
-    // ligne orpheline en base.
-    const { error: delMatchesError } = await supabase
-      .from("basketball_matches")
-      .delete()
-      .eq("phase_id", phaseId);
-    assertNoError("Nettoyage des anciens matchs de cette phase", delMatchesError);
-
+    // Upsert (pas un remplacement complet) : c'est ce qui garantit qu'une
+    // feuille de match ou des statistiques déjà saisies sur un match FFBB
+    // survivent à une resynchro — un "delete puis insert" recrée de
+    // nouvelles lignes avec de nouveaux id, ce qui supprimerait en cascade
+    // tout ce qui y est rattaché (basketball_match_stats, feuille de match).
     if (matchPayload.length > 0) {
-      const { error: writeError } = await supabase.from("basketball_matches").insert(matchPayload);
+      const { error: writeError } = await supabase
+        .from("basketball_matches")
+        .upsert(matchPayload, { onConflict: "participant_sport_id,ffbb_rencontre_id" });
       if (writeError) {
         throw new Error(`Écriture des matchs impossible (${writeError.message}).`);
       }
     }
+
+    // Nettoyage ciblé : seuls les matchs de CETTE phase qui ne font plus
+    // partie de la poule (annulés, ou l'ancien mauvais match d'un ID FFBB
+    // corrigé) sont supprimés — jamais ceux encore présents.
+    const currentRencontreIds = matchPayload.map((m) => m.ffbb_rencontre_id);
+    let staleMatchesQuery = supabase.from("basketball_matches").delete().eq("phase_id", phaseId);
+    if (currentRencontreIds.length > 0) {
+      staleMatchesQuery = staleMatchesQuery.not(
+        "ffbb_rencontre_id",
+        "in",
+        `(${currentRencontreIds.join(",")})`
+      );
+    }
+    const { error: staleError } = await staleMatchesQuery;
+    assertNoError("Nettoyage des matchs obsolètes de cette phase", staleError);
 
     // Classement de la poule — annule et remplace pour CETTE PHASE
     // uniquement (une autre phase de la même saison a son propre
@@ -573,6 +644,7 @@ export async function syncPhase(formData) {
         competition_name: competitionName,
         poule_label: pouleLabel,
         competition_logo_asset: competitionLogoAsset,
+        our_team_name: engagement.nom || null,
         last_sync_at: new Date().toISOString(),
         last_sync_error: clubMismatch
           ? `⚠️ Cet ID FFBB correspond à « ${engagement.nom} », qui ne ressemble pas à « ${psRow.club} ». As-tu bien pris l'ID de TON équipe (et pas celui d'un adversaire croisé sur le site FFBB) ?`
