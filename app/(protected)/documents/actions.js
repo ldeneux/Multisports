@@ -9,7 +9,14 @@ async function uploadDocumentFile(supabase, file) {
   const filePath = `${crypto.randomUUID()}.${fileExt}`;
 
   const { error: uploadError } = await supabase.storage.from("documents").upload(filePath, file);
-  if (uploadError) return null;
+  if (uploadError) {
+    // On ne doit JAMAIS enregistrer un document avec un lien mort en
+    // silence — mieux vaut un échec bruyant et immédiat (visible tout de
+    // suite) qu'un "Télécharger" qui renvoie un 404 des mois plus tard.
+    throw new Error(
+      `Envoi du fichier impossible (${uploadError.message}). As-tu bien exécuté le script supabase/storage.sql sur ce projet Supabase (il crée le bucket "documents") ?`
+    );
+  }
 
   const { data } = supabase.storage.from("documents").getPublicUrl(filePath);
   return data.publicUrl;
