@@ -4,6 +4,7 @@ import { formatDateTime, ffbbAssetUrl, computeCurrentSeasonLabel } from "@/lib/u
 import SyncButton from "@/components/SyncButton";
 import SeasonSelect from "@/components/SeasonSelect";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
+import { RadarChart, StackedBarChart, SimpleBarChart, HorizontalBarChart } from "@/components/BasketCharts";
 import {
   addMatch,
   saveMatchSheet,
@@ -647,6 +648,276 @@ function computeTeamStats(playedMatches) {
   };
 }
 
+// "12:30" -> 750 (secondes). Saisie libre côté formulaire, donc tolérant :
+// ignore silencieusement tout ce qui ne ressemble pas à MM:SS plutôt que de
+// planter l'affichage d'un graphique pour une ligne mal saisie.
+function parseMinutesToSeconds(v) {
+  if (!v) return null;
+  const m = /^(\d{1,3}):([0-5]\d)$/.exec(String(v).trim());
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function formatSecondsAsMinutes(totalSeconds) {
+  const m = Math.floor(totalSeconds / 60);
+  const s = Math.round(totalSeconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function shortMatchDate(iso) {
+  if (!iso) return "";
+  return new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit" }).format(new Date(iso));
+}
+
+// Borne inférieure de l'intervalle de Wilson (95%) — une estimation
+// "prudente" d'un taux de réussite qui tient compte du nombre de tentatives :
+// un petit échantillon (2/2) ne peut plus battre artificiellement un grand
+// échantillon (9/10), contrairement au pourcentage brut. Renvoie une valeur
+// entre 0 et 1.
+function wilsonLowerBound(successes, trials, z = 1.96) {
+  if (!trials) return 0;
+  const p = successes / trials;
+  const denom = 1 + (z * z) / trials;
+  const centre = p + (z * z) / (2 * trials);
+  const margin = z * Math.sqrt((p * (1 - p)) / trials + (z * z) / (4 * trials * trials));
+  return Math.max(0, (centre - margin) / denom);
+}
+
+// Agrège les lignes basketball_match_stats d'UNE joueuse sur l'ensemble des
+// matchs joués retenus (déjà filtrés par phase(s) en amont) — en ignorant
+// les matchs où elle était marquée absente de la feuille (on_sheet=false),
+// qui ne doivent pas compter comme "un match à 0 sur toute la ligne".
+function aggregatePlayerStats(playerId, statsRows, matchesById) {
+  const rows = statsRows.filter((s) => s.player_id === playerId && s.on_sheet !== false);
+  let ftMade = 0,
+    ftAtt = 0,
+    twoMade = 0,
+    threeMade = 0,
+    fouls = 0,
+    starts = 0,
+    totalSeconds = 0,
+    gamesWithMinutes = 0;
+  const perMatch = [];
+
+  rows.forEach((s) => {
+    const match = matchesById.get(s.match_id);
+    if (!match) return;
+    ftMade += s.ft_made ?? 0;
+    ftAtt += s.ft_att ?? 0;
+    twoMade += s.two_made ?? 0;
+    threeMade += s.three_made ?? 0;
+    fouls += s.fouls ?? 0;
+    if (s.is_starting_five) starts += 1;
+    const seconds = parseMinutesToSeconds(s.minutes_played);
+    if (seconds != null) {
+      totalSeconds += seconds;
+      gamesWithMinutes += 1;
+    }
+    perMatch.push({
+      date: match.match_date,
+      points: (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0),
+      twoMade: s.two_made ?? 0,
+      threeMade: s.three_made ?? 0,
+      ftMade: s.ft_made ?? 0,
+      fouls: s.fouls ?? 0,
+      seconds,
+    });
+  });
+
+  perMatch.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  return {
+    gamesWithStats: rows.length,
+    gamesWithMinutes,
+    ftMade,
+    ftAtt,
+    twoMade,
+    threeMade,
+    fouls,
+    starts,
+    totalSeconds,
+    totalPoints: twoMade * 2 + threeMade * 3 + ftMade,
+    perMatch,
+  };
+}
+
+function PlayerPicker({ players, selectedPlayerId, statsQueryBase }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {players.map((p) => (
+        <Link
+          key={p.id}
+          href={`${statsQueryBase}&stats_player=${p.id}`}
+          scroll={false}
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${
+            p.id === selectedPlayerId ? "bg-cardinal text-white" : "bg-white text-ink/50 shadow-sm hover:text-ink"
+          }`}
+        >
+          {p.name}
+          {p.is_self ? " ★" : ""}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+// Écran "Statistiques individuelles" : profil radar de la joueuse
+// sélectionnée, ses graphiques d'évolution match après match, et deux
+// classements toute-équipe (contribution aux points, % LF pondéré par
+// volume) où la joueuse sélectionnée est mise en évidence.
+function IndividualStatsSection({ players, playedMatches, statsRows, selectedPlayerId, statsQueryBase }) {
+  if (players.length === 0) {
+    return (
+      <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+        Aucune joueuse dans l'effectif pour l'instant — ajoutes-en depuis une feuille de match.
+      </div>
+    );
+  }
+
+  const matchesById = new Map(playedMatches.map((m) => [m.id, m]));
+  const perPlayer = players.map((p) => ({ player: p, agg: aggregatePlayerStats(p.id, statsRows, matchesById) }));
+
+  const teamTotalPoints = perPlayer.reduce((sum, x) => sum + x.agg.totalPoints, 0);
+  const teamMaxAvgSeconds = Math.max(
+    1,
+    ...perPlayer.map((x) => (x.agg.gamesWithMinutes > 0 ? x.agg.totalSeconds / x.agg.gamesWithMinutes : 0))
+  );
+
+  const selected = perPlayer.find((x) => x.player.id === selectedPlayerId) ?? perPlayer[0];
+  const { agg } = selected;
+
+  const avgSeconds = agg.gamesWithMinutes > 0 ? agg.totalSeconds / agg.gamesWithMinutes : 0;
+  const ftPct = agg.ftAtt > 0 ? (agg.ftMade / agg.ftAtt) * 100 : null;
+  const avgFouls = agg.gamesWithStats > 0 ? agg.fouls / agg.gamesWithStats : 0;
+
+  if (agg.gamesWithStats === 0) {
+    return (
+      <div className="space-y-4">
+        <PlayerPicker players={players} selectedPlayerId={selected.player.id} statsQueryBase={statsQueryBase} />
+        <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+          Pas encore de statistiques enregistrées pour {selected.player.name} sur les phases sélectionnées.
+        </div>
+      </div>
+    );
+  }
+
+  const radarAxes = [
+    { label: "Temps de jeu", value: (avgSeconds / teamMaxAvgSeconds) * 100 },
+    { label: "% LF", value: ftPct ?? 0 },
+    { label: "Discipline", value: Math.max(0, 100 - (avgFouls / 5) * 100) },
+    { label: "Titularisation", value: (agg.starts / agg.gamesWithStats) * 100 },
+    { label: "Part des points équipe", value: teamTotalPoints > 0 ? (agg.totalPoints / teamTotalPoints) * 100 : 0 },
+  ];
+
+  const pointsSeries = agg.perMatch.map((m) => ({
+    label: shortMatchDate(m.date),
+    segments: [
+      { value: m.twoMade * 2, className: "fill-navy" },
+      { value: m.threeMade * 3, className: "fill-lagoon" },
+      { value: m.ftMade, className: "fill-cardinal" },
+    ],
+  }));
+  const minutesSeries = agg.perMatch.map((m) => ({
+    label: shortMatchDate(m.date),
+    value: m.seconds != null ? m.seconds / 60 : 0,
+  }));
+  const foulsSeries = agg.perMatch.map((m) => ({ label: shortMatchDate(m.date), value: m.fouls }));
+
+  const contributionRanking = perPlayer
+    .map((x) => ({ label: x.player.name, value: x.agg.totalPoints, highlight: x.player.id === selected.player.id }))
+    .sort((a, b) => b.value - a.value);
+
+  const wilsonRanking = perPlayer
+    .filter((x) => x.agg.ftAtt > 0)
+    .map((x) => ({
+      label: x.player.name,
+      value: wilsonLowerBound(x.agg.ftMade, x.agg.ftAtt) * 100,
+      sublabel: `${x.agg.ftMade}/${x.agg.ftAtt}`,
+      highlight: x.player.id === selected.player.id,
+    }))
+    .sort((a, b) => b.value - a.value);
+
+  return (
+    <div className="space-y-4">
+      <PlayerPicker players={players} selectedPlayerId={selected.player.id} statsQueryBase={statsQueryBase} />
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="rounded-card bg-white p-4 shadow-sm">
+          <p className="mb-2 text-sm font-semibold text-navy">Profil — {selected.player.name}</p>
+          <RadarChart axes={radarAxes} />
+          <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-ink/60">
+            <div className="flex justify-between">
+              <dt>Temps de jeu moy.</dt>
+              <dd className="font-semibold text-ink">
+                {agg.gamesWithMinutes > 0 ? formatSecondsAsMinutes(avgSeconds) : "—"}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt>LF</dt>
+              <dd className="font-semibold text-ink">
+                {agg.ftMade}/{agg.ftAtt}
+                {ftPct != null ? ` (${ftPct.toFixed(0)}%)` : ""}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt>Fautes / match</dt>
+              <dd className="font-semibold text-ink">{avgFouls.toFixed(1)}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt>Titularisations</dt>
+              <dd className="font-semibold text-ink">
+                {agg.starts}/{agg.gamesWithStats}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt>Points saison</dt>
+              <dd className="font-semibold text-ink">{agg.totalPoints}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div className="rounded-card bg-white p-4 shadow-sm">
+          <p className="mb-2 text-sm font-semibold text-navy">Points par match</p>
+          <StackedBarChart
+            items={pointsSeries}
+            legend={[
+              { label: "2 pts", className: "fill-navy" },
+              { label: "3 pts", className: "fill-lagoon" },
+              { label: "LF", className: "fill-cardinal" },
+            ]}
+          />
+        </div>
+
+        <div className="rounded-card bg-white p-4 shadow-sm">
+          <p className="mb-2 text-sm font-semibold text-navy">Temps de jeu par match (min)</p>
+          <SimpleBarChart items={minutesSeries} />
+        </div>
+
+        <div className="rounded-card bg-white p-4 shadow-sm">
+          <p className="mb-2 text-sm font-semibold text-navy">Fautes par match</p>
+          <SimpleBarChart items={foulsSeries} thresholdValue={5} thresholdLabel="Sortie (5 fautes)" colorClass="fill-cardinal" />
+        </div>
+
+        <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
+          <p className="mb-2 text-sm font-semibold text-navy">Contribution aux points de l'équipe (saison)</p>
+          <HorizontalBarChart items={contributionRanking} />
+        </div>
+
+        {wilsonRanking.length > 0 && (
+          <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
+            <p className="mb-1 text-sm font-semibold text-navy">Classement % LF (estimation prudente)</p>
+            <p className="mb-2 text-[11px] text-ink/40">
+              Score de Wilson : corrige les petits échantillons (un 2/2 ne bat plus artificiellement un 9/10) —
+              le nombre de tentatives est indiqué entre parenthèses pour chaque joueuse.
+            </p>
+            <HorizontalBarChart items={wilsonRanking} valueSuffix="%" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function StatRow({ label, value }) {
   return (
     <tr className="border-b border-ink/5 last:border-0">
@@ -656,7 +927,19 @@ function StatRow({ label, value }) {
   );
 }
 
-function StatsTab({ playedMatches, phases, selectedStatsPhaseIds, selectedPsId, scope, selectedSeason, selectedPhase }) {
+function StatsTab({
+  playedMatches,
+  phases,
+  selectedStatsPhaseIds,
+  selectedPsId,
+  scope,
+  selectedSeason,
+  selectedPhase,
+  statsPlayers,
+  statsRows,
+  selectedPlayerId,
+  statsQueryBase,
+}) {
   const stats = computeTeamStats(playedMatches);
 
   return (
@@ -667,49 +950,49 @@ function StatsTab({ playedMatches, phases, selectedStatsPhaseIds, selectedPsId, 
         système de stats. Ici, un bilan calculé à partir des matchs de l'équipe.
       </p>
 
+      {/* Filtre global à tout le module (équipe ET individuelles) : formulaire
+          GET natif, aucun JS nécessaire. stats_filtered=1 permet de
+          distinguer "aucune phase cochée par choix explicite" du premier
+          affichage (où toutes les phases comptent par défaut). */}
+      {phases.length > 1 && (
+        <form
+          method="get"
+          action="/basket"
+          className="flex flex-wrap items-center gap-3 rounded-card bg-white p-3 text-sm shadow-sm"
+        >
+          <input type="hidden" name="ps" value={selectedPsId} />
+          <input type="hidden" name="tab" value="stats" />
+          <input type="hidden" name="scope" value={scope} />
+          <input type="hidden" name="season" value={selectedSeason} />
+          {selectedPhase?.id && <input type="hidden" name="phase" value={selectedPhase.id} />}
+          {selectedPlayerId && <input type="hidden" name="stats_player" value={selectedPlayerId} />}
+          <input type="hidden" name="stats_filtered" value="1" />
+          <span className="font-semibold text-ink/50">Phases incluses :</span>
+          {phases.map((p) => (
+            <label key={p.id} className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                name="stats_phase"
+                value={p.id}
+                defaultChecked={selectedStatsPhaseIds.includes(p.id)}
+                className="h-4 w-4"
+              />
+              {p.phase_name}
+            </label>
+          ))}
+          <button
+            type="submit"
+            className="rounded-full bg-navy px-3 py-1 text-xs font-semibold text-white hover:bg-navy-light"
+          >
+            Appliquer
+          </button>
+        </form>
+      )}
+
       <details open className="space-y-4">
         <summary className="cursor-pointer text-sm font-semibold text-navy">Statistiques équipe</summary>
 
-        <div className="mt-3 space-y-4">
-          {/* Formulaire GET natif (aucun JS nécessaire) : chaque case cochée
-              devient un paramètre stats_phase dans l'URL ; stats_filtered=1
-              permet de distinguer "aucune phase cochée par choix explicite"
-              de "premier affichage, rien encore soumis" (auquel cas toutes
-              les phases comptent par défaut, voir plus bas). */}
-          {phases.length > 1 && (
-            <form
-              method="get"
-              action="/basket"
-              className="flex flex-wrap items-center gap-3 rounded-card bg-white p-3 text-sm shadow-sm"
-            >
-              <input type="hidden" name="ps" value={selectedPsId} />
-              <input type="hidden" name="tab" value="stats" />
-              <input type="hidden" name="scope" value={scope} />
-              <input type="hidden" name="season" value={selectedSeason} />
-              {selectedPhase?.id && <input type="hidden" name="phase" value={selectedPhase.id} />}
-              <input type="hidden" name="stats_filtered" value="1" />
-              <span className="font-semibold text-ink/50">Phases incluses dans le bilan :</span>
-              {phases.map((p) => (
-                <label key={p.id} className="flex items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    name="stats_phase"
-                    value={p.id}
-                    defaultChecked={selectedStatsPhaseIds.includes(p.id)}
-                    className="h-4 w-4"
-                  />
-                  {p.phase_name}
-                </label>
-              ))}
-              <button
-                type="submit"
-                className="rounded-full bg-navy px-3 py-1 text-xs font-semibold text-white hover:bg-navy-light"
-              >
-                Appliquer
-              </button>
-            </form>
-          )}
-
+        <div className="mt-3">
           {!stats ? (
             <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
               Pas encore de match joué pour calculer un bilan.
@@ -748,10 +1031,16 @@ function StatsTab({ playedMatches, phases, selectedStatsPhaseIds, selectedPsId, 
         </div>
       </details>
 
-      <details className="space-y-3">
+      <details open className="space-y-3">
         <summary className="cursor-pointer text-sm font-semibold text-navy">Statistiques individuelles</summary>
-        <div className="mt-3 rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
-          Bientôt disponible.
+        <div className="mt-3">
+          <IndividualStatsSection
+            players={statsPlayers}
+            playedMatches={playedMatches}
+            statsRows={statsRows}
+            selectedPlayerId={selectedPlayerId}
+            statsQueryBase={statsQueryBase}
+          />
         </div>
       </details>
     </div>
@@ -1444,6 +1733,36 @@ export default async function BasketPage({ searchParams }) {
   const playedMatches = statsMatches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
   const scopedMatches = scope === "poule" ? matches : matches.filter((m) => m.us_is_team1 !== null);
 
+  // Effectif + statistiques par joueuse — uniquement chargés pour l'onglet
+  // Statistiques (inutile ailleurs), pour la sélection par défaut de la
+  // joueuse dans "Statistiques individuelles" (elle-même en priorité).
+  let statsPlayers = [];
+  let statsRows = [];
+  if (tab === "stats" && selectedPsId) {
+    const { data: playersData } = await supabase
+      .from("basketball_players")
+      .select("*")
+      .eq("participant_sport_id", selectedPsId)
+      .eq("role", "joueur")
+      .order("name", { ascending: true });
+    statsPlayers = playersData ?? [];
+
+    const playedMatchIds = playedMatches.map((m) => m.id);
+    if (playedMatchIds.length > 0) {
+      const { data: statsData } = await supabase
+        .from("basketball_match_stats")
+        .select("*")
+        .in("match_id", playedMatchIds);
+      statsRows = statsData ?? [];
+    }
+  }
+  const selectedPlayerId =
+    (searchParams?.stats_player && statsPlayers.some((p) => p.id === searchParams.stats_player)
+      ? searchParams.stats_player
+      : statsPlayers.find((p) => p.is_self)?.id ?? statsPlayers[0]?.id) ?? null;
+  const statsPhaseQS = selectedStatsPhaseIds.map((id) => `stats_phase=${id}`).join("&");
+  const statsQueryBase = `/basket?ps=${selectedPsId}&tab=stats&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}&stats_filtered=1&${statsPhaseQS}`;
+
   const journeeOptions = buildJourneeOptions(scopedMatches);
   const selectedJournee = searchParams?.journee || defaultJournee(scopedMatches, journeeOptions);
 
@@ -1649,6 +1968,10 @@ export default async function BasketPage({ searchParams }) {
               scope={scope}
               selectedSeason={selectedSeason}
               selectedPhase={selectedPhase}
+              statsPlayers={statsPlayers}
+              statsRows={statsRows}
+              selectedPlayerId={selectedPlayerId}
+              statsQueryBase={statsQueryBase}
             />
           )}
         </>
