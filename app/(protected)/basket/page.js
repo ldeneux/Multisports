@@ -639,8 +639,8 @@ function computeTeamStats(playedMatches) {
     pointsForAvg: pointsFor / played,
     pointsAgainstAvg: pointsAgainst / played,
     diffAvg: (pointsFor - pointsAgainst) / played,
-    homeRecord: `${homeWins}-${homeLosses}`,
-    awayRecord: `${awayWins}-${awayLosses}`,
+    homeRecord: `${homeWins}V - ${homeLosses}D`,
+    awayRecord: `${awayWins}V - ${awayLosses}D`,
     best,
     worst,
     currentStreak,
@@ -656,7 +656,7 @@ function StatRow({ label, value }) {
   );
 }
 
-function StatsTab({ playedMatches }) {
+function StatsTab({ playedMatches, phases, selectedStatsPhaseIds, selectedPsId, scope, selectedSeason, selectedPhase }) {
   const stats = computeTeamStats(playedMatches);
 
   return (
@@ -667,41 +667,93 @@ function StatsTab({ playedMatches }) {
         système de stats. Ici, un bilan calculé à partir des matchs de l'équipe.
       </p>
 
-      {!stats ? (
-        <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
-          Pas encore de match joué pour calculer un bilan.
+      <details open className="space-y-4">
+        <summary className="cursor-pointer text-sm font-semibold text-navy">Statistiques équipe</summary>
+
+        <div className="mt-3 space-y-4">
+          {/* Formulaire GET natif (aucun JS nécessaire) : chaque case cochée
+              devient un paramètre stats_phase dans l'URL ; stats_filtered=1
+              permet de distinguer "aucune phase cochée par choix explicite"
+              de "premier affichage, rien encore soumis" (auquel cas toutes
+              les phases comptent par défaut, voir plus bas). */}
+          {phases.length > 1 && (
+            <form
+              method="get"
+              action="/basket"
+              className="flex flex-wrap items-center gap-3 rounded-card bg-white p-3 text-sm shadow-sm"
+            >
+              <input type="hidden" name="ps" value={selectedPsId} />
+              <input type="hidden" name="tab" value="stats" />
+              <input type="hidden" name="scope" value={scope} />
+              <input type="hidden" name="season" value={selectedSeason} />
+              {selectedPhase?.id && <input type="hidden" name="phase" value={selectedPhase.id} />}
+              <input type="hidden" name="stats_filtered" value="1" />
+              <span className="font-semibold text-ink/50">Phases incluses dans le bilan :</span>
+              {phases.map((p) => (
+                <label key={p.id} className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    name="stats_phase"
+                    value={p.id}
+                    defaultChecked={selectedStatsPhaseIds.includes(p.id)}
+                    className="h-4 w-4"
+                  />
+                  {p.phase_name}
+                </label>
+              ))}
+              <button
+                type="submit"
+                className="rounded-full bg-navy px-3 py-1 text-xs font-semibold text-white hover:bg-navy-light"
+              >
+                Appliquer
+              </button>
+            </form>
+          )}
+
+          {!stats ? (
+            <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+              Pas encore de match joué pour calculer un bilan.
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-card bg-white shadow-sm">
+              <div className="bg-navy px-4 py-2 text-white">
+                <p className="font-display text-sm uppercase tracking-tight">Bilan de la saison</p>
+              </div>
+              <table className="w-full">
+                <tbody>
+                  <StatRow label="Matchs joués" value={stats.played} />
+                  <StatRow label="Bilan" value={`${stats.wins}V - ${stats.losses}D`} />
+                  <StatRow label="Bilan à domicile" value={stats.homeRecord} />
+                  <StatRow label="Bilan à l'extérieur" value={stats.awayRecord} />
+                  <StatRow label="Points marqués / match" value={stats.pointsForAvg.toFixed(1)} />
+                  <StatRow label="Points encaissés / match" value={stats.pointsAgainstAvg.toFixed(1)} />
+                  <StatRow
+                    label="Écart moyen"
+                    value={`${stats.diffAvg > 0 ? "+" : ""}${stats.diffAvg.toFixed(1)}`}
+                  />
+                  <StatRow
+                    label="Série en cours"
+                    value={stats.currentStreak.type ? `${stats.currentStreak.count}${stats.currentStreak.type}` : "—"}
+                  />
+                  {stats.best && (
+                    <StatRow label="Meilleure perf." value={`+${stats.best.diff} vs ${stats.best.opponent}`} />
+                  )}
+                  {stats.worst && stats.worst.diff < 0 && (
+                    <StatRow label="Plus large défaite" value={`${stats.worst.diff} vs ${stats.worst.opponent}`} />
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="overflow-hidden rounded-card bg-white shadow-sm">
-          <div className="bg-navy px-4 py-2 text-white">
-            <p className="font-display text-sm uppercase tracking-tight">Bilan de la saison</p>
-          </div>
-          <table className="w-full">
-            <tbody>
-              <StatRow label="Matchs joués" value={stats.played} />
-              <StatRow label="Bilan" value={`${stats.wins}V - ${stats.losses}D`} />
-              <StatRow label="Bilan à domicile" value={stats.homeRecord} />
-              <StatRow label="Bilan à l'extérieur" value={stats.awayRecord} />
-              <StatRow label="Points marqués / match" value={stats.pointsForAvg.toFixed(1)} />
-              <StatRow label="Points encaissés / match" value={stats.pointsAgainstAvg.toFixed(1)} />
-              <StatRow
-                label="Écart moyen"
-                value={`${stats.diffAvg > 0 ? "+" : ""}${stats.diffAvg.toFixed(1)}`}
-              />
-              <StatRow
-                label="Série en cours"
-                value={stats.currentStreak.type ? `${stats.currentStreak.count}${stats.currentStreak.type}` : "—"}
-              />
-              {stats.best && (
-                <StatRow label="Meilleure perf." value={`+${stats.best.diff} vs ${stats.best.opponent}`} />
-              )}
-              {stats.worst && stats.worst.diff < 0 && (
-                <StatRow label="Plus large défaite" value={`${stats.worst.diff} vs ${stats.worst.opponent}`} />
-              )}
-            </tbody>
-          </table>
+      </details>
+
+      <details className="space-y-3">
+        <summary className="cursor-pointer text-sm font-semibold text-navy">Statistiques individuelles</summary>
+        <div className="mt-3 rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+          Bientôt disponible.
         </div>
-      )}
+      </details>
     </div>
   );
 }
@@ -1368,8 +1420,28 @@ export default async function BasketPage({ searchParams }) {
 
   // Les stats/le bilan d'équipe ne concernent toujours QUE notre équipe,
   // indépendamment du bouton "Sathonay Camp / Toute la poule" (qui ne filtre
-  // que le calendrier).
-  const playedMatches = matches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
+  // que le calendrier) — et, contrairement au calendrier/classement, portent
+  // sur TOUTES les phases de la saison par défaut (le calendrier/classement,
+  // eux, restent scopés à la phase choisie dans PhaseBar).
+  const allPhaseIds = phases.map((p) => p.id);
+  let seasonMatches = [];
+  if (allPhaseIds.length > 0) {
+    const { data: seasonMatchRows } = await supabase
+      .from("basketball_matches")
+      .select("*")
+      .in("phase_id", allPhaseIds)
+      .order("match_date", { ascending: true });
+    seasonMatches = seasonMatchRows ?? [];
+  }
+  const rawStatsPhase = searchParams?.stats_phase;
+  const statsPhaseParam =
+    rawStatsPhase == null ? [] : Array.isArray(rawStatsPhase) ? rawStatsPhase : [rawStatsPhase];
+  // stats_filtered=1 distingue "l'utilisateur a soumis le formulaire, quitte
+  // à tout décocher" du premier affichage (pas encore de choix) — dans ce
+  // second cas seulement, toutes les phases comptent par défaut.
+  const selectedStatsPhaseIds = searchParams?.stats_filtered === "1" ? statsPhaseParam : allPhaseIds;
+  const statsMatches = seasonMatches.filter((m) => selectedStatsPhaseIds.includes(m.phase_id));
+  const playedMatches = statsMatches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
   const scopedMatches = scope === "poule" ? matches : matches.filter((m) => m.us_is_team1 !== null);
 
   const journeeOptions = buildJourneeOptions(scopedMatches);
@@ -1444,7 +1516,7 @@ export default async function BasketPage({ searchParams }) {
 
           <div className="flex flex-wrap items-center gap-2">
             <Link
-              href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=${scope}`}
+              href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
               className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
                 tab === "calendrier" ? "bg-navy text-white" : "bg-white text-ink/60"
               }`}
@@ -1452,7 +1524,7 @@ export default async function BasketPage({ searchParams }) {
               Calendrier &amp; résultats
             </Link>
             <Link
-              href={`/basket?ps=${selectedPsId}&tab=classement`}
+              href={`/basket?ps=${selectedPsId}&tab=classement&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
               className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
                 tab === "classement" ? "bg-navy text-white" : "bg-white text-ink/60"
               }`}
@@ -1460,18 +1532,18 @@ export default async function BasketPage({ searchParams }) {
               Classement
             </Link>
             <Link
-              href={`/basket?ps=${selectedPsId}&tab=stats`}
+              href={`/basket?ps=${selectedPsId}&tab=stats&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
               className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
                 tab === "stats" ? "bg-navy text-white" : "bg-white text-ink/60"
               }`}
             >
-              Stats
+              Statistiques &amp; Graphiques
             </Link>
 
             {tab === "calendrier" && (
               <div className="ml-auto flex overflow-hidden rounded-full bg-white shadow-sm">
                 <Link
-                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=us&season=${encodeURIComponent(selectedSeason)}`}
+                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=us&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
                   scroll={false}
                   className={`px-3 py-1.5 text-xs font-semibold ${
                     scope === "us" ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
@@ -1480,7 +1552,7 @@ export default async function BasketPage({ searchParams }) {
                   {selectedPs?.club || "Sathonay Camp"}
                 </Link>
                 <Link
-                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=poule&season=${encodeURIComponent(selectedSeason)}`}
+                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=poule&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
                   scroll={false}
                   className={`px-3 py-1.5 text-xs font-semibold ${
                     scope === "poule" ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
@@ -1568,7 +1640,17 @@ export default async function BasketPage({ searchParams }) {
             />
           )}
           {tab === "classement" && <ClassementTab classement={classement} />}
-          {tab === "stats" && <StatsTab playedMatches={playedMatches} />}
+          {tab === "stats" && (
+            <StatsTab
+              playedMatches={playedMatches}
+              phases={phases}
+              selectedStatsPhaseIds={selectedStatsPhaseIds}
+              selectedPsId={selectedPsId}
+              scope={scope}
+              selectedSeason={selectedSeason}
+              selectedPhase={selectedPhase}
+            />
+          )}
         </>
       )}
     </div>
