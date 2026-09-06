@@ -9,6 +9,7 @@ import {
   saveMatchSheet,
   resetMatchSheet,
   saveMatchStats,
+  togglePlayerOnSheet,
   addPlayer,
   deletePlayer,
   deleteMatch,
@@ -754,6 +755,11 @@ async function MatchSheetPage({ matchId, backHref }) {
   const defaultClub = phase?.our_team_name || ps?.club || "";
 
   const statsByPlayer = new Map((statsRows ?? []).map((s) => [s.player_id, s]));
+  // Une joueuse est sur la feuille par défaut (on_sheet absent ou true) —
+  // seul un retrait explicite (absence ponctuelle) l'en exclut, sans jamais
+  // la supprimer de l'effectif ni de ses stats sur les autres matchs.
+  const sheetPlayers = players.filter((p) => statsByPlayer.get(p.id)?.on_sheet !== false);
+  const excludedPlayers = players.filter((p) => statsByPlayer.get(p.id)?.on_sheet === false);
   const isPlayed = match.status === "joue";
   const usIsLeft = match.us_is_team1 === true;
   const usIsRight = match.us_is_team1 === false;
@@ -763,7 +769,7 @@ async function MatchSheetPage({ matchId, backHref }) {
   const isManual = match.source === "manuel";
 
   const pointsFor = (s) => (s ? s.two_made * 2 + s.three_made * 3 + s.ft_made : 0);
-  const totalTeamPoints = players.reduce((sum, p) => sum + pointsFor(statsByPlayer.get(p.id)), 0);
+  const totalTeamPoints = sheetPlayers.reduce((sum, p) => sum + pointsFor(statsByPlayer.get(p.id)), 0);
 
   return (
     <div className="space-y-6">
@@ -901,10 +907,11 @@ async function MatchSheetPage({ matchId, backHref }) {
                   <th className="px-1.5 text-center">2 pts (réuss./tent.)</th>
                   <th className="px-1.5 text-center">3 pts (réuss./tent.)</th>
                   <th className="px-1.5 text-center">Pts</th>
+                  <th className="px-1.5 text-center"></th>
                 </tr>
               </thead>
               <tbody>
-                {players.map((p) => {
+                {sheetPlayers.map((p) => {
                   const s = statsByPlayer.get(p.id);
                   return (
                     <tr key={p.id} className="border-b border-ink/5 last:border-0">
@@ -1007,6 +1014,16 @@ async function MatchSheetPage({ matchId, backHref }) {
                         </div>
                       </td>
                       <td className="px-1.5 text-center font-display font-bold text-navy">{pointsFor(s)}</td>
+                      <td className="px-1.5 text-center">
+                        <button
+                          type="submit"
+                          form={`remove-${p.id}`}
+                          title="Marquer absente pour ce match"
+                          className="text-ink/30 hover:text-cardinal"
+                        >
+                          ✕
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
@@ -1019,6 +1036,38 @@ async function MatchSheetPage({ matchId, backHref }) {
               Enregistrer les statistiques
             </button>
           </form>
+        )}
+
+        {/* Un <form> par joueuse retirable, en dehors du <form> principal des
+            statistiques (les formulaires HTML ne s'imbriquent pas) — reliés
+            à leur bouton respectif via l'attribut form=. */}
+        {sheetPlayers.map((p) => (
+          <form key={p.id} id={`remove-${p.id}`} action={togglePlayerOnSheet} className="hidden">
+            <input type="hidden" name="match_id" value={match.id} />
+            <input type="hidden" name="player_id" value={p.id} />
+            <input type="hidden" name="on_sheet" value="false" />
+          </form>
+        ))}
+
+        {excludedPlayers.length > 0 && (
+          <div className="mb-3 mt-3 flex flex-wrap items-center gap-2 border-t border-ink/5 pt-3">
+            <p className="text-xs text-ink/40">Absentes pour ce match :</p>
+            {excludedPlayers.map((p) => (
+              <form
+                key={p.id}
+                action={togglePlayerOnSheet}
+                className="flex items-center gap-1 rounded-full bg-sand px-2 py-1 text-xs"
+              >
+                <input type="hidden" name="match_id" value={match.id} />
+                <input type="hidden" name="player_id" value={p.id} />
+                <input type="hidden" name="on_sheet" value="true" />
+                <span>{p.name}</span>
+                <button type="submit" className="font-semibold text-ink/30 hover:text-navy" title="Réintégrer à la feuille">
+                  +
+                </button>
+              </form>
+            ))}
+          </div>
         )}
 
         {staff.length > 0 && (
