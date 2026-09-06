@@ -31,6 +31,7 @@ export async function addPhase(formData) {
   const supabase = createClient();
   const participantSportId = formData.get("participant_sport_id");
   const season = computeCurrentSeasonLabel();
+  const phaseType = formData.get("phase_type") === "amical" ? "amical" : "ffbb";
 
   const { data: existing } = await supabase
     .from("basketball_phases")
@@ -41,12 +42,13 @@ export async function addPhase(formData) {
     .limit(1);
 
   const nextPosition = (existing?.[0]?.position ?? 0) + 1;
-  let engagementId = formData.get("ffbb_engagement_id") || null;
+  let engagementId = phaseType === "amical" ? null : formData.get("ffbb_engagement_id") || null;
 
   // Pour la toute première phase d'un participant, si aucun ID n'est saisi,
   // on tente de le retrouver depuis le lien FFBB déjà renseigné dans
-  // Paramètres (comme le faisait l'ancienne synchro globale).
-  if (!engagementId && nextPosition === 1) {
+  // Paramètres (comme le faisait l'ancienne synchro globale). Non applicable
+  // à une phase amicale, qui n'a jamais d'ID FFBB.
+  if (phaseType === "ffbb" && !engagementId && nextPosition === 1) {
     const { data: ps } = await supabase
       .from("participant_sports")
       .select("link_url")
@@ -58,9 +60,10 @@ export async function addPhase(formData) {
   const { error } = await supabase.from("basketball_phases").insert({
     participant_sport_id: participantSportId,
     season,
-    phase_name: formData.get("phase_name") || `Phase ${nextPosition}`,
+    phase_type: phaseType,
+    phase_name: formData.get("phase_name") || (phaseType === "amical" ? "Matchs amicaux" : `Phase ${nextPosition}`),
     ffbb_engagement_id: engagementId,
-    competition_url: formData.get("competition_url") || null,
+    competition_url: phaseType === "amical" ? null : formData.get("competition_url") || null,
     position: nextPosition,
   });
   assertNoError("Ajout de la phase", error);
@@ -70,15 +73,27 @@ export async function addPhase(formData) {
 
 export async function updatePhase(formData) {
   const supabase = createClient();
+  const phaseId = formData.get("phase_id");
+
+  // On relit le type existant plutôt que de faire confiance au formulaire :
+  // une phase amicale ne doit jamais se voir attribuer un ID FFBB, même par
+  // erreur (un champ cachait resterait vide de toute façon côté UI, mais on
+  // se protège aussi côté serveur).
+  const { data: existingPhase } = await supabase
+    .from("basketball_phases")
+    .select("phase_type")
+    .eq("id", phaseId)
+    .maybeSingle();
+  const isAmical = existingPhase?.phase_type === "amical";
 
   const { error } = await supabase
     .from("basketball_phases")
     .update({
       phase_name: formData.get("phase_name") || "Phase",
-      ffbb_engagement_id: formData.get("ffbb_engagement_id") || null,
-      competition_url: formData.get("competition_url") || null,
+      ffbb_engagement_id: isAmical ? null : formData.get("ffbb_engagement_id") || null,
+      competition_url: isAmical ? null : formData.get("competition_url") || null,
     })
-    .eq("id", formData.get("phase_id"));
+    .eq("id", phaseId);
   assertNoError("Mise à jour de la phase", error);
 
   revalidatePath("/basket");
@@ -169,6 +184,36 @@ export async function recordScore(formData) {
   revalidatePath("/basket");
 }
 
+// Feuille de match libre (quarts-temps + notes), pour un match déjà joué —
+// typiquement un match amical, mais disponible pour tout match saisi
+// manuellement. Stockée en JSON pour rester simple et sans schéma rigide.
+export async function saveMatchReport(formData) {
+  const supabase = createClient();
+  const matchId = formData.get("match_id");
+
+  const quarters = [1, 2, 3, 4].map((q) => {
+    const us = formData.get(`q${q}_us`);
+    const them = formData.get(`q${q}_them`);
+    return {
+      us: us !== null && us !== "" ? Number(us) : null,
+      them: them !== null && them !== "" ? Number(them) : null,
+    };
+  });
+  const hasAnyQuarter = quarters.some((q) => q.us != null || q.them != null);
+  const notes = formData.get("notes") || null;
+
+  const report = hasAnyQuarter || notes ? { quarters: hasAnyQuarter ? quarters : null, notes } : null;
+
+  const { error } = await supabase
+    .from("basketball_matches")
+    .update({ match_report: report })
+    .eq("id", matchId)
+    .eq("source", "manuel");
+  assertNoError("Enregistrement de la feuille de match", error);
+
+  revalidatePath("/basket");
+}
+
 export async function deleteMatch(formData) {
   const supabase = createClient();
   // On ne supprime jamais un match officiel issu d'une synchro FFBB — il
@@ -182,36 +227,39 @@ export async function deleteMatch(formData) {
   revalidatePath("/basket");
 }
 
-// Supprime UNIQUEMENT les phases (et, par cascade, leurs matchs et
-// classements) de la saison EN COURS pour ce participant. La saison en
-// cours est recalculée ici, côté serveur — jamais lue depuis le formulaire
-// — pour qu'il soit impossible de réinitialiser une saison passée par
-// erreur : l'engagement FFBB change chaque année, une archive supprimée ne
-// peut plus jamais être resynchronisée.
+// Supprime UNIQUEMENT les phases FFBB (et, par cascade, leurs matchs et
+// classements) de la saison EN COURS pour ce participant. Les phases de
+// type "amical" ne sont JAMAIS concernées par ce bouton — pour supprimer un
+// match amical, il faut le faire directement sur sa ligne dans le
+// calendrier. La saison en cours est recalculée ici, côté serveur — jamais
+// lue depuis le formulaire — pour qu'il soit impossible de réinitialiser
+// une saison passée par erreur : l'engagement FFBB change chaque année, une
+// archive supprimée ne peut plus jamais être resynchronisée.
 export async function resetCurrentSeason(formData) {
   const supabase = createClient();
   const participantSportId = formData.get("participant_sport_id");
   const currentSeason = computeCurrentSeasonLabel();
 
-  // Filet de sécurité en plus de la cascade (au cas où d'anciennes lignes
-  // n'auraient pas encore de phase_id renseigné).
-  await supabase
-    .from("basketball_matches")
-    .delete()
-    .eq("participant_sport_id", participantSportId)
-    .eq("season", currentSeason);
-
-  await supabase
-    .from("basketball_classements")
-    .delete()
-    .eq("participant_sport_id", participantSportId)
-    .eq("season", currentSeason);
-
-  await supabase
+  const { data: ffbbPhases } = await supabase
     .from("basketball_phases")
-    .delete()
+    .select("id")
     .eq("participant_sport_id", participantSportId)
-    .eq("season", currentSeason);
+    .eq("season", currentSeason)
+    .neq("phase_type", "amical");
+
+  const phaseIds = (ffbbPhases ?? []).map((p) => p.id);
+  if (phaseIds.length === 0) {
+    revalidatePath("/basket");
+    return;
+  }
+
+  // On cible explicitement les phases FFBB (via leur phase_id) plutôt que
+  // "toute la saison" — c'est ce qui garantit qu'un match amical (rattaché à
+  // la phase "amical", jamais incluse dans phaseIds) ne peut jamais être
+  // supprimé par ce bouton, même en filet de sécurité.
+  await supabase.from("basketball_matches").delete().in("phase_id", phaseIds);
+  await supabase.from("basketball_classements").delete().in("phase_id", phaseIds);
+  await supabase.from("basketball_phases").delete().in("id", phaseIds);
 
   revalidatePath("/basket");
 }
@@ -252,6 +300,21 @@ export async function syncPhase(formData) {
   const participantSportId = phase.participant_sport_id;
   const season = phase.season;
 
+  if (phase.phase_type === "amical") {
+    // Ne devrait jamais être appelé (le bouton Synchroniser n'existe pas
+    // pour une phase amicale côté UI) — garde-fou si jamais l'action est
+    // déclenchée directement.
+    await supabase
+      .from("basketball_phases")
+      .update({
+        last_sync_at: new Date().toISOString(),
+        last_sync_error: "Une phase « amicale » ne se synchronise pas — les matchs se saisissent à la main.",
+      })
+      .eq("id", phaseId);
+    revalidatePath("/basket");
+    return;
+  }
+
   if (!engagementId) {
     await supabase
       .from("basketball_phases")
@@ -272,7 +335,7 @@ export async function syncPhase(formData) {
     await client.authenticate();
 
     const engagement = await client.getEngagement(engagementId, {
-      fields: ["id", "nom", "idPoule.id", "idPoule.nom", "idCompetition.nom"],
+      fields: ["id", "nom", "idPoule.id", "idPoule.nom", "idCompetition.nom", "idCompetition.logo.id"],
     });
 
     if (!engagement?.idPoule?.id) {
@@ -284,6 +347,7 @@ export async function syncPhase(formData) {
     const pouleId = String(engagement.idPoule.id);
     const competitionName = engagement.idCompetition?.nom || null;
     const pouleLabel = engagement.idPoule?.nom || null;
+    const competitionLogoAsset = engagement.idCompetition?.logo?.id || null;
 
     // Garde-fou : l'ID FFBB renseigné pointe-t-il vers LE BON club ? Piège
     // fréquent en copiant l'ID depuis le site FFBB : cliquer sur l'équipe
@@ -445,6 +509,7 @@ export async function syncPhase(formData) {
         poule_id: pouleId,
         competition_name: competitionName,
         poule_label: pouleLabel,
+        competition_logo_asset: competitionLogoAsset,
         last_sync_at: new Date().toISOString(),
         last_sync_error: clubMismatch
           ? `⚠️ Cet ID FFBB correspond à « ${engagement.nom} », qui ne ressemble pas à « ${psRow.club} ». As-tu bien pris l'ID de TON équipe (et pas celui d'un adversaire croisé sur le site FFBB) ?`
