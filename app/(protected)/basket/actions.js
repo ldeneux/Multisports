@@ -250,6 +250,48 @@ export async function addPlayer(formData) {
   revalidatePath("/basket");
 }
 
+// Modification d'une fiche existante — mêmes champs qu'addPlayer, mais une
+// mise à jour plutôt qu'une création. Volontairement séparée de la
+// suppression : modifier une fiche ne doit jamais pouvoir l'effacer par
+// erreur (voir deletePlayer, toujours derrière une confirmation dédiée).
+export async function updatePlayer(formData) {
+  const supabase = createClient();
+  const playerId = formData.get("player_id");
+  const lastName = formData.get("last_name");
+  const firstName = formData.get("first_name");
+  if (!playerId || (!lastName && !firstName)) {
+    revalidatePath("/basket");
+    return;
+  }
+
+  const role = formData.get("role") === "entraineur" ? "entraineur" : "joueur";
+  const name = [lastName, firstName].filter(Boolean).join(" ") || "Sans nom";
+
+  const { error } = await supabase
+    .from("basketball_players")
+    .update({
+      role,
+      name,
+      last_name: lastName || null,
+      first_name: firstName || null,
+      club: formData.get("club") || null,
+      licence_number: formData.get("licence_number") || null,
+      national_number: formData.get("national_number") || null,
+      licence_type: formData.get("licence_type") || null,
+      licence_not_presented: formData.get("licence_not_presented") === "on",
+      jersey_number:
+        role === "joueur" && formData.get("jersey_number") !== "" ? Number(formData.get("jersey_number")) : null,
+      surclassement: role === "joueur" ? formData.get("surclassement") || null : null,
+      is_default_captain: role === "joueur" && formData.get("is_default_captain") === "on",
+      diplome: role === "entraineur" ? formData.get("diplome") || null : null,
+      is_adjoint: role === "entraineur" && formData.get("is_adjoint") === "on",
+    })
+    .eq("id", playerId);
+  assertNoError("Mise à jour de la fiche", error);
+
+  revalidatePath("/basket");
+}
+
 export async function deletePlayer(formData) {
   const supabase = createClient();
   // Cascade : supprime aussi ses statistiques enregistrées sur tous les
