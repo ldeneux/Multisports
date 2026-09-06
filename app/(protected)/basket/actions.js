@@ -150,46 +150,29 @@ export async function addMatch(formData) {
   revalidatePath("/basket");
 }
 
-export async function recordScore(formData) {
+// Feuille de match complète : ouverte en cliquant sur la date (match à venir)
+// ou le score (match joué) depuis le calendrier — jamais de saisie en ligne
+// sur la carte du match elle-même.
+
+// Score par quart-temps + notes. Pour un match FFBB, le score officiel
+// (team1_score/team2_score) n'est JAMAIS modifié ici — seuls les quarts-temps
+// et les notes sont enregistrés, à titre indicatif. Pour un match manuel
+// (typiquement amical), le score total est recalculé à partir des
+// quarts-temps saisis, et le statut joué/à venir peut être basculé.
+export async function saveMatchSheet(formData) {
   const supabase = createClient();
   const matchId = formData.get("match_id");
 
   const { data: match, error: readError } = await supabase
     .from("basketball_matches")
-    .select("us_is_team1")
+    .select("us_is_team1, source")
     .eq("id", matchId)
     .single();
   if (readError || !match) {
-    console.error("recordScore: lecture du match impossible", readError);
+    console.error("saveMatchSheet: lecture du match impossible", readError);
     revalidatePath("/basket");
     return;
   }
-
-  const usScore = formData.get("team_score_us") || null;
-  const themScore = formData.get("team_score_them") || null;
-  const usIsTeam1 = match.us_is_team1;
-
-  const { error } = await supabase
-    .from("basketball_matches")
-    .update({
-      team_score_us: usScore,
-      team_score_them: themScore,
-      team1_score: usIsTeam1 ? usScore : themScore,
-      team2_score: usIsTeam1 ? themScore : usScore,
-      status: "joue",
-    })
-    .eq("id", matchId);
-  assertNoError("Enregistrement du score", error);
-
-  revalidatePath("/basket");
-}
-
-// Feuille de match libre (quarts-temps + notes), pour un match déjà joué —
-// typiquement un match amical, mais disponible pour tout match saisi
-// manuellement. Stockée en JSON pour rester simple et sans schéma rigide.
-export async function saveMatchReport(formData) {
-  const supabase = createClient();
-  const matchId = formData.get("match_id");
 
   const quarters = [1, 2, 3, 4].map((q) => {
     const us = formData.get(`q${q}_us`);
@@ -202,14 +185,85 @@ export async function saveMatchReport(formData) {
   const hasAnyQuarter = quarters.some((q) => q.us != null || q.them != null);
   const notes = formData.get("notes") || null;
 
-  const report = hasAnyQuarter || notes ? { quarters: hasAnyQuarter ? quarters : null, notes } : null;
+  const update = {
+    match_report: hasAnyQuarter || notes ? { quarters: hasAnyQuarter ? quarters : null, notes } : null,
+  };
+
+  if (match.source === "manuel") {
+    const played = formData.get("played") === "on";
+    if (hasAnyQuarter) {
+      const totalUs = quarters.reduce((sum, q) => sum + (q.us ?? 0), 0);
+      const totalThem = quarters.reduce((sum, q) => sum + (q.them ?? 0), 0);
+      update.team1_score = match.us_is_team1 ? totalUs : totalThem;
+      update.team2_score = match.us_is_team1 ? totalThem : totalUs;
+    }
+    update.status = played || hasAnyQuarter ? "joue" : "a_venir";
+  }
+
+  const { error } = await supabase.from("basketball_matches").update(update).eq("id", matchId);
+  assertNoError("Enregistrement de la feuille de match", error);
+
+  revalidatePath("/basket");
+}
+
+// Effectif de l'équipe — persistant, réutilisable d'un match à l'autre.
+export async function addPlayer(formData) {
+  const supabase = createClient();
+  const name = formData.get("name");
+  if (!name) {
+    revalidatePath("/basket");
+    return;
+  }
+
+  const { error } = await supabase.from("basketball_players").insert({
+    participant_sport_id: formData.get("participant_sport_id"),
+    name,
+  });
+  assertNoError("Ajout de la joueuse", error);
+
+  revalidatePath("/basket");
+}
+
+export async function deletePlayer(formData) {
+  const supabase = createClient();
+  // Cascade : supprime aussi ses statistiques enregistrées sur tous les
+  // matchs (basketball_match_stats.player_id est en "on delete cascade").
+  await supabase.from("basketball_players").delete().eq("id", formData.get("player_id"));
+  revalidatePath("/basket");
+}
+
+// Statistiques par joueuse pour un match donné — un seul formulaire pour
+// tout l'effectif, en "upsert" (crée ou met à jour la ligne de chaque
+// joueuse dont le formulaire contient au moins un champ modifié).
+export async function saveMatchStats(formData) {
+  const supabase = createClient();
+  const matchId = formData.get("match_id");
+  const playerIds = formData.getAll("player_id");
+
+  if (playerIds.length === 0) {
+    revalidatePath("/basket");
+    return;
+  }
+
+  const numberOr0 = (v) => (v !== null && v !== "" ? Number(v) : 0);
+
+  const rows = playerIds.map((playerId) => ({
+    match_id: matchId,
+    player_id: playerId,
+    fouls: numberOr0(formData.get(`fouls_${playerId}`)),
+    ft_made: numberOr0(formData.get(`ft_made_${playerId}`)),
+    ft_att: numberOr0(formData.get(`ft_att_${playerId}`)),
+    two_made: numberOr0(formData.get(`two_made_${playerId}`)),
+    two_att: numberOr0(formData.get(`two_att_${playerId}`)),
+    three_made: numberOr0(formData.get(`three_made_${playerId}`)),
+    three_att: numberOr0(formData.get(`three_att_${playerId}`)),
+    updated_at: new Date().toISOString(),
+  }));
 
   const { error } = await supabase
-    .from("basketball_matches")
-    .update({ match_report: report })
-    .eq("id", matchId)
-    .eq("source", "manuel");
-  assertNoError("Enregistrement de la feuille de match", error);
+    .from("basketball_match_stats")
+    .upsert(rows, { onConflict: "match_id,player_id" });
+  assertNoError("Enregistrement des statistiques", error);
 
   revalidatePath("/basket");
 }
@@ -335,7 +389,15 @@ export async function syncPhase(formData) {
     await client.authenticate();
 
     const engagement = await client.getEngagement(engagementId, {
-      fields: ["id", "nom", "idPoule.id", "idPoule.nom", "idCompetition.nom", "idCompetition.logo.id"],
+      fields: [
+        "id",
+        "nom",
+        "idPoule.id",
+        "idPoule.nom",
+        "idCompetition.nom",
+        "idCompetition.logo.id",
+        "idCompetition.categorie.logo.id",
+      ],
     });
 
     if (!engagement?.idPoule?.id) {
@@ -347,7 +409,8 @@ export async function syncPhase(formData) {
     const pouleId = String(engagement.idPoule.id);
     const competitionName = engagement.idCompetition?.nom || null;
     const pouleLabel = engagement.idPoule?.nom || null;
-    const competitionLogoAsset = engagement.idCompetition?.logo?.id || null;
+    const competitionLogoAsset =
+      engagement.idCompetition?.logo?.id || engagement.idCompetition?.categorie?.logo?.id || null;
 
     // Garde-fou : l'ID FFBB renseigné pointe-t-il vers LE BON club ? Piège
     // fréquent en copiant l'ID depuis le site FFBB : cliquer sur l'équipe
