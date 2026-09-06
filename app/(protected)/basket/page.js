@@ -11,6 +11,7 @@ import {
   saveMatchStats,
   togglePlayerOnSheet,
   addPlayer,
+  updatePlayer,
   deletePlayer,
   deleteMatch,
   resetCurrentSeason,
@@ -711,6 +712,131 @@ function StatsTab({ playedMatches }) {
 // modifiable ici ; seuls les quarts-temps/notes et les statistiques par
 // joueuse le sont. Pour un match manuel (amical), le score total ET le
 // statut joué/à venir sont recalculés depuis les quarts-temps saisis.
+// Champs communs à "Nouvelle joueuse" et à la modification d'une fiche
+// existante — un seul jeu de champs, pré-rempli via defaultValue quand
+// `player` est fourni. Le rôle choisi détermine, côté serveur (addPlayer /
+// updatePlayer), quels champs sont réellement conservés.
+function PlayerFormFields({ defaultClub, player }) {
+  const role = player?.role === "entraineur" ? "entraineur" : "joueur";
+  return (
+    <>
+      <div className="flex items-center gap-4 text-sm">
+        <label className="flex items-center gap-1.5">
+          <input type="radio" name="role" value="joueur" defaultChecked={role === "joueur"} className="h-4 w-4" />
+          Joueuse
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input
+            type="radio"
+            name="role"
+            value="entraineur"
+            defaultChecked={role === "entraineur"}
+            className="h-4 w-4"
+          />
+          Entraîneur·e
+        </label>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <input
+          name="last_name"
+          defaultValue={player?.last_name ?? ""}
+          placeholder="Nom *"
+          required
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="first_name"
+          defaultValue={player?.first_name ?? ""}
+          placeholder="Prénom *"
+          required
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="licence_number"
+          defaultValue={player?.licence_number ?? ""}
+          placeholder="N° licence"
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="national_number"
+          defaultValue={player?.national_number ?? ""}
+          placeholder="N° national"
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="licence_type"
+          defaultValue={player?.licence_type ?? ""}
+          placeholder="Type de licence"
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="club"
+          defaultValue={player?.club ?? defaultClub}
+          placeholder="Club"
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+      </div>
+
+      <label className="flex items-center gap-1.5 text-sm text-ink/60">
+        <input
+          type="checkbox"
+          name="licence_not_presented"
+          defaultChecked={player?.licence_not_presented ?? false}
+          className="h-4 w-4"
+        />
+        Licence non présentée
+      </label>
+
+      <div className="grid gap-2 border-t border-ink/10 pt-2 sm:grid-cols-2">
+        <div className="space-y-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">Si joueuse</p>
+          <input
+            type="number"
+            name="jersey_number"
+            defaultValue={player?.jersey_number ?? ""}
+            placeholder="N° de maillot"
+            className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+          />
+          <input
+            name="surclassement"
+            defaultValue={player?.surclassement ?? ""}
+            placeholder="Surclassement (ex. Aucun, 1 an, 2 ans)"
+            className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+          />
+          <label className="flex items-center gap-1.5 text-sm text-ink/60">
+            <input
+              type="checkbox"
+              name="is_default_captain"
+              defaultChecked={player?.is_default_captain ?? false}
+              className="h-4 w-4"
+            />
+            Capitaine habituelle
+          </label>
+        </div>
+        <div className="space-y-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">Si entraîneur·e</p>
+          <input
+            name="diplome"
+            defaultValue={player?.diplome ?? ""}
+            placeholder="Diplôme"
+            className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+          />
+          <label className="flex items-center gap-1.5 text-sm text-ink/60">
+            <input
+              type="checkbox"
+              name="is_adjoint"
+              defaultChecked={player?.is_adjoint ?? false}
+              className="h-4 w-4"
+            />
+            Adjoint
+          </label>
+        </div>
+      </div>
+    </>
+  );
+}
+
 async function MatchSheetPage({ matchId, backHref }) {
   const supabase = createClient();
 
@@ -1086,107 +1212,66 @@ async function MatchSheetPage({ matchId, backHref }) {
         )}
 
         <div className="mt-4 border-t border-ink/5 pt-3">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">Effectif</p>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink/40">Effectif</p>
+            <p className="text-[11px] text-ink/40">Clique sur une joueuse pour la modifier ou la supprimer.</p>
+          </div>
+
+          {/* Chaque pill ouvre sa propre fiche (mêmes champs que "Nouvelle
+              joueuse", pré-remplis) — plus de suppression en un clic direct
+              sur la pill : ça évite l'effacement accidentel d'une joueuse
+              (et de toutes ses stats, sur tous les matchs) signalé
+              précédemment. La suppression reste possible, mais seulement
+              depuis cette fiche, avec confirmation. */}
           <div className="flex flex-wrap gap-2">
             {(allPeople ?? []).map((p) => (
-              <form
-                key={p.id}
-                action={deletePlayer}
-                className="flex items-center gap-1 rounded-full bg-sand px-2 py-1 text-xs"
-              >
-                <input type="hidden" name="player_id" value={p.id} />
-                <span>
+              <details key={p.id}>
+                <summary className="inline-block cursor-pointer list-none rounded-full bg-sand px-3 py-1 text-xs font-semibold text-ink hover:bg-sand-dark">
                   {p.name}
                   {p.role === "entraineur" ? " (entraîneur)" : ""}
-                </span>
-                <button
-                  type="submit"
-                  className="font-semibold text-ink/30 hover:text-cardinal"
-                  title="Retirer de l'effectif"
-                >
-                  ✕
-                </button>
-              </form>
+                </summary>
+
+                <div className="mt-2 space-y-3 rounded-lg bg-sand p-3">
+                  <form action={updatePlayer} className="space-y-2">
+                    <input type="hidden" name="player_id" value={p.id} />
+                    <PlayerFormFields defaultClub={defaultClub} player={p} />
+                    <button
+                      type="submit"
+                      className="rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
+                    >
+                      Enregistrer
+                    </button>
+                  </form>
+
+                  <form action={deletePlayer} className="border-t border-ink/10 pt-2">
+                    <input type="hidden" name="player_id" value={p.id} />
+                    <ConfirmSubmitButton
+                      confirmMessage={`Supprimer « ${p.name} » de l'effectif ? Ses statistiques sur TOUS les matchs seront perdues définitivement. Cette action est irréversible.`}
+                      className="text-xs font-semibold text-cardinal hover:text-cardinal-dark"
+                    >
+                      Supprimer de l'effectif
+                    </ConfirmSubmitButton>
+                  </form>
+                </div>
+              </details>
             ))}
           </div>
 
-          {/* Un seul formulaire pour joueuse ou entraîneur (façon fiche
-              FFBB) : le rôle choisi détermine, côté serveur, quels champs
-              sont réellement conservés (n° maillot/surclassement/capitaine
-              pour une joueuse, diplôme/adjoint pour un entraîneur). */}
-          <form action={addPlayer} className="mt-3 space-y-2 rounded-lg bg-sand p-3">
-            <input type="hidden" name="participant_sport_id" value={match.participant_sport_id} />
-
-            <div className="flex items-center gap-4 text-sm">
-              <label className="flex items-center gap-1.5">
-                <input type="radio" name="role" value="joueur" defaultChecked className="h-4 w-4" />
-                Joueuse
-              </label>
-              <label className="flex items-center gap-1.5">
-                <input type="radio" name="role" value="entraineur" className="h-4 w-4" />
-                Entraîneur·e
-              </label>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              <input name="last_name" placeholder="Nom *" required className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
-              <input name="first_name" placeholder="Prénom *" required className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
-              <input name="licence_number" placeholder="N° licence" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
-              <input name="national_number" placeholder="N° national" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
-              <input name="licence_type" placeholder="Type de licence" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm" />
-              <input
-                name="club"
-                defaultValue={defaultClub}
-                placeholder="Club"
-                className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-              />
-            </div>
-
-            <label className="flex items-center gap-1.5 text-sm text-ink/60">
-              <input type="checkbox" name="licence_not_presented" className="h-4 w-4" />
-              Licence non présentée
-            </label>
-
-            <div className="grid gap-2 border-t border-ink/10 pt-2 sm:grid-cols-2">
-              <div className="space-y-2">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">Si joueuse</p>
-                <input
-                  type="number"
-                  name="jersey_number"
-                  placeholder="N° de maillot"
-                  className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-                />
-                <input
-                  name="surclassement"
-                  placeholder="Surclassement (ex. Aucun, 1 an, 2 ans)"
-                  className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-                />
-                <label className="flex items-center gap-1.5 text-sm text-ink/60">
-                  <input type="checkbox" name="is_default_captain" className="h-4 w-4" />
-                  Capitaine habituelle
-                </label>
-              </div>
-              <div className="space-y-2">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">Si entraîneur·e</p>
-                <input
-                  name="diplome"
-                  placeholder="Diplôme"
-                  className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-                />
-                <label className="flex items-center gap-1.5 text-sm text-ink/60">
-                  <input type="checkbox" name="is_adjoint" className="h-4 w-4" />
-                  Adjoint
-                </label>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark"
-            >
-              Ajouter à l'effectif
-            </button>
-          </form>
+          <details className="mt-3">
+            <summary className="inline-block cursor-pointer list-none rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark">
+              + Nouvelle joueuse
+            </summary>
+            <form action={addPlayer} className="mt-3 space-y-2 rounded-lg bg-sand p-3">
+              <input type="hidden" name="participant_sport_id" value={match.participant_sport_id} />
+              <PlayerFormFields defaultClub={defaultClub} />
+              <button
+                type="submit"
+                className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark"
+              >
+                Ajouter à l'effectif
+              </button>
+            </form>
+          </details>
         </div>
       </div>
     </div>
