@@ -850,10 +850,6 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
       { value: m.ftMade, className: "fill-cardinal" },
     ],
   }));
-  const minutesSeries = agg.perMatch.map((m) => ({
-    label: shortMatchDate(m.date),
-    value: m.seconds != null ? m.seconds / 60 : 0,
-  }));
   const foulsAndMinutesSeries = agg.perMatch.map((m) => ({
     label: shortMatchDate(m.date),
     barValue: m.fouls,
@@ -941,16 +937,7 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
           </ChartInfo>
         </div>
 
-        <div className="rounded-card bg-white p-4 shadow-sm">
-          <p className="mb-2 text-sm font-semibold text-navy">Temps de jeu par match (min)</p>
-          <SimpleBarChart items={minutesSeries} />
-          <ChartInfo>
-            Minutes jouées par match, saisies en feuille de match (format MM:SS). Une valeur manquante ou mal saisie
-            apparaît comme une barre à zéro plutôt que de faire planter le graphique.
-          </ChartInfo>
-        </div>
-
-        <div className="rounded-card bg-white p-4 shadow-sm">
+        <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
           <p className="mb-2 text-sm font-semibold text-navy">Fautes vs temps de jeu</p>
           <BarLineChart
             items={foulsAndMinutesSeries}
@@ -964,10 +951,10 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
             thresholdLabel="Sortie (5 fautes)"
           />
           <ChartInfo>
-            Les fautes seules ne disent pas grand-chose : 4 fautes en 25 min de jeu n'est pas comparable à 4 fautes en
-            10 min (souvent une sortie prudente de l'entraîneur). La ligne superpose le temps de jeu du même match pour
-            juger les fautes dans leur contexte — c'est aussi ce ratio (minutes de jeu par faute) qui alimente l'axe
-            "Discipline" du radar.
+            Le temps de jeu (ligne) est déjà visible ici superposé aux fautes (barres) du même match — inutile de le
+            répéter dans un graphique à part. 4 fautes en 25 min de jeu n'est pas comparable à 4 fautes en 10 min
+            (souvent une sortie prudente de l'entraîneur) ; c'est ce ratio (minutes de jeu par faute) qui alimente
+            aussi l'axe "Discipline" du radar.
           </ChartInfo>
         </div>
 
@@ -1023,6 +1010,7 @@ function StatsTab({
   statsRows,
   selectedPlayerId,
   statsQueryBase,
+  statsMatchFocus,
 }) {
   const stats = computeTeamStats(playedMatches);
 
@@ -1048,31 +1036,59 @@ function StatsTab({
         système de stats. Ici, un bilan calculé à partir des matchs de l'équipe.
       </p>
 
-      {/* Filtre global à tout le module (équipe ET individuelles) : formulaire
-          GET natif, aucun JS nécessaire. stats_filtered=1 permet de
-          distinguer "aucune phase cochée par choix explicite" du premier
-          affichage (où toutes les phases comptent par défaut). */}
-      {phases.length > 1 && (
-        <form
-          method="get"
-          action="/basket"
-          className="flex flex-wrap items-center gap-3 rounded-card bg-white p-3 text-sm shadow-sm"
-        >
-          <input type="hidden" name="ps" value={selectedPsId} />
-          <input type="hidden" name="tab" value="stats" />
-          <input type="hidden" name="scope" value={scope} />
-          <input type="hidden" name="season" value={selectedSeason} />
-          {selectedPhase?.id && <input type="hidden" name="phase" value={selectedPhase.id} />}
-          {selectedPlayerId && <input type="hidden" name="stats_player" value={selectedPlayerId} />}
-          <input type="hidden" name="stats_filtered" value="1" />
-          <span className="font-semibold text-ink/50">Phases incluses :</span>
-          {phases.map((p) => (
-            <label key={p.id} className="flex items-center gap-1.5">
-              <input
-                type="checkbox"
-                name="stats_phase"
-                value={p.id}
-                defaultChecked={selectedStatsPhaseIds.includes(p.id)}
+      {/* En mode "focus sur un match" (ouvert depuis l'icône stats d'une
+          feuille de match), on remplace le filtre par phases — qui n'a pas
+          de sens pour un seul match — par un résumé de ce match. */}
+      {statsMatchFocus ? (
+        <div className="rounded-card bg-white p-3 text-sm shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/40">Statistiques du match</p>
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+            <p className="font-display text-base uppercase tracking-tight text-navy">
+              <span className={statsMatchFocus.us_is_team1 === true ? "font-bold" : ""}>
+                {statsMatchFocus.team1_name || "Équipe inconnue"}
+              </span>
+              <span className="mx-2 text-ink/30">vs</span>
+              <span className={statsMatchFocus.us_is_team1 === false ? "font-bold" : ""}>
+                {statsMatchFocus.team2_name || "Équipe inconnue"}
+              </span>
+              {statsMatchFocus.status === "joue" && (
+                <span className="ml-2 text-ink/50">
+                  ({statsMatchFocus.team1_score ?? "–"} - {statsMatchFocus.team2_score ?? "–"})
+                </span>
+              )}
+            </p>
+            <p className="text-xs text-ink/50">
+              {statsMatchFocus.match_date ? formatDateTime(statsMatchFocus.match_date) : "Date à confirmer"}
+              {statsMatchFocus.location ? ` · ${statsMatchFocus.location}` : ""}
+            </p>
+          </div>
+        </div>
+      ) : (
+        /* Filtre global à tout le module (équipe ET individuelles) : formulaire
+           GET natif, aucun JS nécessaire. stats_filtered=1 permet de
+           distinguer "aucune phase cochée par choix explicite" du premier
+           affichage (où toutes les phases comptent par défaut). */
+        phases.length > 1 && (
+          <form
+            method="get"
+            action="/basket"
+            className="flex flex-wrap items-center gap-3 rounded-card bg-white p-3 text-sm shadow-sm"
+          >
+            <input type="hidden" name="ps" value={selectedPsId} />
+            <input type="hidden" name="tab" value="stats" />
+            <input type="hidden" name="scope" value={scope} />
+            <input type="hidden" name="season" value={selectedSeason} />
+            {selectedPhase?.id && <input type="hidden" name="phase" value={selectedPhase.id} />}
+            {selectedPlayerId && <input type="hidden" name="stats_player" value={selectedPlayerId} />}
+            <input type="hidden" name="stats_filtered" value="1" />
+            <span className="font-semibold text-ink/50">Phases incluses :</span>
+            {phases.map((p) => (
+              <label key={p.id} className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  name="stats_phase"
+                  value={p.id}
+                  defaultChecked={selectedStatsPhaseIds.includes(p.id)}
                 className="h-4 w-4"
               />
               {p.phase_name}
@@ -1085,6 +1101,7 @@ function StatsTab({
             Appliquer
           </button>
         </form>
+        )
       )}
 
       <details open className="space-y-4">
@@ -1321,6 +1338,17 @@ async function MatchSheetPage({ matchId, backHref }) {
     );
   }
 
+  // Lien vers l'écran Statistiques, en mode "focus sur ce match" — repart des
+  // mêmes paramètres que le retour au calendrier (participant, saison,
+  // phase...) mais bascule sur l'onglet stats et ajoute stats_match.
+  const backParams = new URLSearchParams(backHref.split("?")[1] || "");
+  const statsParams = new URLSearchParams(backParams);
+  statsParams.set("tab", "stats");
+  statsParams.set("stats_match", match.id);
+  statsParams.delete("journee");
+  statsParams.delete("journees");
+  const statsHref = `/basket?${statsParams.toString()}`;
+
   const [{ data: phase }, { data: ps }, { data: allPeople }, { data: statsRows }] = await Promise.all([
     match.phase_id
       ? supabase
@@ -1479,7 +1507,21 @@ async function MatchSheetPage({ matchId, backHref }) {
 
       <div className="rounded-card bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="font-display text-sm uppercase tracking-tight text-navy">Feuille de match — joueuses</p>
+          <div className="flex items-center gap-2">
+            <p className="font-display text-sm uppercase tracking-tight text-navy">Feuille de match — joueuses</p>
+            <Link
+              href={statsHref}
+              title="Voir les statistiques de ce match"
+              aria-label="Voir les statistiques de ce match"
+              className="text-navy/50 hover:text-cardinal"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="12" width="4" height="9" rx="1" fill="currentColor" />
+                <rect x="10" y="7" width="4" height="14" rx="1" fill="currentColor" />
+                <rect x="17" y="3" width="4" height="18" rx="1" fill="currentColor" />
+              </svg>
+            </Link>
+          </div>
           <p className="text-xs text-ink/40">Total calculé : {totalTeamPoints} pts</p>
         </div>
 
@@ -1844,7 +1886,14 @@ export default async function BasketPage({ searchParams }) {
   // second cas seulement, toutes les phases comptent par défaut.
   const selectedStatsPhaseIds = searchParams?.stats_filtered === "1" ? statsPhaseParam : allPhaseIds;
   const statsMatches = seasonMatches.filter((m) => selectedStatsPhaseIds.includes(m.phase_id));
-  const playedMatches = statsMatches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
+  // Ouvert depuis l'icône "Statistiques" d'une feuille de match précise : on
+  // ignore alors le filtre par phases et on ne garde QUE ce match — le
+  // bandeau habituel est remplacé par un résumé de ce match (voir plus bas).
+  const statsMatchId = searchParams?.stats_match || null;
+  const statsMatchFocus = statsMatchId ? (seasonMatches.find((m) => m.id === statsMatchId) ?? null) : null;
+  const playedMatches = statsMatchFocus
+    ? [statsMatchFocus].filter((m) => m.us_is_team1 !== null && m.status === "joue")
+    : statsMatches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
   const scopedMatches = scope === "poule" ? matches : matches.filter((m) => m.us_is_team1 !== null);
 
   // Effectif + statistiques par joueuse — uniquement chargés pour l'onglet
@@ -2086,6 +2135,7 @@ export default async function BasketPage({ searchParams }) {
               statsRows={statsRows}
               selectedPlayerId={selectedPlayerId}
               statsQueryBase={statsQueryBase}
+              statsMatchFocus={statsMatchFocus}
             />
           )}
         </>
