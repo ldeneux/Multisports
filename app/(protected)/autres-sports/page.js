@@ -92,6 +92,7 @@ function ResultEditForm({ result, sportSlug }) {
               name={`detail__${f.key}`}
               defaultValue={result.details?.[f.key] ?? ""}
               className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+              {...(f.type === "number" ? { step: "any" } : {})}
             />
           )}
         </label>
