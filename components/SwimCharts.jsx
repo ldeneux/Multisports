@@ -198,8 +198,9 @@ export function SwimPercentileTrendChart({ series, width = 640, height = 320 }) 
  * Nuage de points : la meilleure performance de CHAQUE nageuse sur une
  * épreuve donnée, classées de la plus rapide (rang 1, à gauche) à la plus
  * lente (à droite). Les nageuses suivies (`isFlagged`) sont mises en avant
- * en rouge avec leur nom ; les autres apparaissent en petits points gris
- * pour donner le contexte du champ sans surcharger le graphique.
+ * chacune avec sa propre couleur (point + étiquette) ; les autres
+ * apparaissent en petits points gris pour donner le contexte du champ sans
+ * surcharger le graphique.
  */
 export function SwimScatterChart({ points, width = 520, height = 320 }) {
   if (!points || points.length === 0) return null;
@@ -221,7 +222,13 @@ export function SwimScatterChart({ points, width = 520, height = 320 }) {
   const yTicks = Array.from({ length: yTickCount + 1 }, (_, i) => minTime + (i / yTickCount) * timeSpan);
 
   const others = points.filter((p) => !p.isFlagged);
-  const flagged = points.filter((p) => p.isFlagged);
+  // Ordre alphabétique stable : chaque nageuse garde la même couleur d'une
+  // épreuve à l'autre (et la même que sur le graphique d'évolution à côté,
+  // qui suit le même ordre), plutôt qu'un rouge unique qui rendait les
+  // points et étiquettes illisibles dès que deux temps sont proches.
+  const flagged = points
+    .filter((p) => p.isFlagged)
+    .sort((a, b) => a.fullName.localeCompare(b.fullName));
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
@@ -257,19 +264,26 @@ export function SwimScatterChart({ points, width = 520, height = 320 }) {
         </circle>
       ))}
 
-      {flagged.map((p, i) => (
-        <g key={p.swimmerId}>
-          <circle cx={xFor(p.rank)} cy={yFor(p.timeMs)} r="5" fill="#D6293F" stroke="#fff" strokeWidth="1.5" />
-          <text
-            x={xFor(p.rank)}
-            y={yFor(p.timeMs) + (i % 2 === 0 ? -10 : 18)}
-            textAnchor="middle"
-            style={{ fontSize: "10px", fontWeight: 700, fill: "#D6293F" }}
-          >
-            {p.fullName} ({msToSwimTime(p.timeMs)})
-          </text>
-        </g>
-      ))}
+      {flagged.map((p, i) => {
+        const color = SERIES_COLORS[i % SERIES_COLORS.length];
+        // 3 paliers de décalage vertical (au lieu de 2) pour limiter les
+        // chevauchements d'étiquettes quand plusieurs temps sont très
+        // proches, comme ici.
+        const offset = [-10, 20, 34][i % 3];
+        return (
+          <g key={p.swimmerId}>
+            <circle cx={xFor(p.rank)} cy={yFor(p.timeMs)} r="5" fill={color} stroke="#fff" strokeWidth="1.5" />
+            <text
+              x={xFor(p.rank)}
+              y={yFor(p.timeMs) + offset}
+              textAnchor="middle"
+              style={{ fontSize: "10px", fontWeight: 700, fill: color }}
+            >
+              {p.fullName} ({msToSwimTime(p.timeMs)})
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
