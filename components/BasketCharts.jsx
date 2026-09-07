@@ -176,7 +176,10 @@ export function StackedBarChart({ items, legend, height = 190 }) {
 }
 
 // Barres simples (ex. temps de jeu ou fautes, match après match), avec un
-// seuil optionnel affiché en pointillés (ex. 5 fautes = sortie).
+// seuil optionnel affiché en pointillés (ex. 5 fautes = sortie, ou 100% =
+// objectif atteint). Chaque item peut fournir sa propre `className` pour
+// une couleur par barre (ex. accentuer une sur/sous-performance) ; à défaut
+// `colorClass` s'applique à toutes les barres.
 export function SimpleBarChart({ items, height = 190, thresholdValue, thresholdLabel, colorClass = "fill-navy" }) {
   if (!items || items.length === 0) {
     return <p className="text-xs text-ink/40">Pas encore de données.</p>;
@@ -208,7 +211,7 @@ export function SimpleBarChart({ items, height = 190, thresholdValue, thresholdL
           const h = (it.value / max) * (baseline - top);
           return (
             <g key={i}>
-              <rect x={x} y={baseline - h} width={barWidth} height={Math.max(0, h)} className={colorClass}>
+              <rect x={x} y={baseline - h} width={barWidth} height={Math.max(0, h)} className={it.className || colorClass}>
                 <title>{`${it.label} : ${formatTick(it.value)}`}</title>
               </rect>
               {it.value > 0 && (
@@ -330,6 +333,91 @@ export function BarLineChart({
             p.y != null ? (
               <circle key={i} cx={p.x} cy={p.y} r="3" className={lineFillClass}>
                 <title>{`${items[i].label} — ${lineLabel} : ${formatTick(p.value)}`}</title>
+              </circle>
+            ) : null
+          )}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+// Deux courbes sur UNE SEULE échelle partagée (contrairement à BarLineChart,
+// qui a deux échelles séparées pour bar/ligne) — pour des séries directement
+// comparables entre elles, ex. points d'une joueuse vs points totaux de son
+// équipe, match après match. La série B (fond, pointillés) est pensée pour
+// la référence d'équipe ; la série A (premier plan, trait plein et plus
+// épais) pour la joueuse suivie.
+export function DualLineChart({ items, seriesA, seriesB, height = 190 }) {
+  if (!items || items.length === 0) {
+    return <p className="text-xs text-ink/40">Pas encore de données.</p>;
+  }
+  const allValues = items.flatMap((it) => [it.a, it.b]).filter((v) => v != null);
+  const max = niceMax(Math.max(1, ...allValues));
+  const leftMargin = 22;
+  const top = 14;
+  const baseline = height - 20;
+  const width = Math.max(240, leftMargin + items.length * 40);
+  const plotWidth = width - leftMargin;
+  const slot = plotWidth / items.length;
+
+  const buildLine = (key) => {
+    const points = items.map((it, i) => ({
+      x: leftMargin + i * slot + slot / 2,
+      y: it[key] != null ? baseline - (it[key] / max) * (baseline - top) : null,
+      value: it[key],
+    }));
+    const path = points
+      .filter((p) => p.y != null)
+      .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+      .join(" ");
+    return { points, path };
+  };
+
+  const lineA = buildLine("a");
+  const lineB = buildLine("b");
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap gap-3 text-[11px] text-ink/60">
+        <span className="flex items-center gap-1.5">
+          <span className={`inline-block h-2.5 w-2.5 rounded-full ${seriesA.dotClass}`} />
+          {seriesA.label}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`inline-block h-2.5 w-2.5 rounded-full ${seriesB.dotClass}`} />
+          {seriesB.label}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+          <VerticalGridlines width={width} leftMargin={leftMargin} top={top} baseline={baseline} max={max} />
+          {items.map((it, i) => (
+            <text
+              key={i}
+              x={leftMargin + i * slot + slot / 2}
+              y={baseline + 12}
+              textAnchor="middle"
+              className="fill-ink/40 text-[8px]"
+            >
+              {it.label}
+            </text>
+          ))}
+          {lineB.path && (
+            <path d={lineB.path} className={`fill-none ${seriesB.strokeClass}`} strokeWidth="2" strokeDasharray="4 3" />
+          )}
+          {lineB.points.map((p, i) =>
+            p.y != null ? (
+              <circle key={`b${i}`} cx={p.x} cy={p.y} r="2.5" className={seriesB.fillClass}>
+                <title>{`${items[i].label} — ${seriesB.label} : ${formatTick(p.value)}`}</title>
+              </circle>
+            ) : null
+          )}
+          {lineA.path && <path d={lineA.path} className={`fill-none ${seriesA.strokeClass}`} strokeWidth="2.5" />}
+          {lineA.points.map((p, i) =>
+            p.y != null ? (
+              <circle key={`a${i}`} cx={p.x} cy={p.y} r="3.5" className={seriesA.fillClass}>
+                <title>{`${items[i].label} — ${seriesA.label} : ${formatTick(p.value)}`}</title>
               </circle>
             ) : null
           )}
