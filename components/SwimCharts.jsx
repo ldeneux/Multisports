@@ -266,7 +266,7 @@ export function SwimScatterChart({ points, width = 520, height = 320 }) {
             textAnchor="middle"
             style={{ fontSize: "10px", fontWeight: 700, fill: "#D6293F" }}
           >
-            {p.fullName}
+            {p.fullName} ({msToSwimTime(p.timeMs)})
           </text>
         </g>
       ))}
