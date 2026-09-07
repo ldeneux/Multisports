@@ -4,7 +4,7 @@ import { formatDateTime, ffbbAssetUrl, computeCurrentSeasonLabel } from "@/lib/u
 import SyncButton from "@/components/SyncButton";
 import SeasonSelect from "@/components/SeasonSelect";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
-import { RadarChart, StackedBarChart, SimpleBarChart, HorizontalBarChart } from "@/components/BasketCharts";
+import { RadarChart, StackedBarChart, SimpleBarChart, BarLineChart, HorizontalBarChart, ChartInfo } from "@/components/BasketCharts";
 import {
   addMatch,
   saveMatchSheet,
@@ -651,6 +651,17 @@ function computeTeamStats(playedMatches) {
 // "12:30" -> 750 (secondes). Saisie libre côté formulaire, donc tolérant :
 // ignore silencieusement tout ce qui ne ressemble pas à MM:SS plutôt que de
 // planter l'affichage d'un graphique pour une ligne mal saisie.
+// Réglages des indicateurs individuels — volontairement en constantes plutôt
+// qu'en réglage d'écran pour l'instant, à ajuster ici si besoin.
+// Discipline : nombre de minutes de jeu "attendues" pour une faute — en
+// dessous, le score baisse ; au-dessus (ou 0 faute), il plafonne à 100.
+const FOUL_MINUTES_REFERENCE = 6;
+// Classement % LF : nombre de points marqués dans un match pour que ce match
+// compte "à plein" dans le calcul — en dessous, il compte proportionnellement
+// moins (jamais zéro), pour ne pas laisser un petit match diluer un vrai 9/10
+// tout en ne l'effaçant pas non plus complètement.
+const POINTS_WEIGHT_REFERENCE = 12;
+
 function parseMinutesToSeconds(v) {
   if (!v) return null;
   const m = /^(\d{1,3}):([0-5]\d)$/.exec(String(v).trim());
@@ -681,6 +692,26 @@ function wilsonLowerBound(successes, trials, z = 1.96) {
   const centre = p + (z * z) / (2 * trials);
   const margin = z * Math.sqrt((p * (1 - p)) / trials + (z * z) / (4 * trials * trials));
   return Math.max(0, (centre - margin) / denom);
+}
+
+// Pondère les LF d'une joueuse par la performance du match où ils ont été
+// pris (voir POINTS_WEIGHT_REFERENCE) : un match où elle n'a quasiment pas
+// marqué compte peu dans le classement, sans jamais être totalement ignoré
+// (contrairement à un seuil tout-ou-rien, qui ferait disparaître le signal
+// d'un mauvais match plutôt que de le faire peser dans la balance).
+function weightedFreeThrows(perMatch) {
+  let weightedMade = 0,
+    weightedAtt = 0,
+    rawMade = 0,
+    rawAtt = 0;
+  perMatch.forEach((m) => {
+    const weight = Math.min(1, m.points / POINTS_WEIGHT_REFERENCE);
+    weightedMade += weight * m.ftMade;
+    weightedAtt += weight * m.ftAtt;
+    rawMade += m.ftMade;
+    rawAtt += m.ftAtt;
+  });
+  return { weightedMade, weightedAtt, rawMade, rawAtt };
 }
 
 // Agrège les lignes basketball_match_stats d'UNE joueuse sur l'ensemble des
@@ -719,6 +750,7 @@ function aggregatePlayerStats(playerId, statsRows, matchesById) {
       twoMade: s.two_made ?? 0,
       threeMade: s.three_made ?? 0,
       ftMade: s.ft_made ?? 0,
+      ftAtt: s.ft_att ?? 0,
       fouls: s.fouls ?? 0,
       seconds,
     });
@@ -789,6 +821,11 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
   const avgSeconds = agg.gamesWithMinutes > 0 ? agg.totalSeconds / agg.gamesWithMinutes : 0;
   const ftPct = agg.ftAtt > 0 ? (agg.ftMade / agg.ftAtt) * 100 : null;
   const avgFouls = agg.gamesWithStats > 0 ? agg.fouls / agg.gamesWithStats : 0;
+  // Minutes de jeu par faute plutôt que fautes brutes : 4 fautes en 25 min
+  // n'a rien à voir avec 4 fautes en 10 min (sortie prudente de
+  // l'entraîneur) — 0 faute plafonne le score à 100 quel que soit le temps.
+  const minutesPerFoul = agg.fouls > 0 ? agg.totalSeconds / 60 / agg.fouls : null;
+  const disciplineScore = agg.fouls === 0 ? 100 : Math.min(100, ((minutesPerFoul ?? 0) / FOUL_MINUTES_REFERENCE) * 100);
 
   if (agg.gamesWithStats === 0) {
     return (
@@ -804,7 +841,7 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
   const radarAxes = [
     { label: "Temps de jeu", value: (avgSeconds / teamMaxAvgSeconds) * 100 },
     { label: "% LF", value: ftPct ?? 0 },
-    { label: "Discipline", value: Math.max(0, 100 - (avgFouls / 5) * 100) },
+    { label: "Discipline", value: disciplineScore },
     { label: "Titularisation", value: (agg.starts / agg.gamesWithStats) * 100 },
     { label: "Part des points équipe", value: teamTotalPoints > 0 ? (agg.totalPoints / teamTotalPoints) * 100 : 0 },
   ];
@@ -821,18 +858,23 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
     label: shortMatchDate(m.date),
     value: m.seconds != null ? m.seconds / 60 : 0,
   }));
-  const foulsSeries = agg.perMatch.map((m) => ({ label: shortMatchDate(m.date), value: m.fouls }));
+  const foulsAndMinutesSeries = agg.perMatch.map((m) => ({
+    label: shortMatchDate(m.date),
+    barValue: m.fouls,
+    lineValue: m.seconds != null ? m.seconds / 60 : null,
+  }));
 
   const contributionRanking = perPlayer
     .map((x) => ({ label: x.player.name, value: x.agg.totalPoints, highlight: x.player.id === selected.player.id }))
     .sort((a, b) => b.value - a.value);
 
   const wilsonRanking = perPlayer
-    .filter((x) => x.agg.ftAtt > 0)
+    .map((x) => ({ player: x.player, ...weightedFreeThrows(x.agg.perMatch) }))
+    .filter((x) => x.rawAtt > 0)
     .map((x) => ({
       label: x.player.name,
-      value: wilsonLowerBound(x.agg.ftMade, x.agg.ftAtt) * 100,
-      sublabel: `${x.agg.ftMade}/${x.agg.ftAtt}`,
+      value: wilsonLowerBound(x.weightedMade, x.weightedAtt) * 100,
+      sublabel: `${x.rawMade}/${x.rawAtt}`,
       highlight: x.player.id === selected.player.id,
     }))
     .sort((a, b) => b.value - a.value);
@@ -874,6 +916,15 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
               <dd className="font-semibold text-ink">{agg.totalPoints}</dd>
             </div>
           </dl>
+          <ChartInfo>
+            <strong>Temps de jeu</strong> : moyenne de la joueuse rapportée à la moyenne la plus haute de l'équipe (100 =
+            meilleur temps de jeu moyen de l'équipe). <strong>% LF</strong> : lancers francs réussis / tentés, cumulés
+            sur la saison. <strong>Discipline</strong> : minutes de jeu par faute, rapportées à {FOUL_MINUTES_REFERENCE}{" "}
+            min/faute (100 = au moins {FOUL_MINUTES_REFERENCE} min par faute, ou 0 faute) — 4 fautes en 25 min n'est
+            pas noté pareil que 4 fautes en 10 min. <strong>Titularisation</strong> : part des matchs joués où elle
+            était dans le cinq de départ. <strong>Part des points équipe</strong> : ses points / total des points de
+            toute l'équipe sur la période.
+          </ChartInfo>
         </div>
 
         <div className="rounded-card bg-white p-4 shadow-sm">
@@ -886,31 +937,64 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
               { label: "LF", className: "fill-cardinal" },
             ]}
           />
+          <ChartInfo>
+            Paniers marqués par match (les tentatives à 2 et 3 points ne sont pas saisies en feuille de match, donc pas
+            de % de réussite ici — seuls les lancers francs ont un vrai ratio réussi/tenté, affiché ailleurs).
+          </ChartInfo>
         </div>
 
         <div className="rounded-card bg-white p-4 shadow-sm">
           <p className="mb-2 text-sm font-semibold text-navy">Temps de jeu par match (min)</p>
           <SimpleBarChart items={minutesSeries} />
+          <ChartInfo>
+            Minutes jouées par match, saisies en feuille de match (format MM:SS). Une valeur manquante ou mal saisie
+            apparaît comme une barre à zéro plutôt que de faire planter le graphique.
+          </ChartInfo>
         </div>
 
         <div className="rounded-card bg-white p-4 shadow-sm">
-          <p className="mb-2 text-sm font-semibold text-navy">Fautes par match</p>
-          <SimpleBarChart items={foulsSeries} thresholdValue={5} thresholdLabel="Sortie (5 fautes)" colorClass="fill-cardinal" />
+          <p className="mb-2 text-sm font-semibold text-navy">Fautes vs temps de jeu</p>
+          <BarLineChart
+            items={foulsAndMinutesSeries}
+            barLabel="Fautes"
+            barColorClass="fill-cardinal"
+            lineLabel="Temps de jeu (min)"
+            lineStrokeClass="stroke-navy"
+            lineFillClass="fill-navy"
+            lineDotClass="bg-navy"
+            thresholdValue={5}
+            thresholdLabel="Sortie (5 fautes)"
+          />
+          <ChartInfo>
+            Les fautes seules ne disent pas grand-chose : 4 fautes en 25 min de jeu n'est pas comparable à 4 fautes en
+            10 min (souvent une sortie prudente de l'entraîneur). La ligne superpose le temps de jeu du même match pour
+            juger les fautes dans leur contexte — c'est aussi ce ratio (minutes de jeu par faute) qui alimente l'axe
+            "Discipline" du radar.
+          </ChartInfo>
         </div>
 
         <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
           <p className="mb-2 text-sm font-semibold text-navy">Contribution aux points de l'équipe (saison)</p>
           <HorizontalBarChart items={contributionRanking} />
+          <ChartInfo>Total des points marqués (2 pts + 3 pts + LF) par chaque joueuse sur les phases sélectionnées.</ChartInfo>
         </div>
 
         {wilsonRanking.length > 0 && (
           <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
-            <p className="mb-1 text-sm font-semibold text-navy">Classement % LF (estimation prudente)</p>
+            <p className="mb-1 text-sm font-semibold text-navy">Classement % LF</p>
             <p className="mb-2 text-[11px] text-ink/40">
-              Score de Wilson : corrige les petits échantillons (un 2/2 ne bat plus artificiellement un 9/10) —
-              le nombre de tentatives est indiqué entre parenthèses pour chaque joueuse.
+              Le nombre de tentatives entre parenthèses est le vrai décompte brut ; le classement, lui, pondère chaque
+              match par la performance de la joueuse ce match-là.
             </p>
             <HorizontalBarChart items={wilsonRanking} valueSuffix="%" />
+            <ChartInfo>
+              Un simple % de réussite trompe sur petit échantillon (2/2 = 100%, mais 9/10 est en réalité meilleur) et
+              un LF pris dans un match anecdotique (ex. 2/2 dans un match où elle n'a marqué que 2 points) ne devrait
+              pas peser autant qu'un LF pris dans un vrai match. Ici, chaque match est pondéré par{" "}
+              min(1, points marqués ce match / {POINTS_WEIGHT_REFERENCE}) avant de calculer un score de Wilson (une
+              estimation prudente qui tient aussi compte du nombre de tentatives) — un match discret compte donc un
+              peu, jamais zéro, jamais à égalité avec un match plein.
+            </ChartInfo>
           </div>
         )}
       </div>
