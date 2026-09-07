@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import { formatDate, msToSwimTime } from "@/lib/utils";
 
 // Palette réutilisée pour distinguer plusieurs séries sur la courbe (une
@@ -194,97 +197,145 @@ export function SwimPercentileTrendChart({ series, width = 640, height = 320 }) 
   );
 }
 
+// Icône "focus" (cadre de visée) pour le bouton de bascule du nuage de
+// points — volontairement simple, en SVG inline pour rester sans
+// dépendance.
+function FocusIcon({ active }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M4 9V5a1 1 0 0 1 1-1h4" />
+      <path d="M15 4h4a1 1 0 0 1 1 1v4" />
+      <path d="M4 15v4a1 1 0 0 0 1 1h4" />
+      <path d="M20 15v4a1 1 0 0 1-1 1h-4" />
+      {active && <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />}
+    </svg>
+  );
+}
+
 /**
  * Nuage de points : la meilleure performance de CHAQUE nageuse sur une
  * épreuve donnée, classées de la plus rapide (rang 1, à gauche) à la plus
  * lente (à droite). Les nageuses suivies (`isFlagged`) sont mises en avant
  * chacune avec sa propre couleur (point + étiquette) ; les autres
  * apparaissent en petits points gris pour donner le contexte du champ sans
- * surcharger le graphique.
+ * surcharger le graphique. Le bouton "focus" en haut à droite bascule vers
+ * un affichage recentré sur les seules nageuses suivies (les axes se
+ * recalculent sur leur seul écart de temps, pour se relire même quand leurs
+ * temps sont très proches).
  */
 export function SwimScatterChart({ points, width = 520, height = 320 }) {
+  const [focusMode, setFocusMode] = useState(false);
+
   if (!points || points.length === 0) return null;
+
+  const followedSorted = [...points]
+    .filter((p) => p.isFlagged)
+    .sort((a, b) => a.timeMs - b.timeMs);
+
+  const activePoints = focusMode ? followedSorted : points;
+  if (activePoints.length === 0) return null;
 
   const padding = { top: 16, right: 16, bottom: 34, left: 46 };
   const plotW = width - padding.left - padding.right;
   const plotH = height - padding.top - padding.bottom;
 
-  const n = points.length;
-  const times = points.map((p) => p.timeMs);
+  const n = activePoints.length;
+  const times = activePoints.map((p) => p.timeMs);
   const minTime = Math.min(...times);
   const maxTime = Math.max(...times);
   const timeSpan = maxTime - minTime || 1;
 
-  const xFor = (rank) => (n === 1 ? padding.left + plotW / 2 : padding.left + ((rank - 1) / (n - 1)) * plotW);
+  // En mode focus, le rang est recalculé UNIQUEMENT parmi les nageuses
+  // suivies (sinon leurs points resteraient collés au même endroit qu'avant,
+  // sans rien gagner en lisibilité).
+  const rankIndex = new Map(activePoints.map((p, i) => [p.swimmerId, i]));
+  const xFor = (swimmerId) =>
+    n === 1 ? padding.left + plotW / 2 : padding.left + (rankIndex.get(swimmerId) / (n - 1)) * plotW;
   const yFor = (t) => padding.top + ((t - minTime) / timeSpan) * plotH;
 
   const yTickCount = 4;
   const yTicks = Array.from({ length: yTickCount + 1 }, (_, i) => minTime + (i / yTickCount) * timeSpan);
 
-  const others = points.filter((p) => !p.isFlagged);
+  const others = focusMode ? [] : points.filter((p) => !p.isFlagged);
   // Ordre alphabétique stable : chaque nageuse garde la même couleur d'une
-  // épreuve à l'autre (et la même que sur le graphique d'évolution à côté,
-  // qui suit le même ordre), plutôt qu'un rouge unique qui rendait les
-  // points et étiquettes illisibles dès que deux temps sont proches.
-  const flagged = points
-    .filter((p) => p.isFlagged)
-    .sort((a, b) => a.fullName.localeCompare(b.fullName));
+  // épreuve à l'autre (et la même que sur le graphique d'évolution à côté),
+  // plutôt qu'un rouge unique qui rendait les points et étiquettes
+  // illisibles dès que deux temps sont proches.
+  const flagged = [...followedSorted].sort((a, b) => a.fullName.localeCompare(b.fullName));
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
-      {yTicks.map((t, i) => (
-        <g key={i}>
-          <line
-            x1={padding.left}
-            y1={yFor(t)}
-            x2={width - padding.right}
-            y2={yFor(t)}
-            stroke="#0B2545"
-            strokeOpacity="0.08"
-            strokeWidth="1"
-          />
-          <text x={padding.left - 6} y={yFor(t) + 3} textAnchor="end" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
-            {msToSwimTime(t)}
-          </text>
-        </g>
-      ))}
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setFocusMode((v) => !v)}
+        title={focusMode ? "Revenir à tout le champ" : "Se recentrer sur mes nageuses suivies"}
+        className={`absolute right-0 top-0 z-10 flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold shadow-sm ${
+          focusMode ? "bg-cardinal text-white" : "bg-white text-ink/40 hover:text-cardinal"
+        }`}
+      >
+        <FocusIcon active={focusMode} />
+        {focusMode ? "Suivies" : "Focus"}
+      </button>
 
-      <text x={padding.left} y={height - 10} textAnchor="start" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
-        1er (plus rapide)
-      </text>
-      <text x={width - padding.right} y={height - 10} textAnchor="end" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
-        {n}e (plus lent)
-      </text>
-
-      {others.map((p) => (
-        <circle key={p.swimmerId} cx={xFor(p.rank)} cy={yFor(p.timeMs)} r="2.5" fill="#0B2545" fillOpacity="0.3">
-          <title>
-            {p.fullName} · {msToSwimTime(p.timeMs)}
-          </title>
-        </circle>
-      ))}
-
-      {flagged.map((p, i) => {
-        const color = SERIES_COLORS[i % SERIES_COLORS.length];
-        // 3 paliers de décalage vertical (au lieu de 2) pour limiter les
-        // chevauchements d'étiquettes quand plusieurs temps sont très
-        // proches, comme ici.
-        const offset = [-10, 20, 34][i % 3];
-        return (
-          <g key={p.swimmerId}>
-            <circle cx={xFor(p.rank)} cy={yFor(p.timeMs)} r="5" fill={color} stroke="#fff" strokeWidth="1.5" />
-            <text
-              x={xFor(p.rank)}
-              y={yFor(p.timeMs) + offset}
-              textAnchor="middle"
-              style={{ fontSize: "10px", fontWeight: 700, fill: color }}
-            >
-              {p.fullName} ({msToSwimTime(p.timeMs)})
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
+        {yTicks.map((t, i) => (
+          <g key={i}>
+            <line
+              x1={padding.left}
+              y1={yFor(t)}
+              x2={width - padding.right}
+              y2={yFor(t)}
+              stroke="#0B2545"
+              strokeOpacity="0.08"
+              strokeWidth="1"
+            />
+            <text x={padding.left - 6} y={yFor(t) + 3} textAnchor="end" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+              {msToSwimTime(t)}
             </text>
           </g>
-        );
-      })}
-    </svg>
+        ))}
+
+        {!focusMode && (
+          <>
+            <text x={padding.left} y={height - 10} textAnchor="start" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+              1er (plus rapide)
+            </text>
+            <text x={width - padding.right} y={height - 10} textAnchor="end" style={{ fontSize: "9px", fill: "#0B2545", opacity: 0.5 }}>
+              {points.length}e (plus lent)
+            </text>
+          </>
+        )}
+
+        {others.map((p) => (
+          <circle key={p.swimmerId} cx={xFor(p.swimmerId)} cy={yFor(p.timeMs)} r="2.5" fill="#0B2545" fillOpacity="0.3">
+            <title>
+              {p.fullName} · {msToSwimTime(p.timeMs)}
+            </title>
+          </circle>
+        ))}
+
+        {flagged.map((p, i) => {
+          const color = SERIES_COLORS[i % SERIES_COLORS.length];
+          // 3 paliers de décalage vertical (au lieu de 2) pour limiter les
+          // chevauchements d'étiquettes quand plusieurs temps sont très
+          // proches.
+          const offset = [-10, 20, 34][i % 3];
+          return (
+            <g key={p.swimmerId}>
+              <circle cx={xFor(p.swimmerId)} cy={yFor(p.timeMs)} r="5" fill={color} stroke="#fff" strokeWidth="1.5" />
+              <text
+                x={xFor(p.swimmerId)}
+                y={yFor(p.timeMs) + offset}
+                textAnchor="middle"
+                style={{ fontSize: "10px", fontWeight: 700, fill: color }}
+              >
+                {p.fullName} ({msToSwimTime(p.timeMs)})
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
   );
 }
 
