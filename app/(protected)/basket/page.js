@@ -4,7 +4,7 @@ import { formatDateTime, ffbbAssetUrl, computeCurrentSeasonLabel } from "@/lib/u
 import SyncButton from "@/components/SyncButton";
 import SeasonSelect from "@/components/SeasonSelect";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
-import { RadarChart, StackedBarChart, SimpleBarChart, BarLineChart, HorizontalBarChart, ChartInfo } from "@/components/BasketCharts";
+import { RadarChart, StackedBarChart, SimpleBarChart, BarLineChart, DualLineChart, HorizontalBarChart, ChartInfo } from "@/components/BasketCharts";
 import {
   addMatch,
   saveMatchSheet,
@@ -680,38 +680,21 @@ function shortMatchDate(iso) {
   return new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit" }).format(new Date(iso));
 }
 
-// Borne inférieure de l'intervalle de Wilson (95%) — une estimation
-// "prudente" d'un taux de réussite qui tient compte du nombre de tentatives :
-// un petit échantillon (2/2) ne peut plus battre artificiellement un grand
-// échantillon (9/10), contrairement au pourcentage brut. Renvoie une valeur
-// entre 0 et 1.
-function wilsonLowerBound(successes, trials, z = 1.96) {
-  if (!trials) return 0;
-  const p = successes / trials;
-  const denom = 1 + (z * z) / trials;
-  const centre = p + (z * z) / (2 * trials);
-  const margin = z * Math.sqrt((p * (1 - p)) / trials + (z * z) / (4 * trials * trials));
-  return Math.max(0, (centre - margin) / denom);
-}
-
-// Pondère les LF d'une joueuse par la performance du match où ils ont été
-// pris (voir POINTS_WEIGHT_REFERENCE) : un match où elle n'a quasiment pas
-// marqué compte peu dans le classement, sans jamais être totalement ignoré
-// (contrairement à un seuil tout-ou-rien, qui ferait disparaître le signal
-// d'un mauvais match plutôt que de le faire peser dans la balance).
-function weightedFreeThrows(perMatch) {
-  let weightedMade = 0,
-    weightedAtt = 0,
-    rawMade = 0,
-    rawAtt = 0;
-  perMatch.forEach((m) => {
-    const weight = Math.min(1, m.points / POINTS_WEIGHT_REFERENCE);
-    weightedMade += weight * m.ftMade;
-    weightedAtt += weight * m.ftAtt;
-    rawMade += m.ftMade;
-    rawAtt += m.ftAtt;
-  });
-  return { weightedMade, weightedAtt, rawMade, rawAtt };
+// Note du match, pour un objectif de {POINTS_WEIGHT_REFERENCE} points :
+// moyenne entre l'adresse aux lancers francs (seul geste où on a à la fois
+// les tentés ET les réussis) et les points marqués rapportés à l'objectif.
+// Volontairement PAS plafonnée à 100% : un très gros match doit ressortir
+// au-dessus, pas être écrasé au même niveau qu'un match pile dans l'objectif
+// — on veut accentuer les matchs où la joueuse a surperformé, pas les lisser.
+// Si aucun lancer franc n'a été tenté ce match-là, la note retombe
+// entièrement sur les points marqués (rien à évaluer côté adresse).
+function matchNote(ftMade, ftAtt, points) {
+  const pointsRatio = (points / POINTS_WEIGHT_REFERENCE) * 100;
+  if (ftAtt > 0) {
+    const ftRatio = (ftMade / ftAtt) * 100;
+    return (ftRatio + pointsRatio) / 2;
+  }
+  return pointsRatio;
 }
 
 // Agrège les lignes basketball_match_stats d'UNE joueuse sur l'ensemble des
@@ -745,6 +728,7 @@ function aggregatePlayerStats(playerId, statsRows, matchesById) {
       gamesWithMinutes += 1;
     }
     perMatch.push({
+      matchId: s.match_id,
       date: match.match_date,
       points: (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0),
       twoMade: s.two_made ?? 0,
@@ -753,6 +737,7 @@ function aggregatePlayerStats(playerId, statsRows, matchesById) {
       ftAtt: s.ft_att ?? 0,
       fouls: s.fouls ?? 0,
       seconds,
+      note: matchNote(s.ft_made ?? 0, s.ft_att ?? 0, (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0)),
     });
   });
 
@@ -794,9 +779,10 @@ function PlayerPicker({ players, selectedPlayerId, statsQueryBase }) {
 }
 
 // Écran "Statistiques individuelles" : profil radar de la joueuse
-// sélectionnée, ses graphiques d'évolution match après match, et deux
-// classements toute-équipe (contribution aux points, % LF pondéré par
-// volume) où la joueuse sélectionnée est mise en évidence.
+// sélectionnée et ses graphiques d'évolution match après match (dont la
+// note du match et sa comparaison aux points de l'équipe). Le classement
+// entre joueuses (moyenne de la note de match) est dans StatsTab, à côté du
+// bilan d'équipe.
 function IndividualStatsSection({ players, playedMatches, statsRows, selectedPlayerId, statsQueryBase }) {
   if (players.length === 0) {
     return (
@@ -808,6 +794,16 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
 
   const matchesById = new Map(playedMatches.map((m) => [m.id, m]));
   const perPlayer = players.map((p) => ({ player: p, agg: aggregatePlayerStats(p.id, statsRows, matchesById) }));
+
+  // Total de points de l'équipe, match par match — toutes joueuses
+  // confondues (hors absentes de la feuille), pour comparer chaque match de
+  // la joueuse suivie au total de son équipe ce jour-là.
+  const teamPointsByMatch = new Map();
+  statsRows.forEach((s) => {
+    if (s.on_sheet === false) return;
+    const pts = (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0);
+    teamPointsByMatch.set(s.match_id, (teamPointsByMatch.get(s.match_id) ?? 0) + pts);
+  });
 
   const teamTotalPoints = perPlayer.reduce((sum, x) => sum + x.agg.totalPoints, 0);
   const teamMaxAvgSeconds = Math.max(
@@ -864,20 +860,22 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
     lineValue: m.seconds != null ? m.seconds / 60 : null,
   }));
 
-  const contributionRanking = perPlayer
-    .map((x) => ({ label: x.player.name, value: x.agg.totalPoints, highlight: x.player.id === selected.player.id }))
-    .sort((a, b) => b.value - a.value);
+  // Note du match, match après match — couleur par barre pour accentuer
+  // sur/sous-performance (lagoon = au-dessus de l'objectif, navy = dans la
+  // bonne moyenne, cardinal = match difficile).
+  const noteSeries = agg.perMatch.map((m) => ({
+    label: shortMatchDate(m.date),
+    value: Math.round(m.note),
+    className: m.note >= 100 ? "fill-lagoon" : m.note >= 50 ? "fill-navy" : "fill-cardinal",
+  }));
 
-  const wilsonRanking = perPlayer
-    .map((x) => ({ player: x.player, ...weightedFreeThrows(x.agg.perMatch) }))
-    .filter((x) => x.rawAtt > 0)
-    .map((x) => ({
-      label: x.player.name,
-      value: wilsonLowerBound(x.weightedMade, x.weightedAtt) * 100,
-      sublabel: `${x.rawMade}/${x.rawAtt}`,
-      highlight: x.player.id === selected.player.id,
-    }))
-    .sort((a, b) => b.value - a.value);
+  // Points de la joueuse vs points totaux de son équipe, match par match —
+  // mêmes matchs que perMatch (donc déjà filtrés sur les phases retenues).
+  const pointsVsTeamSeries = agg.perMatch.map((m) => ({
+    label: shortMatchDate(m.date),
+    a: m.points,
+    b: teamPointsByMatch.get(m.matchId) ?? 0,
+  }));
 
   return (
     <div className="space-y-4">
@@ -974,29 +972,31 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
         </div>
 
         <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
-          <p className="mb-2 text-sm font-semibold text-navy">Contribution aux points de l'équipe (saison)</p>
-          <HorizontalBarChart items={contributionRanking} />
-          <ChartInfo>Total des points marqués (2 pts + 3 pts + LF) par chaque joueuse sur les phases sélectionnées.</ChartInfo>
+          <p className="mb-2 text-sm font-semibold text-navy">
+            Note du match — objectif {POINTS_WEIGHT_REFERENCE} points
+          </p>
+          <SimpleBarChart items={noteSeries} thresholdValue={100} thresholdLabel="Objectif atteint" />
+          <ChartInfo>
+            (% de réussite aux lancers francs + points marqués / {POINTS_WEIGHT_REFERENCE}) / 2, match par match.
+            Volontairement pas plafonnée à 100% : un très gros match ressort au-dessus plutôt que d'être lissé au même
+            niveau qu'un match pile dans l'objectif. Sans lancer franc tenté ce match-là, la note retombe entièrement
+            sur les points marqués. Barre bleu clair = au-dessus de l'objectif, bleu foncé = dans une bonne moyenne,
+            rouge = match difficile.
+          </ChartInfo>
         </div>
 
-        {wilsonRanking.length > 0 && (
-          <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
-            <p className="mb-1 text-sm font-semibold text-navy">Classement % LF</p>
-            <p className="mb-2 text-[11px] text-ink/40">
-              Le nombre de tentatives entre parenthèses est le vrai décompte brut ; le classement, lui, pondère chaque
-              match par la performance de la joueuse ce match-là.
-            </p>
-            <HorizontalBarChart items={wilsonRanking} valueSuffix="%" />
-            <ChartInfo>
-              Un simple % de réussite trompe sur petit échantillon (2/2 = 100%, mais 9/10 est en réalité meilleur) et
-              un LF pris dans un match anecdotique (ex. 2/2 dans un match où elle n'a marqué que 2 points) ne devrait
-              pas peser autant qu'un LF pris dans un vrai match. Ici, chaque match est pondéré par{" "}
-              min(1, points marqués ce match / {POINTS_WEIGHT_REFERENCE}) avant de calculer un score de Wilson (une
-              estimation prudente qui tient aussi compte du nombre de tentatives) — un match discret compte donc un
-              peu, jamais zéro, jamais à égalité avec un match plein.
-            </ChartInfo>
-          </div>
-        )}
+        <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
+          <p className="mb-2 text-sm font-semibold text-navy">Points de la joueuse vs points de l'équipe</p>
+          <DualLineChart
+            items={pointsVsTeamSeries}
+            seriesA={{ label: selected.player.name, strokeClass: "stroke-cardinal", fillClass: "fill-cardinal", dotClass: "bg-cardinal" }}
+            seriesB={{ label: "Total équipe", strokeClass: "stroke-navy/50", fillClass: "fill-navy/50", dotClass: "bg-navy/50" }}
+          />
+          <ChartInfo>
+            Points marqués par {selected.player.name} comparés au total marqué par toute l'équipe, match par match —
+            pour voir sa part dans la performance collective au fil de la saison plutôt qu'un seul total cumulé.
+          </ChartInfo>
+        </div>
       </div>
     </div>
   );
@@ -1025,6 +1025,20 @@ function StatsTab({
   statsQueryBase,
 }) {
   const stats = computeTeamStats(playedMatches);
+
+  // Classement entre joueuses basé sur la moyenne de leurs notes de match
+  // sur la saison (même formule que le graphique individuel : voir
+  // matchNote) — remplace l'ancien "Classement % LF", plus lisible.
+  const matchesById = new Map(playedMatches.map((m) => [m.id, m]));
+  const noteRanking = statsPlayers
+    .map((p) => {
+      const agg = aggregatePlayerStats(p.id, statsRows, matchesById);
+      if (agg.perMatch.length === 0) return null;
+      const avgNote = agg.perMatch.reduce((sum, m) => sum + m.note, 0) / agg.perMatch.length;
+      return { label: p.name, value: avgNote, highlight: p.id === selectedPlayerId };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.value - a.value);
 
   return (
     <div className="space-y-4">
@@ -1076,7 +1090,7 @@ function StatsTab({
       <details open className="space-y-4">
         <summary className="cursor-pointer text-sm font-semibold text-navy">Statistiques équipe</summary>
 
-        <div className="mt-3">
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
           {!stats ? (
             <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
               Pas encore de match joué pour calculer un bilan.
@@ -1112,6 +1126,22 @@ function StatsTab({
               </table>
             </div>
           )}
+
+          <div className="rounded-card bg-white p-4 shadow-sm">
+            <p className="mb-2 text-sm font-semibold text-navy">
+              Note moyenne — objectif {POINTS_WEIGHT_REFERENCE} pts/match
+            </p>
+            {noteRanking.length === 0 ? (
+              <p className="text-xs text-ink/40">Pas encore de statistiques par joueuse.</p>
+            ) : (
+              <HorizontalBarChart items={noteRanking} valueSuffix="%" />
+            )}
+            <ChartInfo>
+              Moyenne, sur tous les matchs joués et saisis, de la note de chaque match — voir le détail de son calcul
+              dans "Statistiques individuelles" ci-dessous. Non plafonnée à 100% : une joueuse avec plusieurs très
+              gros matchs peut dépasser cette barre.
+            </ChartInfo>
+          </div>
         </div>
       </details>
 
