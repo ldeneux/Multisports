@@ -19,6 +19,26 @@ function extractEngagementIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
+// Verrou "saison archivée" : toute saison différente de la saison en cours
+// est en lecture seule, pour toujours — qu'il s'agisse d'un historique
+// saisi à la main ou d'anciennes saisons FFBB. Chaque action qui modifie un
+// match, une feuille de match ou une phase vérifie sa saison avant d'écrire
+// quoi que ce soit ; en cas de blocage, elle ne fait rien silencieusement
+// (l'UI, elle, ne propose déjà plus ces actions pour une saison archivée —
+// ceci est le filet de sécurité côté serveur, pour le cas où l'action serait
+// déclenchée directement).
+async function matchSeason(supabase, matchId) {
+  const { data } = await supabase.from("basketball_matches").select("season").eq("id", matchId).maybeSingle();
+  return data?.season ?? null;
+}
+async function phaseSeason(supabase, phaseId) {
+  const { data } = await supabase.from("basketball_phases").select("season").eq("id", phaseId).maybeSingle();
+  return data?.season ?? null;
+}
+function isCurrentSeason(season) {
+  return season != null && season === computeCurrentSeasonLabel();
+}
+
 // ---- Phases de saison ------------------------------------------------------
 // Une "phase" = une compétition FFBB distincte au sein d'une même saison
 // (ex. "Saison régulière" puis "Phase 2" puis "Phase 3" pour les U15F) —
@@ -81,9 +101,13 @@ export async function updatePhase(formData) {
   // se protège aussi côté serveur).
   const { data: existingPhase } = await supabase
     .from("basketball_phases")
-    .select("phase_type")
+    .select("phase_type, season")
     .eq("id", phaseId)
     .maybeSingle();
+  if (!isCurrentSeason(existingPhase?.season)) {
+    revalidatePath("/basket");
+    return;
+  }
   const isAmical = existingPhase?.phase_type === "amical";
 
   const { error } = await supabase
@@ -101,10 +125,15 @@ export async function updatePhase(formData) {
 
 export async function deletePhase(formData) {
   const supabase = createClient();
+  const phaseId = formData.get("phase_id");
+  if (!isCurrentSeason(await phaseSeason(supabase, phaseId))) {
+    revalidatePath("/basket");
+    return;
+  }
   // Cascade : supprime aussi les matchs et le classement de cette phase
   // (basketball_matches.phase_id / basketball_classements.phase_id sont en
   // "on delete cascade").
-  await supabase.from("basketball_phases").delete().eq("id", formData.get("phase_id"));
+  await supabase.from("basketball_phases").delete().eq("id", phaseId);
   revalidatePath("/basket");
 }
 
@@ -120,6 +149,12 @@ export async function addMatch(formData) {
   const homeAway = formData.get("home_away");
   const opponent = formData.get("opponent");
   const usIsTeam1 = homeAway === "domicile";
+  const phaseId = formData.get("phase_id") || null;
+
+  if (phaseId && !isCurrentSeason(await phaseSeason(supabase, phaseId))) {
+    revalidatePath("/basket");
+    return;
+  }
 
   // MatchCard n'effectue plus aucune substitution de nom à l'affichage — on
   // enregistre donc le vrai nom du club directement dans team1_name/
@@ -133,7 +168,7 @@ export async function addMatch(formData) {
 
   const { error } = await supabase.from("basketball_matches").insert({
     participant_sport_id: participantSportId,
-    phase_id: formData.get("phase_id") || null,
+    phase_id: phaseId,
     match_date: formData.get("match_date"),
     opponent,
     location: formData.get("location") || null,
@@ -165,11 +200,15 @@ export async function saveMatchSheet(formData) {
 
   const { data: match, error: readError } = await supabase
     .from("basketball_matches")
-    .select("us_is_team1, source")
+    .select("us_is_team1, source, season")
     .eq("id", matchId)
     .single();
   if (readError || !match) {
     console.error("saveMatchSheet: lecture du match impossible", readError);
+    revalidatePath("/basket");
+    return;
+  }
+  if (!isCurrentSeason(match.season)) {
     revalidatePath("/basket");
     return;
   }
@@ -346,6 +385,10 @@ export async function saveMatchStats(formData) {
     revalidatePath("/basket");
     return;
   }
+  if (!isCurrentSeason(await matchSeason(supabase, matchId))) {
+    revalidatePath("/basket");
+    return;
+  }
 
   const numberOr0 = (v) => (v !== null && v !== "" ? Number(v) : 0);
 
@@ -380,6 +423,11 @@ export async function togglePlayerOnSheet(formData) {
   const playerId = formData.get("player_id");
   const onSheet = formData.get("on_sheet") === "true";
 
+  if (!isCurrentSeason(await matchSeason(supabase, matchId))) {
+    revalidatePath("/basket");
+    return;
+  }
+
   const { error } = await supabase.from("basketball_match_stats").upsert(
     { match_id: matchId, player_id: playerId, on_sheet: onSheet, updated_at: new Date().toISOString() },
     { onConflict: "match_id,player_id" }
@@ -400,9 +448,13 @@ export async function resetMatchSheet(formData) {
 
   const { data: match } = await supabase
     .from("basketball_matches")
-    .select("source")
+    .select("source, season")
     .eq("id", matchId)
     .maybeSingle();
+  if (!isCurrentSeason(match?.season)) {
+    revalidatePath("/basket");
+    return;
+  }
 
   await supabase.from("basketball_match_stats").delete().eq("match_id", matchId);
 
@@ -421,14 +473,16 @@ export async function resetMatchSheet(formData) {
 
 export async function deleteMatch(formData) {
   const supabase = createClient();
-  // On ne supprime jamais un match officiel issu d'une synchro FFBB — il
-  // reviendrait de toute façon à la prochaine synchro, et le supprimer
-  // casserait la cohérence du calendrier officiel.
+  // On ne supprime jamais un match officiel issu d'une synchro FFBB (il
+  // reviendrait de toute façon à la prochaine synchro), ni un match d'une
+  // saison archivée (peu importe sa source) — les deux filtres sont
+  // cumulatifs dans la même requête.
   await supabase
     .from("basketball_matches")
     .delete()
     .eq("id", formData.get("match_id"))
-    .eq("source", "manuel");
+    .eq("source", "manuel")
+    .eq("season", computeCurrentSeasonLabel());
   revalidatePath("/basket");
 }
 
@@ -497,6 +551,10 @@ export async function syncPhase(formData) {
 
   if (readError || !phase) {
     console.error("syncPhase: lecture de la phase impossible", readError);
+    revalidatePath("/basket");
+    return;
+  }
+  if (!isCurrentSeason(phase.season)) {
     revalidatePath("/basket");
     return;
   }
