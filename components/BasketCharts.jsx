@@ -227,6 +227,138 @@ export function SimpleBarChart({ items, height = 190, thresholdValue, thresholdL
   );
 }
 
+// Barres + ligne superposée sur deux échelles (ex. fautes en barres, temps
+// de jeu en ligne, pour juger le nombre de fautes AU REGARD du temps
+// réellement passé sur le terrain plutôt qu'en valeur absolue). Les classes
+// de couleur sont attendues en toutes lettres (fill-navy, stroke-navy,
+// bg-navy...) plutôt que construites dynamiquement, pour que Tailwind les
+// détecte à la compilation.
+export function BarLineChart({
+  items,
+  barLabel,
+  barColorClass = "fill-cardinal",
+  lineLabel,
+  lineStrokeClass = "stroke-navy",
+  lineFillClass = "fill-navy",
+  lineDotClass = "bg-navy",
+  thresholdValue,
+  thresholdLabel,
+  height = 190,
+}) {
+  if (!items || items.length === 0) {
+    return <p className="text-xs text-ink/40">Pas encore de données.</p>;
+  }
+  const barMax = niceMax(Math.max(1, thresholdValue ?? 0, ...items.map((it) => it.barValue)));
+  const lineValues = items.map((it) => it.lineValue).filter((v) => v != null);
+  const lineMax = niceMax(Math.max(1, ...lineValues));
+  const leftMargin = 22;
+  const rightMargin = 30;
+  const top = 14;
+  const baseline = height - 20;
+  const width = Math.max(240, leftMargin + rightMargin + items.length * 40);
+  const plotRight = width - rightMargin;
+  const plotWidth = plotRight - leftMargin;
+  const slot = plotWidth / items.length;
+  const barWidth = Math.min(24, slot - 12);
+  const thresholdY = thresholdValue != null ? baseline - (thresholdValue / barMax) * (baseline - top) : null;
+
+  const linePoints = items.map((it, i) => ({
+    x: leftMargin + i * slot + slot / 2,
+    y: it.lineValue != null ? baseline - (it.lineValue / lineMax) * (baseline - top) : null,
+    value: it.lineValue,
+  }));
+  const linePath = linePoints
+    .filter((p) => p.y != null)
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+    .join(" ");
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap gap-3 text-[11px] text-ink/60">
+        <span className="flex items-center gap-1.5">
+          <span className={`inline-block h-2.5 w-2.5 rounded-full ${barColorClass.replace("fill-", "bg-")}`} />
+          {barLabel}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`inline-block h-2.5 w-2.5 rounded-full ${lineDotClass}`} />
+          {lineLabel}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+          <VerticalGridlines width={plotRight} leftMargin={leftMargin} top={top} baseline={baseline} max={barMax} />
+          {[0, 0.5, 1].map((lvl) => (
+            <text
+              key={lvl}
+              x={plotRight + 4}
+              y={baseline - lvl * (baseline - top)}
+              dominantBaseline="middle"
+              className="fill-ink/40 text-[8px]"
+            >
+              {formatTick(lineMax * lvl)}
+            </text>
+          ))}
+          {thresholdY != null && (
+            <>
+              <line x1={leftMargin} x2={plotRight} y1={thresholdY} y2={thresholdY} className="stroke-cardinal/60" strokeDasharray="4 3" />
+              <text x={plotRight} y={thresholdY - 3} textAnchor="end" className="fill-cardinal/70 text-[8px]">
+                {thresholdLabel}
+              </text>
+            </>
+          )}
+          {items.map((it, i) => {
+            const x = leftMargin + i * slot + (slot - barWidth) / 2;
+            const h = (it.barValue / barMax) * (baseline - top);
+            return (
+              <g key={i}>
+                <rect x={x} y={baseline - h} width={barWidth} height={Math.max(0, h)} className={barColorClass}>
+                  <title>{`${it.label} — ${barLabel} : ${formatTick(it.barValue)}`}</title>
+                </rect>
+                {it.barValue > 0 && (
+                  <text x={x + barWidth / 2} y={baseline - h - 4} textAnchor="middle" className="fill-ink text-[9px] font-semibold">
+                    {formatTick(it.barValue)}
+                  </text>
+                )}
+                <text x={x + barWidth / 2} y={baseline + 12} textAnchor="middle" className="fill-ink/40 text-[8px]">
+                  {it.label}
+                </text>
+              </g>
+            );
+          })}
+          {linePath && <path d={linePath} className={`fill-none ${lineStrokeClass}`} strokeWidth="2" />}
+          {linePoints.map((p, i) =>
+            p.y != null ? (
+              <circle key={i} cx={p.x} cy={p.y} r="3" className={lineFillClass}>
+                <title>{`${items[i].label} — ${lineLabel} : ${formatTick(p.value)}`}</title>
+              </circle>
+            ) : null
+          )}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+// Petite icône info dépliable (aucun JS — <details> natif), placée en bas de
+// chaque carte de graphique pour expliquer la règle de calcul sans encombrer
+// l'affichage par défaut.
+export function ChartInfo({ children }) {
+  return (
+    <details className="mt-2">
+      <summary
+        className="inline-block cursor-pointer select-none text-xs text-ink/30 hover:text-ink/60"
+        title="Comment ce graphique est calculé"
+      >
+        ⓘ
+      </summary>
+      <p className="mt-1 text-[11px] leading-relaxed text-ink/50">{children}</p>
+    </details>
+  );
+}
+// évidence (highlight) sert à repérer la joueuse actuellement sélectionnée
+// dans un classement qui montre toute l'équipe. Graduation verticale en
+// pointillés (0/50/100% du max) en plus de la valeur déjà affichée en toutes
+// lettres au bout de chaque barre.
 // Barres horizontales (ex. classements entre joueuses) — la ligne mise en
 // évidence (highlight) sert à repérer la joueuse actuellement sélectionnée
 // dans un classement qui montre toute l'équipe. Graduation verticale en
