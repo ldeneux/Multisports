@@ -941,9 +941,9 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
           <StackedBarChart
             items={pointsSeries}
             legend={[
-              { label: "2 pts", className: "fill-navy" },
-              { label: "3 pts", className: "fill-lagoon" },
-              { label: "LF", className: "fill-cardinal" },
+              { label: "2 pts", className: "fill-[#2E86DE]" },
+              { label: "3 pts", className: "fill-[#F5A623]" },
+              { label: "LF", className: "fill-[#16C79A]" },
             ]}
           />
           <ChartInfo>
@@ -966,11 +966,11 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
           <BarLineChart
             items={foulsAndMinutesSeries}
             barLabel="Fautes"
-            barColorClass="fill-cardinal"
+            barColorClass="fill-[#FF5A5F]"
             lineLabel="Temps de jeu (min)"
-            lineStrokeClass="stroke-navy"
-            lineFillClass="fill-navy"
-            lineDotClass="bg-navy"
+            lineStrokeClass="stroke-[#2E86DE]"
+            lineFillClass="fill-[#2E86DE]"
+            lineDotClass="bg-[#2E86DE]"
             thresholdValue={5}
             thresholdLabel="Sortie (5 fautes)"
           />
@@ -991,8 +991,8 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
             (% de réussite aux lancers francs + points marqués / {POINTS_WEIGHT_REFERENCE}) / 2, match par match.
             Volontairement pas plafonnée à 100% : un très gros match ressort au-dessus plutôt que d'être lissé au même
             niveau qu'un match pile dans l'objectif. Sans lancer franc tenté ce match-là, la note retombe entièrement
-            sur les points marqués. Barre bleu clair = au-dessus de l'objectif, bleu foncé = dans une bonne moyenne,
-            rouge = match difficile.
+            sur les points marqués. Barre turquoise = au-dessus de l'objectif, bleue = dans une bonne moyenne, corail
+            = match difficile.
           </ChartInfo>
         </div>
 
@@ -1000,8 +1000,8 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
           <p className="mb-2 text-sm font-semibold text-navy">Points de la joueuse vs points de l'équipe</p>
           <DualLineChart
             items={pointsVsTeamSeries}
-            seriesA={{ label: selected.player.name, strokeClass: "stroke-cardinal", fillClass: "fill-cardinal", dotClass: "bg-cardinal" }}
-            seriesB={{ label: "Total équipe", strokeClass: "stroke-navy/50", fillClass: "fill-navy/50", dotClass: "bg-navy/50" }}
+            seriesA={{ label: selected.player.name, strokeClass: "stroke-[#FF5A5F]", fillClass: "fill-[#FF5A5F]", dotClass: "bg-[#FF5A5F]" }}
+            seriesB={{ label: "Total équipe", strokeClass: "stroke-[#2E86DE]/50", fillClass: "fill-[#2E86DE]/50", dotClass: "bg-[#2E86DE]/50" }}
           />
           <ChartInfo>
             Points marqués par {selected.player.name} comparés au total marqué par toute l'équipe, match par match —
