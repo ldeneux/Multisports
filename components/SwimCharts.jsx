@@ -344,11 +344,17 @@ export function SwimScatterChart({ points, width = 520, height = 320 }) {
  * donnée : une ligne par nageuse suivie + des repères horizontaux fixes
  * (moyenne du champ, temps du N°1, temps du N°3). Le plus rapide est en
  * haut du graphique (axe Y inversé par rapport au temps brut) pour que
- * "progresser" se lise visuellement comme "monter".
+ * "progresser" se lise visuellement comme "monter". Le bouton "focus"
+ * masque les 3 repères et ne garde que les nageuses suivies, avec les axes
+ * recalculés sur leur seul écart de temps.
  */
 export function SwimTimeTrendChart({ series, referenceLines = [], width = 640, height = 320 }) {
+  const [focusMode, setFocusMode] = useState(false);
+
   const withPoints = (series ?? []).filter((s) => s.points && s.points.length > 0);
   if (withPoints.length === 0 && referenceLines.length === 0) return null;
+
+  const activeReferenceLines = focusMode ? [] : referenceLines;
 
   const padding = { top: 16, right: 92, bottom: 36, left: 50 };
   const plotW = width - padding.left - padding.right;
@@ -356,7 +362,7 @@ export function SwimTimeTrendChart({ series, referenceLines = [], width = 640, h
 
   const allTimes = [
     ...withPoints.flatMap((s) => s.points.map((p) => p.time_ms)),
-    ...referenceLines.map((r) => r.time_ms),
+    ...activeReferenceLines.map((r) => r.time_ms),
   ];
   if (allTimes.length === 0) return null;
   const rawMin = Math.min(...allTimes);
@@ -378,7 +384,21 @@ export function SwimTimeTrendChart({ series, referenceLines = [], width = 640, h
   const yTicks = Array.from({ length: yTickCount + 1 }, (_, i) => minTime + (i / yTickCount) * timeSpan);
 
   return (
-    <div>
+    <div className="relative">
+      {referenceLines.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setFocusMode((v) => !v)}
+          title={focusMode ? "Réafficher les repères (N°1, N°3, moyenne)" : "Se recentrer sur mes nageuses suivies"}
+          className={`absolute right-0 top-0 z-10 flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold shadow-sm ${
+            focusMode ? "bg-cardinal text-white" : "bg-white text-ink/40 hover:text-cardinal"
+          }`}
+        >
+          <FocusIcon active={focusMode} />
+          {focusMode ? "Suivies" : "Focus"}
+        </button>
+      )}
+
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
         {yTicks.map((t, i) => (
           <g key={i}>
@@ -408,7 +428,7 @@ export function SwimTimeTrendChart({ series, referenceLines = [], width = 640, h
           </>
         )}
 
-        {referenceLines.map((ref) => (
+        {activeReferenceLines.map((ref) => (
           <g key={ref.label}>
             <line
               x1={padding.left}
