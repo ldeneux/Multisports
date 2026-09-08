@@ -427,6 +427,207 @@ export function DualLineChart({ items, seriesA, seriesB, height = 190 }) {
   );
 }
 
+// Palette vive dédiée à IsoBarChart/DonutChart — volontairement distincte du
+// thème général de l'appli (navy/cardinal/lagoon), réservée à ces deux
+// graphiques pour leur donner un rendu plus "graphique de données" moderne.
+// Couleurs en dur (pas de classes Tailwind) car hors palette du design
+// system : IsoBarChart calcule son ton (great/mid/low) à partir de la valeur
+// elle-même, DonutChart prend une couleur explicite par segment.
+const ISO_TIERS = {
+  great: { base: "#16C79A", light: "#5EE7C0", dark: "#0E8F70" },
+  mid: { base: "#2E86DE", light: "#6FB2F5", dark: "#1B5FA8" },
+  low: { base: "#FF5A5F", light: "#FF9195", dark: "#C43A3E" },
+};
+
+// Camembert (donut) — pour une répartition figée (ex. part des points 2pts /
+// 3pts / LF sur la saison), jamais pour une évolution dans le temps.
+export function DonutChart({ segments, size = 170 }) {
+  if (!segments || segments.length === 0 || segments.every((s) => s.value <= 0)) {
+    return <p className="text-xs text-ink/40">Pas encore de données.</p>;
+  }
+  const total = segments.reduce((s, seg) => s + seg.value, 0);
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size / 2 - 4;
+  const inner = r * 0.55;
+  const rMid = (r + inner) / 2;
+  const strokeW = r - inner;
+  let angle = -Math.PI / 2;
+
+  const arcs = segments
+    .filter((seg) => seg.value > 0)
+    .map((seg) => {
+      const frac = seg.value / total;
+      const startAngle = angle;
+      const endAngle = angle + frac * 2 * Math.PI;
+      angle = endAngle;
+      const large = frac > 0.5 ? 1 : 0;
+      const [x1, y1] = polarPoint(cx, cy, rMid, startAngle);
+      const [x2, y2] = polarPoint(cx, cy, rMid, endAngle);
+      return {
+        ...seg,
+        pct: Math.round(frac * 100),
+        path: `M ${x1} ${y1} A ${rMid} ${rMid} 0 ${large} 1 ${x2} ${y2}`,
+      };
+    });
+
+  return (
+    <div className="flex flex-wrap items-center gap-4">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {arcs.map((a, i) => (
+          <path key={i} d={a.path} fill="none" stroke={a.color} strokeWidth={strokeW} strokeLinecap="butt">
+            <title>{`${a.label} : ${a.pct}%`}</title>
+          </path>
+        ))}
+      </svg>
+      <div className="flex flex-col gap-1.5 text-[11px] text-ink/60">
+        {arcs.map((a, i) => (
+          <span key={i} className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: a.color }} />
+            {a.label} — {a.pct}%
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Barres en fausse perspective isométrique (socle + 2 faces + dessus, 3 tons
+// d'une même couleur) — la couleur suit AUTOMATIQUEMENT la valeur (vert-eau
+// ≥100%, bleu 50-99%, corail <50%), pas une couleur fixe par barre : c'est ce
+// qui permet de repérer un bon/mauvais match d'un coup d'œil, comme l'ancien
+// SimpleBarChart avec ses classes de couleur, mais dans la palette vive.
+export function IsoBarChart({ items, height = 220, thresholdValue, thresholdLabel }) {
+  if (!items || items.length === 0) {
+    return <p className="text-xs text-ink/40">Pas encore de données.</p>;
+  }
+  const max = niceMax(Math.max(1, thresholdValue ?? 0, ...items.map((it) => it.value)));
+  const leftMargin = 10;
+  const top = 30;
+  const baseline = height - 34;
+  const width = Math.max(240, leftMargin + items.length * 56);
+  const plotWidth = width - leftMargin;
+  const slot = plotWidth / items.length;
+  const s = 15;
+  const thresholdY = thresholdValue != null ? baseline - (thresholdValue / max) * (baseline - top) : null;
+
+  return (
+    <div className="overflow-x-auto">
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+        <line x1={leftMargin} x2={width} y1={baseline} y2={baseline} className="stroke-ink/15" />
+        {thresholdY != null && (
+          <>
+            <line x1={leftMargin} x2={width} y1={thresholdY} y2={thresholdY} className="stroke-ink/25" strokeDasharray="4 3" />
+            <text x={width - 2} y={thresholdY - 4} textAnchor="end" className="fill-ink/40 text-[8px]">
+              {thresholdLabel}
+            </text>
+          </>
+        )}
+        {items.map((it, i) => {
+          const cx = leftMargin + i * slot + slot / 2;
+          const h = Math.max(2, (it.value / max) * (baseline - top));
+          const tier = it.value >= 100 ? ISO_TIERS.great : it.value >= 50 ? ISO_TIERS.mid : ISO_TIERS.low;
+          const A = { x: s * 0.866, y: s * 0.5 };
+          const B = { x: -s * 0.866, y: s * 0.5 };
+          const o = { x: cx, y: baseline };
+          const oA = { x: o.x + A.x, y: o.y + A.y };
+          const oB = { x: o.x + B.x, y: o.y + B.y };
+          const oAB = { x: o.x + A.x + B.x, y: o.y + A.y + B.y };
+          const topPt = { x: o.x, y: o.y - h };
+          const topA = { x: oA.x, y: oA.y - h };
+          const topB = { x: oB.x, y: oB.y - h };
+          const topAB = { x: oAB.x, y: oAB.y - h };
+          return (
+            <g key={i}>
+              <ellipse cx={cx} cy={baseline + 4} rx={s * 1.1} ry={s * 0.35} className="fill-ink/5" />
+              <polygon points={`${o.x},${o.y} ${oB.x},${oB.y} ${topB.x},${topB.y} ${topPt.x},${topPt.y}`} fill={tier.base} />
+              <polygon points={`${o.x},${o.y} ${oA.x},${oA.y} ${topA.x},${topA.y} ${topPt.x},${topPt.y}`} fill={tier.dark} />
+              <polygon points={`${topPt.x},${topPt.y} ${topA.x},${topA.y} ${topAB.x},${topAB.y} ${topB.x},${topB.y}`} fill={tier.light}>
+                <title>{`${it.label} : ${formatTick(it.value)}`}</title>
+              </polygon>
+              <text x={cx} y={topPt.y - 6} textAnchor="middle" className="fill-ink text-[9px] font-semibold">
+                {formatTick(it.value)}
+              </text>
+              <text x={cx} y={baseline + 16} textAnchor="middle" className="fill-ink/40 text-[8px]">
+                {it.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+// "Pyramide des âges" détournée : deux séries dos à dos de part et d'autre
+// d'un axe central (ex. note moyenne à domicile vs à l'extérieur, par
+// joueuse) — utile uniquement pour comparer DEUX métriques sur les mêmes
+// catégories, pas comme classement à une seule valeur (voir HorizontalBarChart
+// pour ce cas-là).
+export function PyramidChart({ items, leftLabel, rightLabel, leftColor = "#2E86DE", rightColor = "#16C79A", valueSuffix = "" }) {
+  if (!items || items.length === 0) {
+    return <p className="text-xs text-ink/40">Pas encore de données.</p>;
+  }
+  const max = niceMax(Math.max(1, ...items.flatMap((it) => [it.left, it.right])));
+  const rowHeight = 26;
+  const top = 8;
+  const height = items.length * rowHeight + top + 8;
+  const labelWidth = 72;
+  const halfWidth = 120;
+  const centerX = labelWidth + halfWidth;
+  const totalWidth = labelWidth + halfWidth * 2 + 56;
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap gap-3 text-[11px] text-ink/60">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: leftColor }} />
+          {leftLabel}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: rightColor }} />
+          {rightLabel}
+        </span>
+      </div>
+      <svg width="100%" viewBox={`0 0 ${totalWidth} ${height}`}>
+        <line x1={centerX} y1={top} x2={centerX} y2={height - 4} className="stroke-ink/20" />
+        {items.map((it, i) => {
+          const y = top + i * rowHeight;
+          const leftW = (it.left / max) * halfWidth;
+          const rightW = (it.right / max) * halfWidth;
+          return (
+            <g key={it.label}>
+              <text
+                x={labelWidth - 6}
+                y={y + rowHeight / 2}
+                textAnchor="end"
+                dominantBaseline="middle"
+                className={`text-[10px] ${it.highlight ? "fill-cardinal font-bold" : "fill-ink/60"}`}
+              >
+                {it.label}
+              </text>
+              <rect x={centerX - leftW} y={y + 3} width={Math.max(0, leftW)} height={rowHeight - 10} rx="2" fill={leftColor}>
+                <title>{`${it.label} — ${leftLabel} : ${formatTick(it.left)}${valueSuffix}`}</title>
+              </rect>
+              <text x={centerX - leftW - 4} y={y + rowHeight / 2} textAnchor="end" dominantBaseline="middle" className="fill-ink/50 text-[9px]">
+                {formatTick(it.left)}
+                {valueSuffix}
+              </text>
+              <rect x={centerX} y={y + 3} width={Math.max(0, rightW)} height={rowHeight - 10} rx="2" fill={rightColor}>
+                <title>{`${it.label} — ${rightLabel} : ${formatTick(it.right)}${valueSuffix}`}</title>
+              </rect>
+              <text x={centerX + rightW + 4} y={y + rowHeight / 2} dominantBaseline="middle" className="fill-ink/50 text-[9px]">
+                {formatTick(it.right)}
+                {valueSuffix}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 // Petite icône info dépliable (aucun JS — <details> natif), placée en bas de
 // chaque carte de graphique pour expliquer la règle de calcul sans encombrer
 // l'affichage par défaut.
