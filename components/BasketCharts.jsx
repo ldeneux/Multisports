@@ -61,9 +61,9 @@ export function RadarChart({ axes, size = 260 }) {
         const [x, y] = polarPoint(cx, cy, maxR, startAngle + i * angleStep);
         return <line key={a.label} x1={cx} y1={cy} x2={x} y2={y} className="stroke-ink/10" />;
       })}
-      <polygon points={polygonPoints} className="fill-cardinal/25 stroke-cardinal" strokeWidth="2" />
+      <polygon points={polygonPoints} className="fill-[#2E86DE]/25 stroke-[#2E86DE]" strokeWidth="2" />
       {points.map(([x, y], i) => (
-        <circle key={i} cx={x} cy={y} r="3" className="fill-cardinal">
+        <circle key={i} cx={x} cy={y} r="3" className="fill-[#2E86DE]">
           <title>{`${axes[i].label} : ${Math.round(axes[i].value)}/100`}</title>
         </circle>
       ))}
@@ -303,8 +303,8 @@ export function BarLineChart({
           ))}
           {thresholdY != null && (
             <>
-              <line x1={leftMargin} x2={plotRight} y1={thresholdY} y2={thresholdY} className="stroke-cardinal/60" strokeDasharray="4 3" />
-              <text x={plotRight} y={thresholdY - 3} textAnchor="end" className="fill-cardinal/70 text-[8px]">
+              <line x1={leftMargin} x2={plotRight} y1={thresholdY} y2={thresholdY} className="stroke-[#FF5A5F]/60" strokeDasharray="4 3" />
+              <text x={plotRight} y={thresholdY - 3} textAnchor="end" className="fill-[#FF5A5F]/70 text-[8px]">
                 {thresholdLabel}
               </text>
             </>
@@ -572,8 +572,8 @@ export function PyramidChart({ items, leftLabel, rightLabel, leftColor = "#2E86D
   const rowHeight = 26;
   const top = 8;
   const height = items.length * rowHeight + top + 8;
-  const labelWidth = 72;
-  const halfWidth = 120;
+  const labelWidth = 130;
+  const halfWidth = 110;
   const centerX = labelWidth + halfWidth;
   const totalWidth = labelWidth + halfWidth * 2 + 56;
 
