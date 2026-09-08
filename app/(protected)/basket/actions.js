@@ -534,6 +534,81 @@ function normalizeClubName(s) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// "NEUVILLE BASKET - 2" -> "NEUVILLE BASKET" : retire le suffixe de numéro
+// d'équipe pour obtenir la clé de club (basketball_clubs.club_key). Un club
+// engageant plusieurs équipes (ex. "- 1", "- 2") partage ainsi la même fiche
+// (logo, gymnase, adresse) entre toutes ses équipes.
+function stripTeamSuffix(name) {
+  return (name || "").trim().replace(/\s*-\s*\d+\s*$/, "");
+}
+
+// Alimente basketball_clubs à partir des rencontres d'une synchro — jamais
+// destructeur : un champ déjà renseigné (à la main ou par une synchro
+// précédente) n'est jamais écrasé, sauf logo_url qui reste réservé à une
+// saisie manuelle (la FFBB n'a pas toujours de logo pour notre propre club,
+// par exemple) et n'est donc jamais touché ici.
+async function upsertClubsFromRencontres(supabase, rencontres) {
+  const candidates = new Map();
+  const merge = (name, { organismeId, logoAsset, gymnase, adresse }) => {
+    if (!name) return;
+    const key = stripTeamSuffix(name);
+    if (!key) return;
+    const existing = candidates.get(key) || { display_name: name };
+    candidates.set(key, {
+      display_name: name,
+      ffbb_organisme_id: existing.ffbb_organisme_id ?? organismeId ?? null,
+      logo_asset: existing.logo_asset ?? logoAsset ?? null,
+      gymnase: existing.gymnase ?? gymnase ?? null,
+      adresse: existing.adresse ?? adresse ?? null,
+    });
+  };
+
+  for (const r of rencontres) {
+    const location = [r.salle?.libelle, r.salle?.commune?.libelle].filter(Boolean).join(", ");
+    // Convention FFBB reprise dans toute l'appli : équipe 1 = domicile ->
+    // c'est donc son club qui joue dans la salle indiquée.
+    merge(r.nomEquipe1, {
+      organismeId: r.idOrganismeEquipe1?.id != null ? String(r.idOrganismeEquipe1.id) : null,
+      logoAsset: r.idOrganismeEquipe1?.logo?.id || null,
+      gymnase: r.salle?.libelle || null,
+      adresse: location || null,
+    });
+    merge(r.nomEquipe2, {
+      organismeId: r.idOrganismeEquipe2?.id != null ? String(r.idOrganismeEquipe2.id) : null,
+      logoAsset: r.idOrganismeEquipe2?.logo?.id || null,
+      gymnase: null,
+      adresse: null,
+    });
+  }
+
+  if (candidates.size === 0) return;
+
+  const keys = [...candidates.keys()];
+  const { data: existingRows } = await supabase
+    .from("basketball_clubs")
+    .select("club_key, ffbb_organisme_id, logo_asset, gymnase, adresse")
+    .in("club_key", keys);
+  const existingByKey = new Map((existingRows ?? []).map((row) => [row.club_key, row]));
+
+  const rows = keys.map((key) => {
+    const c = candidates.get(key);
+    const existing = existingByKey.get(key);
+    return {
+      club_key: key,
+      display_name: c.display_name,
+      // Ne remplit que ce qui manque encore — ne jamais écraser une valeur
+      // déjà connue (saisie manuelle ou synchro précédente).
+      ffbb_organisme_id: existing?.ffbb_organisme_id ?? c.ffbb_organisme_id,
+      logo_asset: existing?.logo_asset ?? c.logo_asset,
+      gymnase: existing?.gymnase ?? c.gymnase,
+      adresse: existing?.adresse ?? c.adresse,
+      updated_at: new Date().toISOString(),
+    };
+  });
+
+  await supabase.from("basketball_clubs").upsert(rows, { onConflict: "club_key" });
+}
+
 // ---- Synchronisation FFBB (expérimentale, API non officielle) -------------
 // Une synchro cible toujours UNE phase précise (donc un ID FFBB précis) —
 // c'est ce qui permet d'avoir plusieurs compétitions actives dans la même
@@ -651,7 +726,9 @@ export async function syncPhase(formData) {
         "rencontres.nomEquipe2",
         "rencontres.idEngagementEquipe1.id",
         "rencontres.idEngagementEquipe2.id",
+        "rencontres.idOrganismeEquipe1.id",
         "rencontres.idOrganismeEquipe1.logo.id",
+        "rencontres.idOrganismeEquipe2.id",
         "rencontres.idOrganismeEquipe2.logo.id",
         "rencontres.salle.libelle",
         "rencontres.salle.commune.libelle",
@@ -673,6 +750,7 @@ export async function syncPhase(formData) {
     // pouvoir afficher "Toute la poule" — us_is_team1 reste null pour les
     // matchs qui ne nous concernent pas.
     const rencontres = poule?.rencontres ?? [];
+    await upsertClubsFromRencontres(supabase, rencontres);
 
     const matchPayload = rencontres.map((r) => {
       const isTeam1 = String(r.idEngagementEquipe1?.id) === String(engagementId);
