@@ -47,8 +47,8 @@ function initials(name) {
     .toUpperCase();
 }
 
-function Crest({ assetId, name }) {
-  const url = ffbbAssetUrl(assetId, { width: 64 });
+function Crest({ assetId, logoUrl, name }) {
+  const url = logoUrl || ffbbAssetUrl(assetId, { width: 64 });
   if (!url) {
     return (
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sand text-[10px] font-bold text-ink/40">
@@ -58,6 +58,13 @@ function Crest({ assetId, name }) {
   }
   // eslint-disable-next-line @next/next/no-img-element
   return <img src={url} alt={name} className="h-8 w-8 shrink-0 rounded-full object-contain" />;
+}
+
+// "NEUVILLE BASKET - 2" -> "NEUVILLE BASKET" — même normalisation que côté
+// serveur (actions.js), pour retrouver la fiche club correspondante quel
+// que soit le suffixe d'équipe.
+function stripTeamSuffix(name) {
+  return (name || "").trim().replace(/\s*-\s*\d+\s*$/, "");
 }
 
 // Barre "compétition jouée" : nom de la compétition + poule (avec lien vers
@@ -266,7 +273,7 @@ function defaultJournee(matches, journeeOptions) {
   return journeeOptions[0];
 }
 
-function MatchCard({ m, typeIcon, sheetBaseHref }) {
+function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
   const isPlayed = m.status === "joue";
   const usIsLeft = m.us_is_team1 === true;
   const usIsRight = m.us_is_team1 === false;
@@ -284,18 +291,26 @@ function MatchCard({ m, typeIcon, sheetBaseHref }) {
   const leftScore = m.team1_score;
   const rightScore = m.team2_score;
 
-  // Code couleur : victoire (ou match ne nous concernant pas) = couleur par
-  // défaut (navy) ; défaite de notre équipe = notre score en rouge
-  // (cardinal), celui de l'adversaire en bleu (lagoon).
+  // Priorité à la fiche club (partagée entre tous les matchs, alimentée par
+  // la synchro et éditable à la main pour un logo que la FFBB n'a pas, ex.
+  // Sathonay) — repli sur l'ancien champ stocké directement sur le match
+  // pour les données déjà chargées avant l'introduction de cette table.
+  const leftClub = clubLogos?.get(stripTeamSuffix(leftName));
+  const rightClub = clubLogos?.get(stripTeamSuffix(rightName));
+
+  // Code couleur : seul NOTRE score change de couleur (celui de l'adversaire
+  // reste toujours navy, neutre) — victoire = bleu (lagoon), défaite = rouge
+  // (cardinal), match nul = vert (emerald). Un seul repère visuel simple,
+  // plutôt que l'ancien codage à deux couleurs de chaque côté.
   let leftColor = "text-navy";
   let rightColor = "text-navy";
   if (concernsUs && isPlayed && leftScore != null && rightScore != null) {
     const usScore = usIsLeft ? leftScore : rightScore;
     const themScore = usIsLeft ? rightScore : leftScore;
-    if (usScore < themScore) {
-      leftColor = usIsLeft ? "text-cardinal" : "text-lagoon";
-      rightColor = usIsRight ? "text-cardinal" : "text-lagoon";
-    }
+    const usColor =
+      usScore > themScore ? "text-lagoon" : usScore < themScore ? "text-cardinal" : "text-emerald-600";
+    if (usIsLeft) leftColor = usColor;
+    if (usIsRight) rightColor = usColor;
   }
 
   const dateObj = m.match_date ? new Date(m.match_date) : null;
@@ -325,22 +340,23 @@ function MatchCard({ m, typeIcon, sheetBaseHref }) {
       >
         {leftName}
       </span>
-      <Crest assetId={m.team1_logo_asset} name={leftName} />
+      <Crest assetId={leftClub?.logo_asset ?? m.team1_logo_asset} logoUrl={leftClub?.logo_url} name={leftName} />
 
       {/* Cliquer sur la date (match à venir) ou le score (match joué) ouvre
           la feuille de match complète — plus aucune saisie sur la ligne.
           Largeur fixe (pas juste min-w) pour que les deux noms d'équipe se
           partagent exactement le même espace de chaque côté, quelle que
           soit la longueur du lieu (retiré d'ici — visible dans la feuille
-          de match au clic). */}
+          de match au clic). whitespace-nowrap sur le score : un score à 3
+          chiffres de chaque côté ne doit jamais retomber sur deux lignes. */}
       <Link
         href={`${sheetBaseHref}&feuille=${m.id}`}
         scroll={false}
-        className="flex w-16 shrink-0 flex-col items-center rounded-lg px-1 py-0.5 hover:bg-sand"
+        className="flex w-20 shrink-0 flex-col items-center rounded-lg px-1 py-0.5 hover:bg-sand"
         title="Ouvrir la feuille de match"
       >
         {isPlayed ? (
-          <span className="font-display text-lg font-bold">
+          <span className="whitespace-nowrap font-display text-lg font-bold">
             <span className={leftColor}>{leftScore ?? "–"}</span>
             <span className="text-navy"> - </span>
             <span className={rightColor}>{rightScore ?? "–"}</span>
@@ -355,7 +371,7 @@ function MatchCard({ m, typeIcon, sheetBaseHref }) {
         )}
       </Link>
 
-      <Crest assetId={m.team2_logo_asset} name={rightName} />
+      <Crest assetId={rightClub?.logo_asset ?? m.team2_logo_asset} logoUrl={rightClub?.logo_url} name={rightName} />
       <span
         title={rightName}
         className={`min-w-0 flex-1 truncate text-sm ${
@@ -395,6 +411,7 @@ function CalendrierTab({
   phaseId,
   journeesMode,
   typeIcon,
+  clubLogos,
 }) {
   if (matches.length === 0) {
     return (
@@ -434,6 +451,22 @@ function CalendrierTab({
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3 text-[11px] text-ink/50">
+        <span className="font-semibold text-ink/40">Notre score :</span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-lagoon" />
+          Victoire
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-600" />
+          Nul
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-cardinal" />
+          Défaite
+        </span>
+      </div>
+
       {journeeOptions.length > 0 && (
         <div className="flex items-center gap-2">
           {!showAll && (
@@ -496,7 +529,7 @@ function CalendrierTab({
               </p>
               <div className="space-y-2">
                 {rows.map((m) => (
-                  <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} />
+                  <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} clubLogos={clubLogos} />
                 ))}
               </div>
             </div>
@@ -505,7 +538,7 @@ function CalendrierTab({
       ) : (
         <div className="space-y-2">
           {journeeMatches.map((m) => (
-            <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} />
+            <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} clubLogos={clubLogos} />
           ))}
           {journeeMatches.length === 0 && (
             <p className="rounded-card bg-white p-4 text-center text-sm text-ink/40 shadow-sm">
@@ -522,7 +555,7 @@ function CalendrierTab({
           </p>
           <div className="space-y-2">
             {undated.map((m) => (
-              <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} />
+              <MatchCard key={m.id} m={m} typeIcon={typeIcon} sheetBaseHref={sheetBaseHref} clubLogos={clubLogos} />
             ))}
           </div>
         </div>
@@ -2014,6 +2047,14 @@ export default async function BasketPage({ searchParams }) {
     : statsMatches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
   const scopedMatches = scope === "poule" ? matches : matches.filter((m) => m.us_is_team1 !== null);
 
+  // Table des clubs (logos/gymnase/adresse) — partagée entre toutes les
+  // équipes et saisons, chargée uniquement pour l'onglet Calendrier.
+  let clubLogos = new Map();
+  if (tab === "calendrier") {
+    const { data: clubRows } = await supabase.from("basketball_clubs").select("club_key, logo_asset, logo_url");
+    clubLogos = new Map((clubRows ?? []).map((c) => [c.club_key, c]));
+  }
+
   // Effectif + statistiques par joueuse — uniquement chargés pour l'onglet
   // Statistiques (inutile ailleurs), pour la sélection par défaut de la
   // joueuse dans "Statistiques individuelles" (elle-même en priorité).
@@ -2242,6 +2283,7 @@ export default async function BasketPage({ searchParams }) {
               phaseId={selectedPhase?.id}
               journeesMode={journeesMode}
               typeIcon={phaseTypeIcon}
+              clubLogos={clubLogos}
             />
           )}
           {tab === "classement" && <ClassementTab classement={classement} matches={matches} />}
