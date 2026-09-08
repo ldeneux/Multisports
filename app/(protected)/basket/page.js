@@ -4,7 +4,16 @@ import { formatDateTime, ffbbAssetUrl, computeCurrentSeasonLabel } from "@/lib/u
 import SyncButton from "@/components/SyncButton";
 import SeasonSelect from "@/components/SeasonSelect";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
-import { RadarChart, StackedBarChart, SimpleBarChart, BarLineChart, HorizontalBarChart, ChartInfo } from "@/components/BasketCharts";
+import {
+  RadarChart,
+  StackedBarChart,
+  BarLineChart,
+  DualLineChart,
+  DonutChart,
+  IsoBarChart,
+  PyramidChart,
+  ChartInfo,
+} from "@/components/BasketCharts";
 import {
   addMatch,
   saveMatchSheet,
@@ -57,8 +66,8 @@ function Crest({ assetId, name }) {
 // panneau de gestion (ajout/édition/suppression/synchro par phase). Chaque
 // phase a son propre ID FFBB (engagement) — c'est ce qui permet de suivre
 // plusieurs compétitions successives dans la même saison.
-function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isCurrentSeason }) {
-  const linkBase = `/basket?ps=${selectedPsId}&tab=${tab}&scope=${scope}&season=${encodeURIComponent(season)}`;
+function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isCurrentSeason, journeeQS = "" }) {
+  const linkBase = `/basket?ps=${selectedPsId}&tab=${tab}&scope=${scope}&season=${encodeURIComponent(season)}${journeeQS}`;
   const isAmical = selectedPhase?.phase_type === "amical";
 
   return (
@@ -275,19 +284,18 @@ function MatchCard({ m, typeIcon, sheetBaseHref }) {
   const leftScore = m.team1_score;
   const rightScore = m.team2_score;
 
-  // Code couleur : seul NOTRE score change de couleur (celui de l'adversaire
-  // reste toujours navy, neutre) — victoire = bleu (lagoon), défaite = rouge
-  // (cardinal), match nul = vert (emerald). Un seul repère visuel simple,
-  // plutôt que l'ancien codage à deux couleurs de chaque côté.
+  // Code couleur : victoire (ou match ne nous concernant pas) = couleur par
+  // défaut (navy) ; défaite de notre équipe = notre score en rouge
+  // (cardinal), celui de l'adversaire en bleu (lagoon).
   let leftColor = "text-navy";
   let rightColor = "text-navy";
   if (concernsUs && isPlayed && leftScore != null && rightScore != null) {
     const usScore = usIsLeft ? leftScore : rightScore;
     const themScore = usIsLeft ? rightScore : leftScore;
-    const usColor =
-      usScore > themScore ? "text-lagoon" : usScore < themScore ? "text-cardinal" : "text-emerald-600";
-    if (usIsLeft) leftColor = usColor;
-    if (usIsRight) rightColor = usColor;
+    if (usScore < themScore) {
+      leftColor = usIsLeft ? "text-cardinal" : "text-lagoon";
+      rightColor = usIsRight ? "text-cardinal" : "text-lagoon";
+    }
   }
 
   const dateObj = m.match_date ? new Date(m.match_date) : null;
@@ -299,77 +307,75 @@ function MatchCard({ m, typeIcon, sheetBaseHref }) {
     : null;
 
   return (
-    <div className="flex flex-col gap-2 rounded-card bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-        {typeIcon &&
-          (typeIcon.startsWith("http") ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={typeIcon} alt="" className="h-6 w-6 shrink-0 rounded object-contain" />
-          ) : (
-            <span className="shrink-0 text-lg leading-none" aria-hidden="true">
-              {typeIcon}
-            </span>
-          ))}
-        <span
-          title={leftName}
-          className={`min-w-0 flex-1 truncate text-right text-sm ${
-            usIsLeft ? "font-bold text-navy" : "text-ink/70"
-          }`}
-        >
-          {leftName}
-        </span>
-        <Crest assetId={m.team1_logo_asset} name={leftName} />
+    <div className="flex items-center gap-2 rounded-card bg-white p-3 shadow-sm sm:gap-3">
+      {typeIcon &&
+        (typeIcon.startsWith("http") ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={typeIcon} alt="" className="h-6 w-6 shrink-0 rounded object-contain" />
+        ) : (
+          <span className="shrink-0 text-lg leading-none" aria-hidden="true">
+            {typeIcon}
+          </span>
+        ))}
+      <span
+        title={leftName}
+        className={`min-w-0 flex-1 truncate text-right text-sm ${
+          usIsLeft ? "font-bold text-navy" : "text-ink/70"
+        }`}
+      >
+        {leftName}
+      </span>
+      <Crest assetId={m.team1_logo_asset} name={leftName} />
 
-        {/* Cliquer sur la date (match à venir) ou le score (match joué) ouvre
-            la feuille de match complète — plus aucune saisie sur la ligne. */}
-        <Link
-          href={`${sheetBaseHref}&feuille=${m.id}`}
-          scroll={false}
-          className="flex min-w-[68px] shrink-0 flex-col items-center rounded-lg px-1 py-0.5 hover:bg-sand"
-          title="Ouvrir la feuille de match"
-        >
-          {isPlayed ? (
-            <span className="font-display text-lg font-bold">
-              <span className={leftColor}>{leftScore ?? "–"}</span>
-              <span className="text-navy"> - </span>
-              <span className={rightColor}>{rightScore ?? "–"}</span>
-            </span>
-          ) : (
-            <span className="flex flex-col items-center leading-tight">
-              {shortDate && (
-                <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
-              )}
-              <span className="font-display text-sm text-ink/60">{shortTime ?? "?"}</span>
-            </span>
-          )}
-        </Link>
-
-        <Crest assetId={m.team2_logo_asset} name={rightName} />
-        <span
-          title={rightName}
-          className={`min-w-0 flex-1 truncate text-sm ${
-            usIsRight ? "font-bold text-navy" : "text-ink/70"
-          }`}
-        >
-          {rightName}
-        </span>
-      </div>
-
-      <div className="flex items-center justify-between gap-3 sm:justify-end">
-        <p className="text-xs text-ink/40">{m.location || "Lieu inconnu"}</p>
-
-        {/* Un match issu d'une synchro FFBB n'est jamais supprimable — seuls
-            les matchs ajoutés à la main le sont (voir aussi le garde-fou
-            côté serveur dans deleteMatch). */}
-        {m.source === "manuel" && (
-          <form action={deleteMatch}>
-            <input type="hidden" name="match_id" value={m.id} />
-            <button type="submit" className="text-xs font-semibold text-ink/30 hover:text-cardinal">
-              ✕
-            </button>
-          </form>
+      {/* Cliquer sur la date (match à venir) ou le score (match joué) ouvre
+          la feuille de match complète — plus aucune saisie sur la ligne.
+          Largeur fixe (pas juste min-w) pour que les deux noms d'équipe se
+          partagent exactement le même espace de chaque côté, quelle que
+          soit la longueur du lieu (retiré d'ici — visible dans la feuille
+          de match au clic). */}
+      <Link
+        href={`${sheetBaseHref}&feuille=${m.id}`}
+        scroll={false}
+        className="flex w-16 shrink-0 flex-col items-center rounded-lg px-1 py-0.5 hover:bg-sand"
+        title="Ouvrir la feuille de match"
+      >
+        {isPlayed ? (
+          <span className="font-display text-lg font-bold">
+            <span className={leftColor}>{leftScore ?? "–"}</span>
+            <span className="text-navy"> - </span>
+            <span className={rightColor}>{rightScore ?? "–"}</span>
+          </span>
+        ) : (
+          <span className="flex flex-col items-center leading-tight">
+            {shortDate && (
+              <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
+            )}
+            <span className="font-display text-sm text-ink/60">{shortTime ?? "?"}</span>
+          </span>
         )}
-      </div>
+      </Link>
+
+      <Crest assetId={m.team2_logo_asset} name={rightName} />
+      <span
+        title={rightName}
+        className={`min-w-0 flex-1 truncate text-sm ${
+          usIsRight ? "font-bold text-navy" : "text-ink/70"
+        }`}
+      >
+        {rightName}
+      </span>
+
+      {/* Un match issu d'une synchro FFBB n'est jamais supprimable — seuls
+          les matchs ajoutés à la main le sont (voir aussi le garde-fou
+          côté serveur dans deleteMatch). */}
+      {m.source === "manuel" && (
+        <form action={deleteMatch}>
+          <input type="hidden" name="match_id" value={m.id} />
+          <button type="submit" className="text-xs font-semibold text-ink/30 hover:text-cardinal">
+            ✕
+          </button>
+        </form>
+      )}
     </div>
   );
 }
@@ -428,22 +434,6 @@ function CalendrierTab({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3 text-[11px] text-ink/50">
-        <span className="font-semibold text-ink/40">Notre score :</span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-lagoon" />
-          Victoire
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-600" />
-          Nul
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-cardinal" />
-          Défaite
-        </span>
-      </div>
-
       {journeeOptions.length > 0 && (
         <div className="flex items-center gap-2">
           {!showAll && (
@@ -541,7 +531,7 @@ function CalendrierTab({
   );
 }
 
-function ClassementTab({ classement }) {
+function ClassementTab({ classement, matches }) {
   if (classement.length === 0) {
     return (
       <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
@@ -550,38 +540,131 @@ function ClassementTab({ classement }) {
     );
   }
 
+  // BP (buts/points pour), BC (contre), diff et forme sont RECALCULÉS depuis
+  // les matchs déjà synchronisés (on a toute la poule en base), plutôt que
+  // d'attendre un éventuel champ FFBB dédié — plus fiable, et déjà
+  // disponible immédiatement pour toute phase déjà synchronisée.
+  const playedMatches = matches.filter((m) => m.status === "joue" && m.team1_score != null && m.team2_score != null);
+
+  const rows = classement
+    .slice()
+    .sort((a, b) => (a.position ?? 999) - (b.position ?? 999))
+    .map((c) => {
+      const teamMatches = playedMatches.filter(
+        (m) => m.team1_engagement_id === c.engagement_id || m.team2_engagement_id === c.engagement_id
+      );
+      const chrono = [...teamMatches].sort((a, b) => new Date(a.match_date) - new Date(b.match_date));
+
+      let bp = 0;
+      let bc = 0;
+      const forme = [];
+      chrono.forEach((m) => {
+        const isTeam1 = m.team1_engagement_id === c.engagement_id;
+        const scoreFor = isTeam1 ? m.team1_score : m.team2_score;
+        const scoreAgainst = isTeam1 ? m.team2_score : m.team1_score;
+        bp += scoreFor;
+        bc += scoreAgainst;
+        forme.push(scoreFor > scoreAgainst ? "V" : "D");
+      });
+
+      // Logo : celui de cette équipe sur n'importe lequel de ses matchs déjà
+      // synchronisés (chaque camp a le sien stocké par match).
+      const logoMatch = matches.find(
+        (m) => m.team1_engagement_id === c.engagement_id || m.team2_engagement_id === c.engagement_id
+      );
+      const logoAsset = logoMatch
+        ? logoMatch.team1_engagement_id === c.engagement_id
+          ? logoMatch.team1_logo_asset
+          : logoMatch.team2_logo_asset
+        : null;
+
+      return {
+        c,
+        bp,
+        bc,
+        diff: bp - bc,
+        ratio: bc > 0 ? bp / bc : null,
+        lastFive: forme.slice(-5),
+        logoAsset,
+      };
+    });
+
   return (
-    <div className="overflow-hidden rounded-card bg-white shadow-sm">
-      <table className="w-full text-sm">
+    <div className="overflow-x-auto rounded-card bg-white shadow-sm">
+      <table className="w-full min-w-[680px] text-sm">
         <thead>
           <tr className="border-b border-ink/10 text-left text-xs font-semibold uppercase tracking-wide text-ink/40">
             <th className="px-4 py-2">#</th>
             <th className="px-4 py-2">Équipe</th>
-            <th className="px-4 py-2 text-right">Pts</th>
-            <th className="px-4 py-2 text-right">J</th>
-            <th className="px-4 py-2 text-right">G-P</th>
+            <th className="px-3 py-2 text-right">Pts</th>
+            <th className="px-3 py-2 text-right">J</th>
+            <th className="px-3 py-2 text-right">G-P</th>
+            <th className="px-3 py-2 text-right">BP</th>
+            <th className="px-3 py-2 text-right">BC</th>
+            <th className="px-3 py-2 text-right">Diff</th>
+            <th className="px-3 py-2 text-right">Ratio</th>
+            <th className="px-3 py-2 text-left">Forme</th>
           </tr>
         </thead>
         <tbody>
-          {classement
-            .slice()
-            .sort((a, b) => (a.position ?? 999) - (b.position ?? 999))
-            .map((c) => (
-              <tr
-                key={c.id}
-                className={`border-b border-ink/5 last:border-0 ${
-                  c.is_us ? "bg-cardinal-light font-bold text-cardinal-dark" : "text-ink"
+          {rows.map(({ c, bp, bc, diff, ratio, lastFive, logoAsset }) => (
+            <tr
+              key={c.id}
+              className={`border-b border-ink/5 last:border-0 ${
+                c.is_us ? "bg-cardinal-light font-bold text-cardinal-dark" : "text-ink"
+              }`}
+            >
+              <td className="px-4 py-2">{c.position ?? "—"}</td>
+              <td className="px-4 py-2">
+                <div className="flex items-center gap-2">
+                  <Crest assetId={logoAsset} name={c.engagement_nom} />
+                  <span>{c.engagement_nom ?? "Équipe inconnue"}</span>
+                </div>
+              </td>
+              <td className="px-3 py-2 text-right font-display">{c.points ?? "—"}</td>
+              <td className="px-3 py-2 text-right text-ink/60">{c.matches_joues ?? "—"}</td>
+              <td
+                className={`px-3 py-2 text-right font-semibold ${
+                  (c.gagnes ?? 0) > (c.perdus ?? 0)
+                    ? "text-lagoon"
+                    : (c.perdus ?? 0) > (c.gagnes ?? 0)
+                      ? "text-cardinal"
+                      : "text-ink/60"
                 }`}
               >
-                <td className="px-4 py-2">{c.position ?? "—"}</td>
-                <td className="px-4 py-2">{c.engagement_nom ?? "Équipe inconnue"}</td>
-                <td className="px-4 py-2 text-right font-display">{c.points ?? "—"}</td>
-                <td className="px-4 py-2 text-right text-ink/60">{c.matches_joues ?? "—"}</td>
-                <td className="px-4 py-2 text-right text-ink/60">
-                  {c.gagnes ?? "—"}-{c.perdus ?? "—"}
-                </td>
-              </tr>
-            ))}
+                {c.gagnes ?? "—"}-{c.perdus ?? "—"}
+              </td>
+              <td className="px-3 py-2 text-right text-ink/60">{bp || "—"}</td>
+              <td className="px-3 py-2 text-right text-ink/60">{bc || "—"}</td>
+              <td
+                className={`px-3 py-2 text-right font-semibold ${
+                  diff > 0 ? "text-lagoon" : diff < 0 ? "text-cardinal" : "text-ink/60"
+                }`}
+              >
+                {diff > 0 ? "+" : ""}
+                {diff || 0}
+              </td>
+              <td className="px-3 py-2 text-right text-ink/60">{ratio != null ? ratio.toFixed(2) : "—"}</td>
+              <td className="px-3 py-2">
+                <div className="flex gap-1">
+                  {lastFive.length === 0 ? (
+                    <span className="text-ink/30">—</span>
+                  ) : (
+                    lastFive.map((r, i) => (
+                      <span
+                        key={i}
+                        className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white ${
+                          r === "V" ? "bg-lagoon" : "bg-cardinal"
+                        }`}
+                      >
+                        {r}
+                      </span>
+                    ))
+                  )}
+                </div>
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -697,38 +780,21 @@ function shortMatchDate(iso) {
   return new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit" }).format(new Date(iso));
 }
 
-// Borne inférieure de l'intervalle de Wilson (95%) — une estimation
-// "prudente" d'un taux de réussite qui tient compte du nombre de tentatives :
-// un petit échantillon (2/2) ne peut plus battre artificiellement un grand
-// échantillon (9/10), contrairement au pourcentage brut. Renvoie une valeur
-// entre 0 et 1.
-function wilsonLowerBound(successes, trials, z = 1.96) {
-  if (!trials) return 0;
-  const p = successes / trials;
-  const denom = 1 + (z * z) / trials;
-  const centre = p + (z * z) / (2 * trials);
-  const margin = z * Math.sqrt((p * (1 - p)) / trials + (z * z) / (4 * trials * trials));
-  return Math.max(0, (centre - margin) / denom);
-}
-
-// Pondère les LF d'une joueuse par la performance du match où ils ont été
-// pris (voir POINTS_WEIGHT_REFERENCE) : un match où elle n'a quasiment pas
-// marqué compte peu dans le classement, sans jamais être totalement ignoré
-// (contrairement à un seuil tout-ou-rien, qui ferait disparaître le signal
-// d'un mauvais match plutôt que de le faire peser dans la balance).
-function weightedFreeThrows(perMatch) {
-  let weightedMade = 0,
-    weightedAtt = 0,
-    rawMade = 0,
-    rawAtt = 0;
-  perMatch.forEach((m) => {
-    const weight = Math.min(1, m.points / POINTS_WEIGHT_REFERENCE);
-    weightedMade += weight * m.ftMade;
-    weightedAtt += weight * m.ftAtt;
-    rawMade += m.ftMade;
-    rawAtt += m.ftAtt;
-  });
-  return { weightedMade, weightedAtt, rawMade, rawAtt };
+// Note du match, pour un objectif de {POINTS_WEIGHT_REFERENCE} points :
+// moyenne entre l'adresse aux lancers francs (seul geste où on a à la fois
+// les tentés ET les réussis) et les points marqués rapportés à l'objectif.
+// Volontairement PAS plafonnée à 100% : un très gros match doit ressortir
+// au-dessus, pas être écrasé au même niveau qu'un match pile dans l'objectif
+// — on veut accentuer les matchs où la joueuse a surperformé, pas les lisser.
+// Si aucun lancer franc n'a été tenté ce match-là, la note retombe
+// entièrement sur les points marqués (rien à évaluer côté adresse).
+function matchNote(ftMade, ftAtt, points) {
+  const pointsRatio = (points / POINTS_WEIGHT_REFERENCE) * 100;
+  if (ftAtt > 0) {
+    const ftRatio = (ftMade / ftAtt) * 100;
+    return (ftRatio + pointsRatio) / 2;
+  }
+  return pointsRatio;
 }
 
 // Agrège les lignes basketball_match_stats d'UNE joueuse sur l'ensemble des
@@ -762,6 +828,7 @@ function aggregatePlayerStats(playerId, statsRows, matchesById) {
       gamesWithMinutes += 1;
     }
     perMatch.push({
+      matchId: s.match_id,
       date: match.match_date,
       points: (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0),
       twoMade: s.two_made ?? 0,
@@ -770,6 +837,7 @@ function aggregatePlayerStats(playerId, statsRows, matchesById) {
       ftAtt: s.ft_att ?? 0,
       fouls: s.fouls ?? 0,
       seconds,
+      note: matchNote(s.ft_made ?? 0, s.ft_att ?? 0, (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0)),
     });
   });
 
@@ -811,9 +879,10 @@ function PlayerPicker({ players, selectedPlayerId, statsQueryBase }) {
 }
 
 // Écran "Statistiques individuelles" : profil radar de la joueuse
-// sélectionnée, ses graphiques d'évolution match après match, et deux
-// classements toute-équipe (contribution aux points, % LF pondéré par
-// volume) où la joueuse sélectionnée est mise en évidence.
+// sélectionnée et ses graphiques d'évolution match après match (dont la
+// note du match et sa comparaison aux points de l'équipe). Le classement
+// entre joueuses (moyenne de la note de match) est dans StatsTab, à côté du
+// bilan d'équipe.
 function IndividualStatsSection({ players, playedMatches, statsRows, selectedPlayerId, statsQueryBase }) {
   if (players.length === 0) {
     return (
@@ -825,6 +894,16 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
 
   const matchesById = new Map(playedMatches.map((m) => [m.id, m]));
   const perPlayer = players.map((p) => ({ player: p, agg: aggregatePlayerStats(p.id, statsRows, matchesById) }));
+
+  // Total de points de l'équipe, match par match — toutes joueuses
+  // confondues (hors absentes de la feuille), pour comparer chaque match de
+  // la joueuse suivie au total de son équipe ce jour-là.
+  const teamPointsByMatch = new Map();
+  statsRows.forEach((s) => {
+    if (s.on_sheet === false) return;
+    const pts = (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0);
+    teamPointsByMatch.set(s.match_id, (teamPointsByMatch.get(s.match_id) ?? 0) + pts);
+  });
 
   const teamTotalPoints = perPlayer.reduce((sum, x) => sum + x.agg.totalPoints, 0);
   const teamMaxAvgSeconds = Math.max(
@@ -866,14 +945,10 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
   const pointsSeries = agg.perMatch.map((m) => ({
     label: shortMatchDate(m.date),
     segments: [
-      { value: m.twoMade * 2, className: "fill-navy" },
-      { value: m.threeMade * 3, className: "fill-lagoon" },
-      { value: m.ftMade, className: "fill-cardinal" },
+      { value: m.twoMade * 2, className: "fill-[#2E86DE]" },
+      { value: m.threeMade * 3, className: "fill-[#F5A623]" },
+      { value: m.ftMade, className: "fill-[#16C79A]" },
     ],
-  }));
-  const minutesSeries = agg.perMatch.map((m) => ({
-    label: shortMatchDate(m.date),
-    value: m.seconds != null ? m.seconds / 60 : 0,
   }));
   const foulsAndMinutesSeries = agg.perMatch.map((m) => ({
     label: shortMatchDate(m.date),
@@ -881,20 +956,28 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
     lineValue: m.seconds != null ? m.seconds / 60 : null,
   }));
 
-  const contributionRanking = perPlayer
-    .map((x) => ({ label: x.player.name, value: x.agg.totalPoints, highlight: x.player.id === selected.player.id }))
-    .sort((a, b) => b.value - a.value);
+  // Note du match, match après match — le ton (vert-eau/bleu/corail) est
+  // calculé directement par IsoBarChart à partir de la valeur.
+  const noteSeries = agg.perMatch.map((m) => ({
+    label: shortMatchDate(m.date),
+    value: Math.round(m.note),
+  }));
 
-  const wilsonRanking = perPlayer
-    .map((x) => ({ player: x.player, ...weightedFreeThrows(x.agg.perMatch) }))
-    .filter((x) => x.rawAtt > 0)
-    .map((x) => ({
-      label: x.player.name,
-      value: wilsonLowerBound(x.weightedMade, x.weightedAtt) * 100,
-      sublabel: `${x.rawMade}/${x.rawAtt}`,
-      highlight: x.player.id === selected.player.id,
-    }))
-    .sort((a, b) => b.value - a.value);
+  // Répartition des points marqués sur la saison (2 pts / 3 pts / LF) — une
+  // photo d'ensemble en complément du détail match par match ci-dessus.
+  const pointsBreakdown = [
+    { label: "2 points", value: agg.twoMade * 2, color: "#2E86DE" },
+    { label: "3 points", value: agg.threeMade * 3, color: "#F5A623" },
+    { label: "Lancers francs", value: agg.ftMade, color: "#16C79A" },
+  ];
+
+  // Points de la joueuse vs points totaux de son équipe, match par match —
+  // mêmes matchs que perMatch (donc déjà filtrés sur les phases retenues).
+  const pointsVsTeamSeries = agg.perMatch.map((m) => ({
+    label: shortMatchDate(m.date),
+    a: m.points,
+    b: teamPointsByMatch.get(m.matchId) ?? 0,
+  }));
 
   return (
     <div className="space-y-4">
@@ -949,9 +1032,9 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
           <StackedBarChart
             items={pointsSeries}
             legend={[
-              { label: "2 pts", className: "fill-navy" },
-              { label: "3 pts", className: "fill-lagoon" },
-              { label: "LF", className: "fill-cardinal" },
+              { label: "2 pts", className: "fill-[#2E86DE]" },
+              { label: "3 pts", className: "fill-[#F5A623]" },
+              { label: "LF", className: "fill-[#16C79A]" },
             ]}
           />
           <ChartInfo>
@@ -961,59 +1044,61 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
         </div>
 
         <div className="rounded-card bg-white p-4 shadow-sm">
-          <p className="mb-2 text-sm font-semibold text-navy">Temps de jeu par match (min)</p>
-          <SimpleBarChart items={minutesSeries} />
+          <p className="mb-2 text-sm font-semibold text-navy">Répartition des points (saison)</p>
+          <DonutChart segments={pointsBreakdown} />
           <ChartInfo>
-            Minutes jouées par match, saisies en feuille de match (format MM:SS). Une valeur manquante ou mal saisie
-            apparaît comme une barre à zéro plutôt que de faire planter le graphique.
-          </ChartInfo>
-        </div>
-
-        <div className="rounded-card bg-white p-4 shadow-sm">
-          <p className="mb-2 text-sm font-semibold text-navy">Fautes vs temps de jeu</p>
-          <BarLineChart
-            items={foulsAndMinutesSeries}
-            barLabel="Fautes"
-            barColorClass="fill-cardinal"
-            lineLabel="Temps de jeu (min)"
-            lineStrokeClass="stroke-navy"
-            lineFillClass="fill-navy"
-            lineDotClass="bg-navy"
-            thresholdValue={5}
-            thresholdLabel="Sortie (5 fautes)"
-          />
-          <ChartInfo>
-            Les fautes seules ne disent pas grand-chose : 4 fautes en 25 min de jeu n'est pas comparable à 4 fautes en
-            10 min (souvent une sortie prudente de l'entraîneur). La ligne superpose le temps de jeu du même match pour
-            juger les fautes dans leur contexte — c'est aussi ce ratio (minutes de jeu par faute) qui alimente l'axe
-            "Discipline" du radar.
+            Vue d'ensemble de la saison : sur tous les points marqués, la part venue des paniers à 2 points, à 3
+            points et des lancers francs — un complément figé au détail match par match ci-contre.
           </ChartInfo>
         </div>
 
         <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
-          <p className="mb-2 text-sm font-semibold text-navy">Contribution aux points de l'équipe (saison)</p>
-          <HorizontalBarChart items={contributionRanking} />
-          <ChartInfo>Total des points marqués (2 pts + 3 pts + LF) par chaque joueuse sur les phases sélectionnées.</ChartInfo>
+          <p className="mb-2 text-sm font-semibold text-navy">Fautes vs temps de jeu</p>
+          <BarLineChart
+            items={foulsAndMinutesSeries}
+            barLabel="Fautes"
+            barColorClass="fill-[#FF5A5F]"
+            lineLabel="Temps de jeu (min)"
+            lineStrokeClass="stroke-[#2E86DE]"
+            lineFillClass="fill-[#2E86DE]"
+            lineDotClass="bg-[#2E86DE]"
+            thresholdValue={5}
+            thresholdLabel="Sortie (5 fautes)"
+          />
+          <ChartInfo>
+            Le temps de jeu (ligne) est déjà visible ici superposé aux fautes (barres) du même match — inutile de le
+            répéter dans un graphique à part. 4 fautes en 25 min de jeu n'est pas comparable à 4 fautes en 10 min
+            (souvent une sortie prudente de l'entraîneur) ; c'est ce ratio (minutes de jeu par faute) qui alimente
+            aussi l'axe "Discipline" du radar.
+          </ChartInfo>
         </div>
 
-        {wilsonRanking.length > 0 && (
-          <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
-            <p className="mb-1 text-sm font-semibold text-navy">Classement % LF</p>
-            <p className="mb-2 text-[11px] text-ink/40">
-              Le nombre de tentatives entre parenthèses est le vrai décompte brut ; le classement, lui, pondère chaque
-              match par la performance de la joueuse ce match-là.
-            </p>
-            <HorizontalBarChart items={wilsonRanking} valueSuffix="%" />
-            <ChartInfo>
-              Un simple % de réussite trompe sur petit échantillon (2/2 = 100%, mais 9/10 est en réalité meilleur) et
-              un LF pris dans un match anecdotique (ex. 2/2 dans un match où elle n'a marqué que 2 points) ne devrait
-              pas peser autant qu'un LF pris dans un vrai match. Ici, chaque match est pondéré par{" "}
-              min(1, points marqués ce match / {POINTS_WEIGHT_REFERENCE}) avant de calculer un score de Wilson (une
-              estimation prudente qui tient aussi compte du nombre de tentatives) — un match discret compte donc un
-              peu, jamais zéro, jamais à égalité avec un match plein.
-            </ChartInfo>
-          </div>
-        )}
+        <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
+          <p className="mb-2 text-sm font-semibold text-navy">
+            Note du match — objectif {POINTS_WEIGHT_REFERENCE} points
+          </p>
+          <IsoBarChart items={noteSeries} thresholdValue={100} thresholdLabel="Objectif atteint" />
+          <ChartInfo>
+            (% de réussite aux lancers francs + points marqués / {POINTS_WEIGHT_REFERENCE}) / 2, match par match.
+            Volontairement pas plafonnée à 100% : un très gros match ressort au-dessus plutôt que d'être lissé au même
+            niveau qu'un match pile dans l'objectif. Sans lancer franc tenté ce match-là, la note retombe entièrement
+            sur les points marqués. Barre turquoise = au-dessus de l'objectif, bleue = dans une bonne moyenne, corail
+            = match difficile.
+          </ChartInfo>
+        </div>
+
+        <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
+          <p className="mb-2 text-sm font-semibold text-navy">Points de la joueuse vs points de l'équipe</p>
+          <DualLineChart
+            items={pointsVsTeamSeries}
+            seriesA={{ label: selected.player.name, strokeClass: "stroke-[#FF5A5F]", fillClass: "fill-[#FF5A5F]", dotClass: "bg-[#FF5A5F]" }}
+            seriesB={{ label: "Total équipe", strokeClass: "stroke-[#2E86DE]/50", fillClass: "fill-[#2E86DE]/50", dotClass: "bg-[#2E86DE]/50" }}
+          />
+          <ChartInfo>
+            Points marqués par {selected.player.name} comparés au total marqué par toute l'équipe, match par match —
+            pour voir sa part dans la performance collective au fil de la saison plutôt qu'un seul total cumulé.
+          </ChartInfo>
+        </div>
       </div>
     </div>
   );
@@ -1040,8 +1125,26 @@ function StatsTab({
   statsRows,
   selectedPlayerId,
   statsQueryBase,
+  statsMatchFocus,
 }) {
   const stats = computeTeamStats(playedMatches);
+
+  // Note moyenne à domicile vs à l'extérieur, par joueuse — remplace
+  // l'ancien "Classement % LF" (illisible) par quelque chose qui raconte une
+  // vraie histoire plutôt qu'un simple ordre. us_is_team1 = domicile, par la
+  // même convention que le reste de l'appli (équipe 1 = domicile côté FFBB).
+  const matchesById = new Map(playedMatches.map((m) => [m.id, m]));
+  const noteRanking = statsPlayers
+    .map((p) => {
+      const agg = aggregatePlayerStats(p.id, statsRows, matchesById);
+      if (agg.perMatch.length === 0) return null;
+      const home = agg.perMatch.filter((m) => matchesById.get(m.matchId)?.us_is_team1 === true);
+      const away = agg.perMatch.filter((m) => matchesById.get(m.matchId)?.us_is_team1 === false);
+      const avg = (rows) => (rows.length > 0 ? rows.reduce((sum, m) => sum + m.note, 0) / rows.length : 0);
+      return { label: p.name, left: avg(home), right: avg(away), highlight: p.id === selectedPlayerId };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.left + b.right - (a.left + a.right));
 
   return (
     <div className="space-y-4">
@@ -1051,31 +1154,59 @@ function StatsTab({
         système de stats. Ici, un bilan calculé à partir des matchs de l'équipe.
       </p>
 
-      {/* Filtre global à tout le module (équipe ET individuelles) : formulaire
-          GET natif, aucun JS nécessaire. stats_filtered=1 permet de
-          distinguer "aucune phase cochée par choix explicite" du premier
-          affichage (où toutes les phases comptent par défaut). */}
-      {phases.length > 1 && (
-        <form
-          method="get"
-          action="/basket"
-          className="flex flex-wrap items-center gap-3 rounded-card bg-white p-3 text-sm shadow-sm"
-        >
-          <input type="hidden" name="ps" value={selectedPsId} />
-          <input type="hidden" name="tab" value="stats" />
-          <input type="hidden" name="scope" value={scope} />
-          <input type="hidden" name="season" value={selectedSeason} />
-          {selectedPhase?.id && <input type="hidden" name="phase" value={selectedPhase.id} />}
-          {selectedPlayerId && <input type="hidden" name="stats_player" value={selectedPlayerId} />}
-          <input type="hidden" name="stats_filtered" value="1" />
-          <span className="font-semibold text-ink/50">Phases incluses :</span>
-          {phases.map((p) => (
-            <label key={p.id} className="flex items-center gap-1.5">
-              <input
-                type="checkbox"
-                name="stats_phase"
-                value={p.id}
-                defaultChecked={selectedStatsPhaseIds.includes(p.id)}
+      {/* En mode "focus sur un match" (ouvert depuis l'icône stats d'une
+          feuille de match), on remplace le filtre par phases — qui n'a pas
+          de sens pour un seul match — par un résumé de ce match. */}
+      {statsMatchFocus ? (
+        <div className="rounded-card bg-white p-3 text-sm shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/40">Statistiques du match</p>
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+            <p className="font-display text-base uppercase tracking-tight text-navy">
+              <span className={statsMatchFocus.us_is_team1 === true ? "font-bold" : ""}>
+                {statsMatchFocus.team1_name || "Équipe inconnue"}
+              </span>
+              <span className="mx-2 text-ink/30">vs</span>
+              <span className={statsMatchFocus.us_is_team1 === false ? "font-bold" : ""}>
+                {statsMatchFocus.team2_name || "Équipe inconnue"}
+              </span>
+              {statsMatchFocus.status === "joue" && (
+                <span className="ml-2 text-ink/50">
+                  ({statsMatchFocus.team1_score ?? "–"} - {statsMatchFocus.team2_score ?? "–"})
+                </span>
+              )}
+            </p>
+            <p className="text-xs text-ink/50">
+              {statsMatchFocus.match_date ? formatDateTime(statsMatchFocus.match_date) : "Date à confirmer"}
+              {statsMatchFocus.location ? ` · ${statsMatchFocus.location}` : ""}
+            </p>
+          </div>
+        </div>
+      ) : (
+        /* Filtre global à tout le module (équipe ET individuelles) : formulaire
+           GET natif, aucun JS nécessaire. stats_filtered=1 permet de
+           distinguer "aucune phase cochée par choix explicite" du premier
+           affichage (où toutes les phases comptent par défaut). */
+        phases.length > 1 && (
+          <form
+            method="get"
+            action="/basket"
+            className="flex flex-wrap items-center gap-3 rounded-card bg-white p-3 text-sm shadow-sm"
+          >
+            <input type="hidden" name="ps" value={selectedPsId} />
+            <input type="hidden" name="tab" value="stats" />
+            <input type="hidden" name="scope" value={scope} />
+            <input type="hidden" name="season" value={selectedSeason} />
+            {selectedPhase?.id && <input type="hidden" name="phase" value={selectedPhase.id} />}
+            {selectedPlayerId && <input type="hidden" name="stats_player" value={selectedPlayerId} />}
+            <input type="hidden" name="stats_filtered" value="1" />
+            <span className="font-semibold text-ink/50">Phases incluses :</span>
+            {phases.map((p) => (
+              <label key={p.id} className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  name="stats_phase"
+                  value={p.id}
+                  defaultChecked={selectedStatsPhaseIds.includes(p.id)}
                 className="h-4 w-4"
               />
               {p.phase_name}
@@ -1088,12 +1219,13 @@ function StatsTab({
             Appliquer
           </button>
         </form>
+        )
       )}
 
       <details open className="space-y-4">
         <summary className="cursor-pointer text-sm font-semibold text-navy">Statistiques équipe</summary>
 
-        <div className="mt-3">
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
           {!stats ? (
             <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
               Pas encore de match joué pour calculer un bilan.
@@ -1129,6 +1261,22 @@ function StatsTab({
               </table>
             </div>
           )}
+
+          <div className="rounded-card bg-white p-4 shadow-sm">
+            <p className="mb-2 text-sm font-semibold text-navy">
+              Note moyenne domicile vs extérieur — objectif {POINTS_WEIGHT_REFERENCE} pts/match
+            </p>
+            {noteRanking.length === 0 ? (
+              <p className="text-xs text-ink/40">Pas encore de statistiques par joueuse.</p>
+            ) : (
+              <PyramidChart items={noteRanking} leftLabel="Domicile" rightLabel="Extérieur" valueSuffix="%" />
+            )}
+            <ChartInfo>
+              Moyenne, sur tous les matchs joués et saisis, de la note de chaque match (voir son détail de calcul dans
+              "Statistiques individuelles" ci-dessous) — à domicile à gauche, à l'extérieur à droite, pour repérer si
+              une joueuse est plus à l'aise chez elle ou en déplacement plutôt que juste un ordre de classement.
+            </ChartInfo>
+          </div>
         </div>
       </details>
 
@@ -1308,6 +1456,17 @@ async function MatchSheetPage({ matchId, backHref }) {
     );
   }
 
+  // Lien vers l'écran Statistiques, en mode "focus sur ce match" — repart des
+  // mêmes paramètres que le retour au calendrier (participant, saison,
+  // phase...) mais bascule sur l'onglet stats et ajoute stats_match.
+  const backParams = new URLSearchParams(backHref.split("?")[1] || "");
+  const statsParams = new URLSearchParams(backParams);
+  statsParams.set("tab", "stats");
+  statsParams.set("stats_match", match.id);
+  statsParams.delete("journee");
+  statsParams.delete("journees");
+  const statsHref = `/basket?${statsParams.toString()}`;
+
   const [{ data: phase }, { data: ps }, { data: allPeople }, { data: statsRows }] = await Promise.all([
     match.phase_id
       ? supabase
@@ -1466,7 +1625,21 @@ async function MatchSheetPage({ matchId, backHref }) {
 
       <div className="rounded-card bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="font-display text-sm uppercase tracking-tight text-navy">Feuille de match — joueuses</p>
+          <div className="flex items-center gap-2">
+            <p className="font-display text-sm uppercase tracking-tight text-navy">Feuille de match — joueuses</p>
+            <Link
+              href={statsHref}
+              title="Voir les statistiques de ce match"
+              aria-label="Voir les statistiques de ce match"
+              className="text-navy/50 hover:text-cardinal"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="12" width="4" height="9" rx="1" fill="currentColor" />
+                <rect x="10" y="7" width="4" height="14" rx="1" fill="currentColor" />
+                <rect x="17" y="3" width="4" height="18" rx="1" fill="currentColor" />
+              </svg>
+            </Link>
+          </div>
           <p className="text-xs text-ink/40">Total calculé : {totalTeamPoints} pts</p>
         </div>
 
@@ -1831,7 +2004,14 @@ export default async function BasketPage({ searchParams }) {
   // second cas seulement, toutes les phases comptent par défaut.
   const selectedStatsPhaseIds = searchParams?.stats_filtered === "1" ? statsPhaseParam : allPhaseIds;
   const statsMatches = seasonMatches.filter((m) => selectedStatsPhaseIds.includes(m.phase_id));
-  const playedMatches = statsMatches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
+  // Ouvert depuis l'icône "Statistiques" d'une feuille de match précise : on
+  // ignore alors le filtre par phases et on ne garde QUE ce match — le
+  // bandeau habituel est remplacé par un résumé de ce match (voir plus bas).
+  const statsMatchId = searchParams?.stats_match || null;
+  const statsMatchFocus = statsMatchId ? (seasonMatches.find((m) => m.id === statsMatchId) ?? null) : null;
+  const playedMatches = statsMatchFocus
+    ? [statsMatchFocus].filter((m) => m.us_is_team1 !== null && m.status === "joue")
+    : statsMatches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
   const scopedMatches = scope === "poule" ? matches : matches.filter((m) => m.us_is_team1 !== null);
 
   // Effectif + statistiques par joueuse — uniquement chargés pour l'onglet
@@ -1866,6 +2046,10 @@ export default async function BasketPage({ searchParams }) {
 
   const journeeOptions = buildJourneeOptions(scopedMatches);
   const selectedJournee = searchParams?.journee || defaultJournee(scopedMatches, journeeOptions);
+  // Repris sur tous les liens de nav (onglets, bascule Sathonay/poule,
+  // pastilles de phase) pour que changer d'onglet ou de vue ne fasse jamais
+  // revenir sur "Une journée" si "Toutes" était sélectionné.
+  const journeeQS = `&journees=${journeesMode}${journeesMode === "une" && selectedJournee ? `&journee=${encodeURIComponent(selectedJournee)}` : ""}`;
 
   return (
     <div className="space-y-6">
@@ -1936,7 +2120,7 @@ export default async function BasketPage({ searchParams }) {
 
           <div className="flex flex-wrap items-center gap-2">
             <Link
-              href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
+              href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}${journeeQS}`}
               className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
                 tab === "calendrier" ? "bg-navy text-white" : "bg-white text-ink/60"
               }`}
@@ -1944,7 +2128,7 @@ export default async function BasketPage({ searchParams }) {
               Calendrier &amp; résultats
             </Link>
             <Link
-              href={`/basket?ps=${selectedPsId}&tab=classement&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
+              href={`/basket?ps=${selectedPsId}&tab=classement&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}${journeeQS}`}
               className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
                 tab === "classement" ? "bg-navy text-white" : "bg-white text-ink/60"
               }`}
@@ -1952,7 +2136,7 @@ export default async function BasketPage({ searchParams }) {
               Classement
             </Link>
             <Link
-              href={`/basket?ps=${selectedPsId}&tab=stats&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
+              href={`/basket?ps=${selectedPsId}&tab=stats&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}${journeeQS}`}
               className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
                 tab === "stats" ? "bg-navy text-white" : "bg-white text-ink/60"
               }`}
@@ -1963,7 +2147,7 @@ export default async function BasketPage({ searchParams }) {
             {tab === "calendrier" && (
               <div className="ml-auto flex overflow-hidden rounded-full bg-white shadow-sm">
                 <Link
-                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=us&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
+                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=us&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}${journeeQS}`}
                   scroll={false}
                   className={`px-3 py-1.5 text-xs font-semibold ${
                     scope === "us" ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
@@ -1972,7 +2156,7 @@ export default async function BasketPage({ searchParams }) {
                   {selectedPs?.club || "Sathonay Camp"}
                 </Link>
                 <Link
-                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=poule&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}`}
+                  href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=poule&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}${journeeQS}`}
                   scroll={false}
                   className={`px-3 py-1.5 text-xs font-semibold ${
                     scope === "poule" ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
@@ -1992,6 +2176,7 @@ export default async function BasketPage({ searchParams }) {
             scope={scope}
             season={selectedSeason}
             isCurrentSeason={isCurrentSeason}
+            journeeQS={journeeQS}
           />
 
           {isCurrentSeason && tab === "calendrier" && (
@@ -2059,7 +2244,7 @@ export default async function BasketPage({ searchParams }) {
               typeIcon={phaseTypeIcon}
             />
           )}
-          {tab === "classement" && <ClassementTab classement={classement} />}
+          {tab === "classement" && <ClassementTab classement={classement} matches={matches} />}
           {tab === "stats" && (
             <StatsTab
               playedMatches={playedMatches}
@@ -2073,6 +2258,7 @@ export default async function BasketPage({ searchParams }) {
               statsRows={statsRows}
               selectedPlayerId={selectedPlayerId}
               statsQueryBase={statsQueryBase}
+              statsMatchFocus={statsMatchFocus}
             />
           )}
         </>
