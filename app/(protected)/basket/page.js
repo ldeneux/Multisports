@@ -4,7 +4,16 @@ import { formatDateTime, ffbbAssetUrl, computeCurrentSeasonLabel } from "@/lib/u
 import SyncButton from "@/components/SyncButton";
 import SeasonSelect from "@/components/SeasonSelect";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
-import { RadarChart, StackedBarChart, SimpleBarChart, BarLineChart, DualLineChart, HorizontalBarChart, ChartInfo } from "@/components/BasketCharts";
+import {
+  RadarChart,
+  StackedBarChart,
+  BarLineChart,
+  DualLineChart,
+  DonutChart,
+  IsoBarChart,
+  PyramidChart,
+  ChartInfo,
+} from "@/components/BasketCharts";
 import {
   addMatch,
   saveMatchSheet,
@@ -856,14 +865,20 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
     lineValue: m.seconds != null ? m.seconds / 60 : null,
   }));
 
-  // Note du match, match après match — couleur par barre pour accentuer
-  // sur/sous-performance (lagoon = au-dessus de l'objectif, navy = dans la
-  // bonne moyenne, cardinal = match difficile).
+  // Note du match, match après match — le ton (vert-eau/bleu/corail) est
+  // calculé directement par IsoBarChart à partir de la valeur.
   const noteSeries = agg.perMatch.map((m) => ({
     label: shortMatchDate(m.date),
     value: Math.round(m.note),
-    className: m.note >= 100 ? "fill-lagoon" : m.note >= 50 ? "fill-navy" : "fill-cardinal",
   }));
+
+  // Répartition des points marqués sur la saison (2 pts / 3 pts / LF) — une
+  // photo d'ensemble en complément du détail match par match ci-dessus.
+  const pointsBreakdown = [
+    { label: "2 points", value: agg.twoMade * 2, color: "#2E86DE" },
+    { label: "3 points", value: agg.threeMade * 3, color: "#F5A623" },
+    { label: "Lancers francs", value: agg.ftMade, color: "#16C79A" },
+  ];
 
   // Points de la joueuse vs points totaux de son équipe, match par match —
   // mêmes matchs que perMatch (donc déjà filtrés sur les phases retenues).
@@ -937,6 +952,15 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
           </ChartInfo>
         </div>
 
+        <div className="rounded-card bg-white p-4 shadow-sm">
+          <p className="mb-2 text-sm font-semibold text-navy">Répartition des points (saison)</p>
+          <DonutChart segments={pointsBreakdown} />
+          <ChartInfo>
+            Vue d'ensemble de la saison : sur tous les points marqués, la part venue des paniers à 2 points, à 3
+            points et des lancers francs — un complément figé au détail match par match ci-contre.
+          </ChartInfo>
+        </div>
+
         <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
           <p className="mb-2 text-sm font-semibold text-navy">Fautes vs temps de jeu</p>
           <BarLineChart
@@ -962,7 +986,7 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
           <p className="mb-2 text-sm font-semibold text-navy">
             Note du match — objectif {POINTS_WEIGHT_REFERENCE} points
           </p>
-          <SimpleBarChart items={noteSeries} thresholdValue={100} thresholdLabel="Objectif atteint" />
+          <IsoBarChart items={noteSeries} thresholdValue={100} thresholdLabel="Objectif atteint" />
           <ChartInfo>
             (% de réussite aux lancers francs + points marqués / {POINTS_WEIGHT_REFERENCE}) / 2, match par match.
             Volontairement pas plafonnée à 100% : un très gros match ressort au-dessus plutôt que d'être lissé au même
@@ -1014,19 +1038,22 @@ function StatsTab({
 }) {
   const stats = computeTeamStats(playedMatches);
 
-  // Classement entre joueuses basé sur la moyenne de leurs notes de match
-  // sur la saison (même formule que le graphique individuel : voir
-  // matchNote) — remplace l'ancien "Classement % LF", plus lisible.
+  // Note moyenne à domicile vs à l'extérieur, par joueuse — remplace
+  // l'ancien "Classement % LF" (illisible) par quelque chose qui raconte une
+  // vraie histoire plutôt qu'un simple ordre. us_is_team1 = domicile, par la
+  // même convention que le reste de l'appli (équipe 1 = domicile côté FFBB).
   const matchesById = new Map(playedMatches.map((m) => [m.id, m]));
   const noteRanking = statsPlayers
     .map((p) => {
       const agg = aggregatePlayerStats(p.id, statsRows, matchesById);
       if (agg.perMatch.length === 0) return null;
-      const avgNote = agg.perMatch.reduce((sum, m) => sum + m.note, 0) / agg.perMatch.length;
-      return { label: p.name, value: avgNote, highlight: p.id === selectedPlayerId };
+      const home = agg.perMatch.filter((m) => matchesById.get(m.matchId)?.us_is_team1 === true);
+      const away = agg.perMatch.filter((m) => matchesById.get(m.matchId)?.us_is_team1 === false);
+      const avg = (rows) => (rows.length > 0 ? rows.reduce((sum, m) => sum + m.note, 0) / rows.length : 0);
+      return { label: p.name, left: avg(home), right: avg(away), highlight: p.id === selectedPlayerId };
     })
     .filter(Boolean)
-    .sort((a, b) => b.value - a.value);
+    .sort((a, b) => b.left + b.right - (a.left + a.right));
 
   return (
     <div className="space-y-4">
@@ -1146,17 +1173,17 @@ function StatsTab({
 
           <div className="rounded-card bg-white p-4 shadow-sm">
             <p className="mb-2 text-sm font-semibold text-navy">
-              Note moyenne — objectif {POINTS_WEIGHT_REFERENCE} pts/match
+              Note moyenne domicile vs extérieur — objectif {POINTS_WEIGHT_REFERENCE} pts/match
             </p>
             {noteRanking.length === 0 ? (
               <p className="text-xs text-ink/40">Pas encore de statistiques par joueuse.</p>
             ) : (
-              <HorizontalBarChart items={noteRanking} valueSuffix="%" />
+              <PyramidChart items={noteRanking} leftLabel="Domicile" rightLabel="Extérieur" valueSuffix="%" />
             )}
             <ChartInfo>
-              Moyenne, sur tous les matchs joués et saisis, de la note de chaque match — voir le détail de son calcul
-              dans "Statistiques individuelles" ci-dessous. Non plafonnée à 100% : une joueuse avec plusieurs très
-              gros matchs peut dépasser cette barre.
+              Moyenne, sur tous les matchs joués et saisis, de la note de chaque match (voir son détail de calcul dans
+              "Statistiques individuelles" ci-dessous) — à domicile à gauche, à l'extérieur à droite, pour repérer si
+              une joueuse est plus à l'aise chez elle ou en déplacement plutôt que juste un ordre de classement.
             </ChartInfo>
           </div>
         </div>
