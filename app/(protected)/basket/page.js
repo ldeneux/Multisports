@@ -854,9 +854,9 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
   const pointsSeries = agg.perMatch.map((m) => ({
     label: shortMatchDate(m.date),
     segments: [
-      { value: m.twoMade * 2, className: "fill-navy" },
-      { value: m.threeMade * 3, className: "fill-lagoon" },
-      { value: m.ftMade, className: "fill-cardinal" },
+      { value: m.twoMade * 2, className: "fill-[#2E86DE]" },
+      { value: m.threeMade * 3, className: "fill-[#F5A623]" },
+      { value: m.ftMade, className: "fill-[#16C79A]" },
     ],
   }));
   const foulsAndMinutesSeries = agg.perMatch.map((m) => ({
