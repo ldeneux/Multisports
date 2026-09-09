@@ -7,6 +7,7 @@ import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import {
   RadarChart,
   StackedBarChart,
+  SimpleBarChart,
   BarLineChart,
   DualLineChart,
   DonutChart,
