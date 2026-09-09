@@ -996,12 +996,41 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
     value: Math.round(m.note),
   }));
 
+  // Même palette que IsoBarChart (vert-eau ≥100%, bleu 50-99%, corail <50%)
+  // pour la bande de repère sous "Points par match" — un coup d'œil sur la
+  // régularité, greffé sur le graphique existant plutôt qu'une carte à part.
+  const noteTierColor = (value) => (value >= 100 ? "#16C79A" : value >= 50 ? "#2E86DE" : "#FF5A5F");
+  const noteStrip = agg.perMatch.map((m) => ({
+    color: noteTierColor(m.note),
+    title: `${shortMatchDate(m.date)} — note : ${Math.round(m.note)}`,
+  }));
+
   // Répartition des points marqués sur la saison (2 pts / 3 pts / LF) — une
   // photo d'ensemble en complément du détail match par match ci-dessus.
   const pointsBreakdown = [
     { label: "2 points", value: agg.twoMade * 2, color: "#2E86DE" },
     { label: "3 points", value: agg.threeMade * 3, color: "#F5A623" },
     { label: "Lancers francs", value: agg.ftMade, color: "#16C79A" },
+  ];
+
+  // Note moyenne selon que l'équipe a gagné ou perdu ce match-là — pour voir
+  // si la joueuse est plus décisive dans les victoires ou si elle
+  // sur-performe justement dans les matchs difficiles. us_is_team1 =
+  // domicile, même convention FFBB que le reste de l'appli.
+  const winNotes = [];
+  const lossNotes = [];
+  agg.perMatch.forEach((m) => {
+    const match = matchesById.get(m.matchId);
+    if (!match || match.us_is_team1 == null) return;
+    const usScore = match.us_is_team1 ? match.team1_score : match.team2_score;
+    const themScore = match.us_is_team1 ? match.team2_score : match.team1_score;
+    if (usScore == null || themScore == null || usScore === themScore) return;
+    (usScore > themScore ? winNotes : lossNotes).push(m.note);
+  });
+  const avgNote = (arr) => (arr.length > 0 ? arr.reduce((s, v) => s + v, 0) / arr.length : 0);
+  const winLossSeries = [
+    { label: `Victoires (${winNotes.length})`, value: Math.round(avgNote(winNotes)), className: "fill-[#16C79A]" },
+    { label: `Défaites (${lossNotes.length})`, value: Math.round(avgNote(lossNotes)), className: "fill-[#FF5A5F]" },
   ];
 
   // Points de la joueuse vs points totaux de son équipe, match par match —
@@ -1069,10 +1098,13 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
               { label: "3 pts", className: "fill-[#F5A623]" },
               { label: "LF", className: "fill-[#16C79A]" },
             ]}
+            stripItems={noteStrip}
           />
           <ChartInfo>
             Paniers marqués par match (les tentatives à 2 et 3 points ne sont pas saisies en feuille de match, donc pas
-            de % de réussite ici — seuls les lancers francs ont un vrai ratio réussi/tenté, affiché ailleurs).
+            de % de réussite ici — seuls les lancers francs ont un vrai ratio réussi/tenté, affiché ailleurs). La
+            bande de carrés sous les dates reprend la note du match (vert-eau ≥100%, bleu 50-99%, corail &lt;50% — voir
+            "Note du match" plus bas) pour repérer la régularité d'un coup d'œil.
           </ChartInfo>
         </div>
 
@@ -1082,6 +1114,17 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
           <ChartInfo>
             Vue d'ensemble de la saison : sur tous les points marqués, la part venue des paniers à 2 points, à 3
             points et des lancers francs — un complément figé au détail match par match ci-contre.
+          </ChartInfo>
+        </div>
+
+        <div className="rounded-card bg-white p-4 shadow-sm">
+          <p className="mb-2 text-sm font-semibold text-navy">Note moyenne en victoire vs en défaite</p>
+          <SimpleBarChart items={winLossSeries} />
+          <ChartInfo>
+            Moyenne de la note du match (voir "Note du match" plus bas), selon que l'équipe a gagné ou perdu ce
+            jour-là — pour voir si {selected.player.name} est plus décisive dans les victoires ou si elle
+            sur-performe justement dans les matchs difficiles. Les matchs nuls et ceux sans score connu ne sont pas
+            comptés.
           </ChartInfo>
         </div>
 
