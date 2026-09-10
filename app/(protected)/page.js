@@ -237,29 +237,19 @@ export default async function HomePage({ searchParams }) {
                     <div className={`w-32 shrink-0 text-sm font-semibold ${date === todayStr ? "text-cardinal" : "text-ink/50"}`}>
                       {formatDate(date, { year: false })}
                     </div>
-                    <div className="flex-1 space-y-2">
+                    <div className="flex-1 space-y-1.5">
                       {byDate[date].map((e) => (
                         <Link
                           key={e.key}
                           href={e.href}
-                          className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-sand"
+                          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white hover:opacity-90"
+                          style={{ backgroundColor: colorByParticipant.get(e.participantId) ?? "#607D8B" }}
                         >
-                          <span className="w-6 shrink-0 text-center text-lg" aria-hidden="true">
+                          <span className="w-5 shrink-0 text-center text-base" aria-hidden="true">
                             {iconFor(e.sportSlug)}
                           </span>
-                          <span
-                            className="h-2 w-2 shrink-0 rounded-full"
-                            style={{ backgroundColor: colorByParticipant.get(e.participantId) ?? "#999" }}
-                            title={e.participantName}
-                          />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-semibold text-ink">
-                              {e.participantName ? `${e.participantName} — ` : ""}
-                              {e.title}
-                            </span>
-                            <span className="block truncate text-xs text-ink/50">
-                              {e.time ? `${e.time} : ${e.location}` : `Toute la journée : ${e.location}`}
-                            </span>
+                          <span className="min-w-0 flex-1 truncate">
+                            {e.time ? `${e.time} : ${e.location}` : `Toute la journée : ${e.location}`}
                           </span>
                         </Link>
                       ))}
