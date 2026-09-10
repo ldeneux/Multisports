@@ -30,6 +30,7 @@ import {
   updatePhase,
   deletePhase,
   syncPhase,
+  syncComiteClubs,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -1967,6 +1968,15 @@ async function MatchSheetPage({ matchId, backHref }) {
 export default async function BasketPage({ searchParams }) {
   const supabase = createClient();
 
+  // Statut du dernier import de clubs du comité (indépendant de la
+  // participante/saison sélectionnée — affiché près du titre).
+  const { data: comiteImport } = await supabase
+    .from("basketball_comite_imports")
+    .select("*")
+    .order("last_sync_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   // La feuille de match remplace tout le contenu de la page tant qu'elle est
   // ouverte — on garde tous les autres paramètres d'URL (participant, saison,
   // phase, journée...) pour revenir exactement là d'où on vient.
@@ -2138,9 +2148,43 @@ export default async function BasketPage({ searchParams }) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-3xl uppercase tracking-tight text-navy">Basket</h1>
-        <p className="mt-1 text-ink/60">Calendrier, classement et bilan, synchronisables depuis la FFBB.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-3xl uppercase tracking-tight text-navy">Basket</h1>
+          <p className="mt-1 text-ink/60">Calendrier, classement et bilan, synchronisables depuis la FFBB.</p>
+        </div>
+
+        {/* Import des clubs d'un comité entier (organismes + équipes) — pas
+            lié à une participante ni une saison, donc affiché ici plutôt
+            que dans le bandeau saison. */}
+        <details className="rounded-card bg-white p-3 shadow-sm">
+          <summary className="cursor-pointer text-xs font-semibold text-ink/50 hover:text-navy">
+            Import clubs du comité
+          </summary>
+          <form action={syncComiteClubs} className="mt-2 flex flex-wrap items-end gap-2">
+            <label className="text-xs font-semibold text-ink/50">
+              Code comité
+              <input
+                name="comite_code"
+                defaultValue={comiteImport?.comite_code ?? "0069"}
+                placeholder="ex. 0069"
+                className="mt-1 w-24 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+              />
+            </label>
+            <SyncButton
+              pendingLabel="Import..."
+              className="rounded-full bg-lagoon px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+            >
+              Importer
+            </SyncButton>
+          </form>
+          {comiteImport?.last_sync_at && (
+            <p className={`mt-2 max-w-xs text-xs ${comiteImport.last_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
+              {formatDateTime(comiteImport.last_sync_at)} —{" "}
+              {comiteImport.last_sync_error ?? comiteImport.last_sync_summary ?? "OK"}
+            </p>
+          )}
+        </details>
       </div>
 
       <p className="rounded-card bg-lagoon-light p-3 text-xs text-navy">
