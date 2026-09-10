@@ -609,6 +609,142 @@ async function upsertClubsFromRencontres(supabase, rencontres) {
   await supabase.from("basketball_clubs").upsert(rows, { onConflict: "club_key" });
 }
 
+// Import massif de tous les clubs (et toutes leurs équipes) d'un comité
+// entier, via les collections FFBB "organismes" et "engagements" —
+// contrairement à upsertClubsFromRencontres (alimentée au fil des rencontres
+// croisées), ceci récupère TOUS les clubs du comité d'un coup, qu'on ait
+// déjà joué contre eux ou non. Codes clubs FFBB pour un comité : préfixe
+// "ara" + code comité 4 chiffres (ex. "ara0069" pour le Rhône, comité 0069 —
+// visible dans l'URL competitions.ffbb.com/ligues/ara/comites/0069).
+export async function syncComiteClubs(formData) {
+  const supabase = createClient();
+  const comiteCode = (formData.get("comite_code") || "").trim();
+
+  if (!comiteCode) {
+    revalidatePath("/basket");
+    return;
+  }
+
+  const codePrefix = `ara${comiteCode}`;
+  let clubsFound = 0;
+  let teamsFound = 0;
+
+  try {
+    const { FFBBClient, COLLECTIONS } = await import("ffbb-api-client");
+    const client = new FFBBClient();
+    await client.authenticate();
+
+    // 1) Tous les clubs du comité.
+    const organismesRes = await client.list(COLLECTIONS.organismes, {
+      filter: { code: { _starts_with: codePrefix } },
+      fields: ["id", "nom", "code", "logo.id"],
+      limit: -1,
+    });
+    const orgList = Array.isArray(organismesRes) ? organismesRes : organismesRes?.data ?? [];
+    clubsFound = orgList.length;
+
+    if (clubsFound === 0) {
+      throw new Error(`Aucun club trouvé pour le préfixe "${codePrefix}" — vérifie le code comité.`);
+    }
+
+    // Écriture non-destructive, comme upsertClubsFromRencontres : on ne
+    // remplace jamais un champ déjà renseigné (saisie manuelle ou synchro
+    // de match précédente).
+    const keys = orgList.map((o) => stripTeamSuffix(o.nom)).filter(Boolean);
+    const { data: existingRows } = await supabase
+      .from("basketball_clubs")
+      .select("club_key, display_name, ffbb_organisme_id, logo_asset, gymnase, adresse")
+      .in("club_key", keys);
+    const existingByKey = new Map((existingRows ?? []).map((row) => [row.club_key, row]));
+
+    const clubRows = orgList
+      .map((o) => {
+        const key = stripTeamSuffix(o.nom);
+        if (!key) return null;
+        const existing = existingByKey.get(key);
+        return {
+          club_key: key,
+          display_name: existing?.display_name ?? o.nom,
+          ffbb_organisme_id: existing?.ffbb_organisme_id ?? (o.id != null ? String(o.id) : null),
+          logo_asset: existing?.logo_asset ?? o.logo?.id ?? null,
+          gymnase: existing?.gymnase ?? null,
+          adresse: existing?.adresse ?? null,
+          updated_at: new Date().toISOString(),
+        };
+      })
+      .filter(Boolean);
+
+    const { error: clubsError } = await supabase
+      .from("basketball_clubs")
+      .upsert(clubRows, { onConflict: "club_key" });
+    if (clubsError) throw new Error(`Écriture des clubs impossible (${clubsError.message}).`);
+
+    // 2) Toutes les équipes (engagements) de ces clubs, en un seul appel
+    // plutôt qu'un par club.
+    const engagementsRes = await client.list(COLLECTIONS.engagements, {
+      filter: { idOrganisme: { code: { _starts_with: codePrefix } } },
+      fields: [
+        "id",
+        "nom",
+        "idOrganisme.id",
+        "idOrganisme.nom",
+        "idOrganisme.code",
+        "idCompetition.nom",
+        "idCompetition.categorie.nom",
+      ],
+      limit: -1,
+    });
+    const engList = Array.isArray(engagementsRes) ? engagementsRes : engagementsRes?.data ?? [];
+    teamsFound = engList.length;
+
+    if (teamsFound > 0) {
+      const { data: clubsByKey } = await supabase
+        .from("basketball_clubs")
+        .select("id, club_key")
+        .in("club_key", keys);
+      const clubIdByKey = new Map((clubsByKey ?? []).map((c) => [c.club_key, c.id]));
+
+      const teamRows = engList
+        .map((e) => {
+          const clubKey = stripTeamSuffix(e.idOrganisme?.nom);
+          const clubId = clubIdByKey.get(clubKey);
+          if (!clubId || e.id == null) return null;
+          return {
+            club_id: clubId,
+            ffbb_engagement_id: String(e.id),
+            team_name: e.nom || e.idOrganisme?.nom || "Équipe inconnue",
+            category: e.idCompetition?.categorie?.nom || null,
+            competition_name: e.idCompetition?.nom || null,
+            synced_at: new Date().toISOString(),
+          };
+        })
+        .filter(Boolean);
+
+      if (teamRows.length > 0) {
+        const { error: teamsError } = await supabase
+          .from("basketball_club_teams")
+          .upsert(teamRows, { onConflict: "ffbb_engagement_id" });
+        if (teamsError) throw new Error(`Écriture des équipes impossible (${teamsError.message}).`);
+      }
+    }
+
+    await supabase.from("basketball_comite_imports").upsert({
+      comite_code: comiteCode,
+      last_sync_at: new Date().toISOString(),
+      last_sync_error: null,
+      last_sync_summary: `${clubsFound} club(s), ${teamsFound} équipe(s) importés.`,
+    });
+  } catch (err) {
+    await supabase.from("basketball_comite_imports").upsert({
+      comite_code: comiteCode,
+      last_sync_at: new Date().toISOString(),
+      last_sync_error: String(err?.message || err).slice(0, 300),
+    });
+  }
+
+  revalidatePath("/basket");
+}
+
 // ---- Synchronisation FFBB (expérimentale, API non officielle) -------------
 // Une synchro cible toujours UNE phase précise (donc un ID FFBB précis) —
 // c'est ce qui permet d'avoir plusieurs compétitions actives dans la même
