@@ -2105,7 +2105,7 @@ export default async function BasketPage({ searchParams }) {
   // équipes et saisons, chargée uniquement pour l'onglet Calendrier.
   let clubLogos = new Map();
   if (tab === "calendrier") {
-    const { data: clubRows } = await supabase.from("basketball_clubs").select("club_key, logo_asset, logo_url");
+    const { data: clubRows } = await supabase.from("basketball_clubs").select("club_key, display_name, logo_asset, logo_url");
     clubLogos = new Map((clubRows ?? []).map((c) => [c.club_key, c]));
   }
 
@@ -2308,6 +2308,15 @@ export default async function BasketPage({ searchParams }) {
             journeeQS={journeeQS}
           />
 
+          {/* Autocomplétion (suggestion, pas restriction) pour le champ
+              "Adversaire" du formulaire manuel ci-dessous — un club hors
+              département, jamais croisé, reste saisissable en texte libre. */}
+          <datalist id="known-clubs">
+            {[...clubLogos.values()].map((c) =>
+              c.display_name ? <option key={c.club_key} value={c.display_name} /> : null
+            )}
+          </datalist>
+
           {isCurrentSeason && tab === "calendrier" && (
             <details className="rounded-card bg-white p-4 shadow-sm">
               <summary className="cursor-pointer text-sm font-semibold text-navy">
@@ -2340,6 +2349,7 @@ export default async function BasketPage({ searchParams }) {
                   <input
                     name="opponent"
                     placeholder="Adversaire"
+                    list="known-clubs"
                     required
                     className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2"
                   />
