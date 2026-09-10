@@ -571,6 +571,25 @@ function GraphiqueTab({ swimmerLabel, radarData, trendSeries }) {
   );
 }
 
+// Catégories FFN, déterminées UNIQUEMENT par l'année de naissance — jamais
+// par une catégorie éventuellement renseignée ailleurs et qui pourrait être
+// périmée (une nageuse change de catégorie chaque saison). Grille en
+// vigueur pour la saison en cours : Avenirs (11 ans et moins), Benjamins
+// (12-13 ans), Juniors (14-17 ans), Séniors (18-25 ans), l'âge étant compté
+// au 1er janvier de la saison.
+const SWIM_CATEGORIES = [
+  { key: "avenir", label: "Avenirs", minAge: 0, maxAge: 11 },
+  { key: "benjamin", label: "Benjamins", minAge: 12, maxAge: 13 },
+  { key: "junior", label: "Juniors", minAge: 14, maxAge: 17 },
+  { key: "senior", label: "Séniors", minAge: 18, maxAge: 25 },
+];
+
+function swimCategoryFromBirthYear(birthYear) {
+  if (!birthYear) return null;
+  const age = computeCurrentSeasonYear() - birthYear;
+  return SWIM_CATEGORIES.find((c) => age >= c.minAge && age <= c.maxAge)?.key ?? null;
+}
+
 // Regroupe les épreuves déjà nagées par au moins une nageuse suivie, pour
 // construire le sélecteur "nage" de l'onglet Suivi. Le bassin n'est ajouté
 // au libellé que si la même épreuve existe pour plusieurs longueurs de
@@ -613,22 +632,31 @@ function buildNageOptions(rows) {
 }
 
 // Pour une épreuve donnée : le classement complet (meilleur temps de chaque
-// FILLE ayant déjà nagé cette épreuve, tous clubs confondus) pour le nuage
-// de points, + la progression de chaque nageuse SUIVIE pour la courbe
-// d'évolution. Genre forcé à "F" (voir fetchEventField) : on ne compare
-// jamais à des temps de garçons, même sur un relais mixte.
-async function buildSuiviData(supabase, nage, followedSwimmers) {
+// FILLE ayant déjà nagé cette épreuve, tous clubs confondus, dans une des
+// catégories sélectionnées) pour le nuage de points, + la progression de
+// chaque nageuse SUIVIE (elle aussi filtrée par catégorie) pour la courbe
+// d'évolution. Genre forcé à "F" (voir plus haut) : on ne compare jamais à
+// des temps de garçons, même sur un relais mixte.
+async function buildSuiviData(supabase, nage, followedSwimmers, selectedCategories) {
   const { data: fieldRows } = await supabase
     .from("swim_results")
-    .select("swimmer_id, time_ms, swimmers(full_name, is_flagged, club)")
+    .select("swimmer_id, time_ms, swimmers(full_name, is_flagged, club, birth_year)")
     .eq("event_name", nage.eventName)
     .eq("gender", "F")
     .eq("pool_length", nage.poolLength)
     .not("time_ms", "is", null)
     .limit(1000);
 
+  // Une nageuse sans année de naissance connue reste affichée (catégorie
+  // inconnue) plutôt que d'être silencieusement écartée par le filtre.
+  const categoryAllowed = (birthYear) => {
+    const cat = swimCategoryFromBirthYear(birthYear);
+    return cat === null || selectedCategories.includes(cat);
+  };
+
   const bestBySwimmer = new Map();
   for (const row of fieldRows ?? []) {
+    if (!categoryAllowed(row.swimmers?.birth_year)) continue;
     const current = bestBySwimmer.get(row.swimmer_id);
     if (!current || row.time_ms < current.timeMs) {
       bestBySwimmer.set(row.swimmer_id, {
@@ -652,6 +680,8 @@ async function buildSuiviData(supabase, nage, followedSwimmers) {
 
   const trendSeries = [];
   for (const sw of followedSwimmers) {
+    if (!categoryAllowed(sw.birth_year)) continue;
+
     const { data: rows } = await supabase
       .from("swim_results")
       .select("time_ms, swim_competitions(competition_date)")
@@ -674,23 +704,76 @@ async function buildSuiviData(supabase, nage, followedSwimmers) {
   return { scatterPoints, avgTime, rank1Time, rank3Time, trendSeries };
 }
 
-function SuiviTab({ nageOptions, selectedNage, scatterPoints, avgTime, rank1Time, rank3Time, trendSeries }) {
+// Cases à cocher pour restreindre les graphiques à une ou plusieurs
+// catégories d'âge FFN — utile pour ne comparer des nageuses qu'entre
+// catégories comparables (comparer une Avenir à une Séniore n'a pas grand
+// sens). Formulaire GET classique (cohérent avec le reste de l'app, pas de
+// JS nécessaire), avec un bouton "Filtrer" à valider.
+function CategoryFilter({ selectedCategories, selectedNageKey }) {
+  return (
+    <form
+      method="GET"
+      className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-card bg-white p-3 text-sm shadow-sm"
+    >
+      <input type="hidden" name="tab" value="suivi" />
+      {selectedNageKey && <input type="hidden" name="nage" value={selectedNageKey} />}
+      <span className="text-xs font-semibold uppercase tracking-wide text-ink/40">Catégories :</span>
+      {SWIM_CATEGORIES.map((c) => (
+        <label key={c.key} className="flex items-center gap-1.5 text-ink/70">
+          <input
+            type="checkbox"
+            name="cat"
+            value={c.key}
+            defaultChecked={selectedCategories.includes(c.key)}
+            className="h-4 w-4 rounded border-ink/30"
+          />
+          {c.label}
+        </label>
+      ))}
+      <button
+        type="submit"
+        className="rounded-full bg-navy px-4 py-1.5 text-xs font-semibold text-white hover:bg-navy-light"
+      >
+        Filtrer
+      </button>
+    </form>
+  );
+}
+
+function SuiviTab({
+  nageOptions,
+  selectedNage,
+  scatterPoints,
+  avgTime,
+  rank1Time,
+  rank3Time,
+  trendSeries,
+  selectedCategories,
+  emptyMessage,
+}) {
   if (nageOptions.length === 0) {
     return (
-      <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
-        Aucune performance synchronisée pour tes nageuses suivies pour l'instant — reviens après quelques
-        compétitions de plus.
+      <div className="space-y-4">
+        <CategoryFilter selectedCategories={selectedCategories} selectedNageKey={selectedNage?.key} />
+        <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+          {emptyMessage ??
+            "Aucune performance synchronisée pour tes nageuses suivies pour l'instant — reviens après quelques compétitions de plus."}
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
+      <CategoryFilter selectedCategories={selectedCategories} selectedNageKey={selectedNage?.key} />
+
       <div className="flex flex-wrap gap-2">
         {nageOptions.map((o) => (
           <Link
             key={o.key}
-            href={`/natation?tab=suivi&nage=${encodeURIComponent(o.key)}`}
+            href={`/natation?tab=suivi&nage=${encodeURIComponent(o.key)}${selectedCategories
+              .map((c) => `&cat=${encodeURIComponent(c)}`)
+              .join("")}`}
             className={`rounded-full px-3 py-1 text-xs font-semibold ${
               o.key === selectedNage?.key ? "bg-cardinal text-white" : "bg-white text-ink/50 hover:text-ink"
             }`}
@@ -907,11 +990,38 @@ export default async function NatationPage({ searchParams }) {
 
     const followed = followedSwimmers ?? [];
 
+    const catParam = searchParams?.cat;
+    const catFilterActive = catParam !== undefined;
+    const selectedCategories = !catFilterActive
+      ? SWIM_CATEGORIES.map((c) => c.key)
+      : Array.isArray(catParam)
+        ? catParam
+        : [catParam];
+
+    // Une nageuse sans année de naissance connue reste toujours visible
+    // (catégorie inconnue), même filtre appliqué à toutes les autres
+    // sélections de nageuses suivies dans cet onglet.
+    const followedInCategory = followed.filter((s) => {
+      const cat = swimCategoryFromBirthYear(s.birth_year);
+      return cat === null || selectedCategories.includes(cat);
+    });
+
     if (followed.length === 0) {
       suiviContent = (
         <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
           Aucune nageuse suivie pour l'instant — va dans l'onglet Participants pour en suivre une.
         </div>
+      );
+    } else if (followedInCategory.length === 0) {
+      suiviContent = (
+        <SuiviTab
+          nageOptions={[]}
+          selectedNage={null}
+          scatterPoints={[]}
+          trendSeries={[]}
+          selectedCategories={selectedCategories}
+          emptyMessage="Aucune nageuse suivie ne correspond aux catégories sélectionnées."
+        />
       );
     } else {
       const { data: followedResults } = await supabase
@@ -919,7 +1029,7 @@ export default async function NatationPage({ searchParams }) {
         .select("event_name, gender, pool_length, distance_m, stroke")
         .in(
           "swimmer_id",
-          followed.map((s) => s.id)
+          followedInCategory.map((s) => s.id)
         )
         .eq("gender", "F")
         .not("event_name", "is", null);
@@ -932,7 +1042,8 @@ export default async function NatationPage({ searchParams }) {
         const { scatterPoints, avgTime, rank1Time, rank3Time, trendSeries } = await buildSuiviData(
           supabase,
           selectedNage,
-          followed
+          followedInCategory,
+          selectedCategories
         );
         suiviContent = (
           <SuiviTab
@@ -943,10 +1054,19 @@ export default async function NatationPage({ searchParams }) {
             rank1Time={rank1Time}
             rank3Time={rank3Time}
             trendSeries={trendSeries}
+            selectedCategories={selectedCategories}
           />
         );
       } else {
-        suiviContent = <SuiviTab nageOptions={[]} selectedNage={null} scatterPoints={[]} trendSeries={[]} />;
+        suiviContent = (
+          <SuiviTab
+            nageOptions={[]}
+            selectedNage={null}
+            scatterPoints={[]}
+            trendSeries={[]}
+            selectedCategories={selectedCategories}
+          />
+        );
       }
     }
   } else {
