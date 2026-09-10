@@ -166,6 +166,21 @@ export async function addMatch(formData) {
     .maybeSingle();
   const clubName = ps?.club || "Nous";
 
+  // Un match manuel n'a pas d'écusson propre (pas de synchro FFBB) — on va
+  // chercher celui du club dans basketball_clubs (alimenté par les synchros
+  // précédentes ou l'import comité) via le même nom normalisé que partout
+  // ailleurs dans ce fichier. Si le club n'y est pas (adversaire hors
+  // département, jamais croisé), pas d'écusson : MatchCard retombe sur les
+  // initiales, ce n'est pas bloquant.
+  const homeName = usIsTeam1 ? clubName : opponent;
+  const awayName = usIsTeam1 ? opponent : clubName;
+  const [homeKey, awayKey] = [stripTeamSuffix(homeName), stripTeamSuffix(awayName)];
+  const { data: clubLogos } = await supabase
+    .from("basketball_clubs")
+    .select("club_key, logo_asset")
+    .in("club_key", [homeKey, awayKey].filter(Boolean));
+  const logoByKey = new Map((clubLogos ?? []).map((c) => [c.club_key, c.logo_asset]));
+
   const { error } = await supabase.from("basketball_matches").insert({
     participant_sport_id: participantSportId,
     phase_id: phaseId,
@@ -174,8 +189,10 @@ export async function addMatch(formData) {
     location: formData.get("location") || null,
     home_away: homeAway,
     us_is_team1: usIsTeam1,
-    team1_name: usIsTeam1 ? clubName : opponent,
-    team2_name: usIsTeam1 ? opponent : clubName,
+    team1_name: homeName,
+    team2_name: awayName,
+    team1_logo_asset: logoByKey.get(homeKey) ?? null,
+    team2_logo_asset: logoByKey.get(awayKey) ?? null,
     season: computeCurrentSeasonLabel(),
     status: "a_venir",
     source: "manuel",
@@ -644,7 +661,24 @@ export async function syncComiteClubs(formData) {
     clubsFound = orgList.length;
 
     if (clubsFound === 0) {
-      throw new Error(`Aucun club trouvé pour le préfixe "${codePrefix}" — vérifie le code comité.`);
+      // Diagnostic : on regarde un échantillon SANS filtre pour voir le
+      // vrai format du champ "code" plutôt que de deviner à nouveau.
+      let sample = [];
+      try {
+        const sampleRes = await client.list(COLLECTIONS.organismes, {
+          fields: ["id", "nom", "code"],
+          limit: 5,
+        });
+        sample = Array.isArray(sampleRes) ? sampleRes : sampleRes?.data ?? [];
+      } catch {
+        // ignore — le diagnostic est un bonus, pas grave s'il échoue aussi
+      }
+      const sampleText = sample.length
+        ? ` Exemples réels de codes : ${sample.map((o) => `${o.nom} = "${o.code}"`).join(" · ")}`
+        : " (impossible de récupérer un échantillon pour comparer).";
+      throw new Error(
+        `Aucun club trouvé pour le préfixe "${codePrefix}".${sampleText}`
+      );
     }
 
     // Écriture non-destructive, comme upsertClubsFromRencontres : on ne
