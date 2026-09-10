@@ -175,6 +175,19 @@ function ResultRow({ r, showEventName, meetRowsByKey, relayFieldByKey, swimmerId
       <span className="w-12 shrink-0 text-right text-xs italic text-lagoon">
         {r.points ? `${r.points}p` : ""}
       </span>
+      {r.competition_id && (
+        <Link
+          href={`/natation?tab=suivi&competition=${r.competition_id}&nage=${encodeURIComponent(
+            `${r.event_name}|${r.gender}|${r.swim_competitions?.pool_length ?? r.pool_length}`
+          )}`}
+          title="Voir le suivi pour cette compétition"
+          className="shrink-0 text-ink/25 hover:text-lagoon"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M4 20V10M12 20V4M20 20v-7" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </Link>
+      )}
       {expandable ? (
         <span className="shrink-0 text-xs font-semibold text-cardinal">⭐ {count}</span>
       ) : (
@@ -709,7 +722,7 @@ async function buildSuiviData(supabase, nage, followedSwimmers, selectedCategori
 // catégories comparables (comparer une Avenir à une Séniore n'a pas grand
 // sens). Formulaire GET classique (cohérent avec le reste de l'app, pas de
 // JS nécessaire), avec un bouton "Filtrer" à valider.
-function CategoryFilter({ selectedCategories, selectedNageKey }) {
+function CategoryFilter({ selectedCategories, selectedNageKey, competitionId }) {
   return (
     <form
       method="GET"
@@ -717,6 +730,7 @@ function CategoryFilter({ selectedCategories, selectedNageKey }) {
     >
       <input type="hidden" name="tab" value="suivi" />
       {selectedNageKey && <input type="hidden" name="nage" value={selectedNageKey} />}
+      {competitionId && <input type="hidden" name="competition" value={competitionId} />}
       <span className="text-xs font-semibold uppercase tracking-wide text-ink/40">Catégories :</span>
       {SWIM_CATEGORIES.map((c) => (
         <label key={c.key} className="flex items-center gap-1.5 text-ink/70">
@@ -740,6 +754,22 @@ function CategoryFilter({ selectedCategories, selectedNageKey }) {
   );
 }
 
+// Bandeau de contexte affiché quand on arrive sur Suivi via l'icône
+// graphique d'une performance — rappelle de quelle compétition viennent les
+// nages proposées ci-dessous (le graphique, lui, reste basé sur tout
+// l'historique).
+function CompetitionBanner({ competitionInfo }) {
+  if (!competitionInfo) return null;
+  return (
+    <div className="rounded-card bg-navy px-4 py-2.5 text-sm text-white">
+      Nages proposées pour <span className="font-semibold">{competitionInfo.city ?? competitionInfo.name}</span>
+      {competitionInfo.competition_date
+        ? ` — ${formatDate(competitionInfo.competition_date, { weekday: false })}`
+        : ""}
+    </div>
+  );
+}
+
 function SuiviTab({
   nageOptions,
   selectedNage,
@@ -749,12 +779,19 @@ function SuiviTab({
   rank3Time,
   trendSeries,
   selectedCategories,
+  competitionInfo,
+  competitionId,
   emptyMessage,
 }) {
   if (nageOptions.length === 0) {
     return (
       <div className="space-y-4">
-        <CategoryFilter selectedCategories={selectedCategories} selectedNageKey={selectedNage?.key} />
+        <CompetitionBanner competitionInfo={competitionInfo} />
+        <CategoryFilter
+          selectedCategories={selectedCategories}
+          selectedNageKey={selectedNage?.key}
+          competitionId={competitionId}
+        />
         <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
           {emptyMessage ??
             "Aucune performance synchronisée pour tes nageuses suivies pour l'instant — reviens après quelques compétitions de plus."}
@@ -765,15 +802,20 @@ function SuiviTab({
 
   return (
     <div className="space-y-4">
-      <CategoryFilter selectedCategories={selectedCategories} selectedNageKey={selectedNage?.key} />
+      <CompetitionBanner competitionInfo={competitionInfo} />
+      <CategoryFilter
+        selectedCategories={selectedCategories}
+        selectedNageKey={selectedNage?.key}
+        competitionId={competitionId}
+      />
 
       <div className="flex flex-wrap gap-2">
         {nageOptions.map((o) => (
           <Link
             key={o.key}
-            href={`/natation?tab=suivi&nage=${encodeURIComponent(o.key)}${selectedCategories
-              .map((c) => `&cat=${encodeURIComponent(c)}`)
-              .join("")}`}
+            href={`/natation?tab=suivi&nage=${encodeURIComponent(o.key)}${
+              competitionId ? `&competition=${competitionId}` : ""
+            }${selectedCategories.map((c) => `&cat=${encodeURIComponent(c)}`).join("")}`}
             className={`rounded-full px-3 py-1 text-xs font-semibold ${
               o.key === selectedNage?.key ? "bg-cardinal text-white" : "bg-white text-ink/50 hover:text-ink"
             }`}
@@ -1006,6 +1048,17 @@ export default async function NatationPage({ searchParams }) {
       return cat === null || selectedCategories.includes(cat);
     });
 
+    const competitionId = searchParams?.competition || null;
+    let competitionInfo = null;
+    if (competitionId) {
+      const { data } = await supabase
+        .from("swim_competitions")
+        .select("id, name, city, competition_date")
+        .eq("id", competitionId)
+        .maybeSingle();
+      competitionInfo = data;
+    }
+
     if (followed.length === 0) {
       suiviContent = (
         <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
@@ -1020,11 +1073,19 @@ export default async function NatationPage({ searchParams }) {
           scatterPoints={[]}
           trendSeries={[]}
           selectedCategories={selectedCategories}
+          competitionInfo={competitionInfo}
           emptyMessage="Aucune nageuse suivie ne correspond aux catégories sélectionnées."
         />
       );
     } else {
-      const { data: followedResults } = await supabase
+      // Venant du clic sur l'icône graphique d'une performance : on ne
+      // propose que les nages effectivement nagées par une nageuse suivie
+      // À CETTE compétition précise (pas tout l'historique) — mais une fois
+      // une nage choisie, le graphique lui-même reste basé sur tout
+      // l'historique, comme d'habitude. Ça évite de perdre la comparaison
+      // avec les saisons précédentes juste parce qu'on est parti d'une
+      // compétition donnée.
+      let resultsQuery = supabase
         .from("swim_results")
         .select("event_name, gender, pool_length, distance_m, stroke")
         .in(
@@ -1033,6 +1094,10 @@ export default async function NatationPage({ searchParams }) {
         )
         .eq("gender", "F")
         .not("event_name", "is", null);
+      if (competitionId) {
+        resultsQuery = resultsQuery.eq("competition_id", competitionId);
+      }
+      const { data: followedResults } = await resultsQuery;
 
       const nageOptions = buildNageOptions(followedResults);
       const selectedNageKey = searchParams?.nage || nageOptions[0]?.key || null;
@@ -1055,6 +1120,8 @@ export default async function NatationPage({ searchParams }) {
             rank3Time={rank3Time}
             trendSeries={trendSeries}
             selectedCategories={selectedCategories}
+            competitionInfo={competitionInfo}
+            competitionId={competitionId}
           />
         );
       } else {
@@ -1065,6 +1132,8 @@ export default async function NatationPage({ searchParams }) {
             scatterPoints={[]}
             trendSeries={[]}
             selectedCategories={selectedCategories}
+            competitionInfo={competitionInfo}
+            competitionId={competitionId}
           />
         );
       }
