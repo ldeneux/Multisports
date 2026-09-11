@@ -78,82 +78,165 @@ function SyncCard({ ps }) {
 // synchronisée automatiquement, tout est saisi à la main, et reste
 // entièrement éditable/supprimable (contrairement aux lignes issues de la
 // FFN ailleurs dans l'app).
-function PlannedCompetitionRow({ row, ps }) {
+// Une vraie <table> HTML (plutôt qu'une grille CSS dupliquée entre l'en-tête
+// et les lignes) garantit que les colonnes s'alignent toujours correctement
+// — plus de décalage ni de débordement. Chaque ligne "Enregistrer" est son
+// propre <form>, associé à ses <input> via l'attribut form="..." (les
+// <input> vivent dans des <td>, donc en dehors de la balise <form> elle-même
+// — c'est la façon standard de faire un formulaire par ligne de tableau).
+function PlannedCompetitionRow({ row }) {
+  const formId = `planned-${row.id}`;
   return (
-    <form
-      action={updatePlannedCompetition}
-      className="grid grid-cols-2 gap-2 border-b border-ink/5 p-3 text-xs last:border-0 sm:grid-cols-[130px_70px_140px_1fr_80px_1fr_140px_1fr_auto]"
-    >
-      <input type="hidden" name="planned_competition_id" value={row.id} />
-      <input
-        type="date"
-        name="start_date"
-        defaultValue={row.start_date}
-        required
-        className="rounded-lg border border-ink/15 px-2 py-1"
-      />
-      <input
-        type="number"
-        min="1"
-        name="nb_days"
-        defaultValue={row.nb_days}
-        className="rounded-lg border border-ink/15 px-2 py-1"
-      />
-      <input
-        name="location"
-        defaultValue={row.location ?? ""}
-        placeholder="Lieu"
-        className="rounded-lg border border-ink/15 px-2 py-1"
-      />
-      <input
-        name="comment"
-        defaultValue={row.comment ?? ""}
-        placeholder="Commentaire"
-        className="rounded-lg border border-ink/15 px-2 py-1"
-      />
-      <select
-        name="pool_length"
-        defaultValue={row.pool_length ?? ""}
-        className="rounded-lg border border-ink/15 px-2 py-1"
-      >
-        <option value="">Bassin</option>
-        <option value="25">25m</option>
-        <option value="50">50m</option>
-      </select>
-      <input
-        name="title"
-        defaultValue={row.title ?? ""}
-        placeholder="Intitulé de la compétition"
-        className="rounded-lg border border-ink/15 px-2 py-1"
-      />
-      <input
-        name="categories"
-        defaultValue={row.categories ?? ""}
-        placeholder="Catégories"
-        className="rounded-lg border border-ink/15 px-2 py-1"
-      />
-      <input
-        name="ffn_link"
-        defaultValue={row.ffn_link ?? ""}
-        placeholder="Lien FFN"
-        className="rounded-lg border border-ink/15 px-2 py-1"
-      />
-      <div className="col-span-2 flex items-center gap-2 sm:col-span-1">
+    <tr className="border-b border-ink/5 last:border-0">
+      <td className="whitespace-nowrap px-2 py-1.5">
+        <form id={formId} action={updatePlannedCompetition}>
+          <input type="hidden" name="planned_competition_id" value={row.id} />
+        </form>
+        <input
+          type="date"
+          form={formId}
+          name="start_date"
+          defaultValue={row.start_date}
+          required
+          className="w-36 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="px-2 py-1.5">
+        <input
+          type="number"
+          min="1"
+          form={formId}
+          name="nb_days"
+          defaultValue={row.nb_days}
+          className="w-14 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="px-2 py-1.5">
+        <input
+          form={formId}
+          name="location"
+          defaultValue={row.location ?? ""}
+          placeholder="Lieu"
+          className="w-32 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="px-2 py-1.5">
+        <input
+          form={formId}
+          name="comment"
+          defaultValue={row.comment ?? ""}
+          placeholder="Commentaire"
+          className="w-40 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="px-2 py-1.5">
+        <select
+          form={formId}
+          name="pool_length"
+          defaultValue={row.pool_length ?? ""}
+          className="w-20 rounded-lg border border-ink/15 px-2 py-1"
+        >
+          <option value="">Bassin</option>
+          <option value="25">25m</option>
+          <option value="50">50m</option>
+        </select>
+      </td>
+      <td className="px-2 py-1.5">
+        <input
+          form={formId}
+          name="title"
+          defaultValue={row.title ?? ""}
+          placeholder="Intitulé de la compétition"
+          className="w-56 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="px-2 py-1.5">
+        <input
+          form={formId}
+          name="categories"
+          defaultValue={row.categories ?? ""}
+          placeholder="Catégories"
+          className="w-32 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="px-2 py-1.5">
+        <input
+          form={formId}
+          name="ffn_link"
+          defaultValue={row.ffn_link ?? ""}
+          placeholder="Lien FFN"
+          className="w-32 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="whitespace-nowrap px-2 py-1.5">
+        <div className="flex items-center gap-2">
+          <button
+            type="submit"
+            form={formId}
+            className="rounded-full bg-navy px-2.5 py-1 text-xs font-semibold text-white hover:bg-navy-light"
+          >
+            Enregistrer
+          </button>
+          <form action={deletePlannedCompetition}>
+            <input type="hidden" name="planned_competition_id" value={row.id} />
+            <ConfirmSubmitButton
+              confirmMessage="Supprimer cette ligne du calendrier prévisionnel ?"
+              className="text-xs font-semibold text-ink/30 hover:text-cardinal"
+            >
+              ✕
+            </ConfirmSubmitButton>
+          </form>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function NewPlannedCompetitionRow({ ps }) {
+  const formId = `planned-new-${ps.id}`;
+  return (
+    <tr className="bg-sand">
+      <td className="whitespace-nowrap px-2 py-1.5">
+        <form id={formId} action={addPlannedCompetition}>
+          <input type="hidden" name="participant_sport_id" value={ps.id} />
+        </form>
+        <input type="date" form={formId} name="start_date" required className="w-36 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
+        <input type="number" min="1" form={formId} name="nb_days" defaultValue="1" className="w-14 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
+        <input form={formId} name="location" placeholder="Lieu" className="w-32 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
+        <input form={formId} name="comment" placeholder="Commentaire" className="w-40 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
+        <select form={formId} name="pool_length" defaultValue="" className="w-20 rounded-lg border border-ink/15 px-2 py-1">
+          <option value="">Bassin</option>
+          <option value="25">25m</option>
+          <option value="50">50m</option>
+        </select>
+      </td>
+      <td className="px-2 py-1.5">
+        <input form={formId} name="title" placeholder="Intitulé de la compétition" className="w-56 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
+        <input form={formId} name="categories" placeholder="Catégories" className="w-32 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
+        <input form={formId} name="ffn_link" placeholder="Lien FFN" className="w-32 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="whitespace-nowrap px-2 py-1.5">
         <button
           type="submit"
-          className="rounded-full bg-navy px-2.5 py-1 font-semibold text-white hover:bg-navy-light"
+          form={formId}
+          className="rounded-full bg-cardinal px-3 py-1.5 text-xs font-semibold text-white hover:bg-cardinal-dark"
         >
-          Enregistrer
+          Ajouter
         </button>
-        <ConfirmSubmitButton
-          formAction={deletePlannedCompetition}
-          confirmMessage="Supprimer cette ligne du calendrier prévisionnel ?"
-          className="font-semibold text-ink/30 hover:text-cardinal"
-        >
-          ✕
-        </ConfirmSubmitButton>
-      </div>
-    </form>
+      </td>
+    </tr>
   );
 }
 
@@ -164,57 +247,28 @@ function PlannedCompetitionsCard({ ps, plannedCompetitions }) {
         Calendrier prévisionnel — {ps.participants?.first_name ?? "Natation"} ({plannedCompetitions.length})
       </summary>
 
-      <div className="border-t border-ink/5">
-        <div className="hidden grid-cols-[130px_70px_140px_1fr_80px_1fr_140px_1fr_auto] gap-2 px-3 pt-3 text-[10px] font-semibold uppercase tracking-wide text-ink/40 sm:grid">
-          <span>Date de début</span>
-          <span>Nb jours</span>
-          <span>Lieu</span>
-          <span>Commentaire</span>
-          <span>Bassin</span>
-          <span>Intitulé</span>
-          <span>Catégories</span>
-          <span>Lien FFN</span>
-          <span></span>
-        </div>
-
-        {plannedCompetitions.map((row) => (
-          <PlannedCompetitionRow key={row.id} row={row} ps={ps} />
-        ))}
-
-        <form
-          action={addPlannedCompetition}
-          className="grid grid-cols-2 gap-2 border-t border-ink/10 bg-sand p-3 text-xs sm:grid-cols-[130px_70px_140px_1fr_80px_1fr_140px_1fr_auto]"
-        >
-          <input type="hidden" name="participant_sport_id" value={ps.id} />
-          <input type="date" name="start_date" required className="rounded-lg border border-ink/15 px-2 py-1" />
-          <input
-            type="number"
-            min="1"
-            name="nb_days"
-            defaultValue="1"
-            className="rounded-lg border border-ink/15 px-2 py-1"
-          />
-          <input name="location" placeholder="Lieu" className="rounded-lg border border-ink/15 px-2 py-1" />
-          <input name="comment" placeholder="Commentaire" className="rounded-lg border border-ink/15 px-2 py-1" />
-          <select name="pool_length" defaultValue="" className="rounded-lg border border-ink/15 px-2 py-1">
-            <option value="">Bassin</option>
-            <option value="25">25m</option>
-            <option value="50">50m</option>
-          </select>
-          <input
-            name="title"
-            placeholder="Intitulé de la compétition"
-            className="rounded-lg border border-ink/15 px-2 py-1"
-          />
-          <input name="categories" placeholder="Catégories" className="rounded-lg border border-ink/15 px-2 py-1" />
-          <input name="ffn_link" placeholder="Lien FFN" className="rounded-lg border border-ink/15 px-2 py-1" />
-          <button
-            type="submit"
-            className="col-span-2 rounded-full bg-cardinal px-3 py-1.5 text-xs font-semibold text-white hover:bg-cardinal-dark sm:col-span-1"
-          >
-            Ajouter
-          </button>
-        </form>
+      <div className="overflow-x-auto border-t border-ink/5">
+        <table className="w-full min-w-[920px] border-collapse text-xs">
+          <thead>
+            <tr className="text-left text-[10px] font-semibold uppercase tracking-wide text-ink/40">
+              <th className="px-2 pb-2 pt-3">Date de début</th>
+              <th className="px-2 pb-2 pt-3">Nb jours</th>
+              <th className="px-2 pb-2 pt-3">Lieu</th>
+              <th className="px-2 pb-2 pt-3">Commentaire</th>
+              <th className="px-2 pb-2 pt-3">Bassin</th>
+              <th className="px-2 pb-2 pt-3">Intitulé</th>
+              <th className="px-2 pb-2 pt-3">Catégories</th>
+              <th className="px-2 pb-2 pt-3">Lien FFN</th>
+              <th className="px-2 pb-2 pt-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {plannedCompetitions.map((row) => (
+              <PlannedCompetitionRow key={row.id} row={row} />
+            ))}
+            <NewPlannedCompetitionRow ps={ps} />
+          </tbody>
+        </table>
       </div>
     </details>
   );
