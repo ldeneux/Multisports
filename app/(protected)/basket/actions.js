@@ -651,34 +651,16 @@ export async function syncComiteClubs(formData) {
   let teamsFound = 0;
 
   try {
-    const { FFBBClient, COLLECTIONS, FFBBAuthError } = await import("ffbb-api-client");
+    const { FFBBClient, COLLECTIONS } = await import("ffbb-api-client");
     const client = new FFBBClient();
     await client.authenticate();
 
-    // Le token de cette API non officielle semble expirer rapidement — assez
-    // pour ne plus être valide entre deux appels FFBB séparés par un
-    // aller-retour Supabase. En cas de FFBBAuthError (401/403), on
-    // ré-authentifie une fois et on rejoue l'appel avant d'abandonner.
-    const withAuthRetry = async (fn) => {
-      try {
-        return await fn();
-      } catch (err) {
-        if (err instanceof FFBBAuthError) {
-          await client.authenticate();
-          return await fn();
-        }
-        throw err;
-      }
-    };
-
     // 1) Tous les clubs du comité.
-    const organismesRes = await withAuthRetry(() =>
-      client.list(COLLECTIONS.organismes, {
-        filter: { code: { _starts_with: codePrefix } },
-        fields: ["id", "nom", "code", "logo.id"],
-        limit: -1,
-      })
-    );
+    const organismesRes = await client.list(COLLECTIONS.organismes, {
+      filter: { code: { _starts_with: codePrefix } },
+      fields: ["id", "nom", "code", "logo.id"],
+      limit: -1,
+    });
     const orgList = Array.isArray(organismesRes) ? organismesRes : organismesRes?.data ?? [];
     clubsFound = orgList.length;
 
@@ -713,24 +695,28 @@ export async function syncComiteClubs(formData) {
       .in("club_key", keys);
     const existingByKey = new Map((existingRows ?? []).map((row) => [row.club_key, row]));
 
-    // On déduplique par club_key AVANT l'upsert : deux organismes FFBB
-    // distincts peuvent se réduire à la même clé une fois passés dans
-    // stripTeamSuffix, et Postgres refuse un upsert où la même clé de
-    // conflit apparaît deux fois dans le même batch ("ON CONFLICT DO
-    // UPDATE command cannot affect row a second time"). On garde la
-    // première occurrence rencontrée pour chaque clé.
+    // Plusieurs organismes FFBB peuvent se ramener à la même club_key une
+    // fois le suffixe d'équipe retiré (ex. "CLUB X" et "CLUB X - 2" sont 2
+    // organismes distincts côté FFBB mais 1 seul club chez nous). Sans
+    // déduplication, le tableau envoyé à l'upsert contiendrait 2 lignes
+    // avec la même clé de conflit — Postgres refuse ça avec "ON CONFLICT
+    // DO UPDATE command cannot affect row a second time". On fusionne donc
+    // les doublons par club_key AVANT l'upsert, en gardant la première
+    // valeur non vide trouvée pour chaque champ.
     const clubRowsByKey = new Map();
     for (const o of orgList) {
       const key = stripTeamSuffix(o.nom);
-      if (!key || clubRowsByKey.has(key)) continue;
+      if (!key) continue;
       const existing = existingByKey.get(key);
+      const already = clubRowsByKey.get(key);
       clubRowsByKey.set(key, {
         club_key: key,
-        display_name: existing?.display_name ?? o.nom,
-        ffbb_organisme_id: existing?.ffbb_organisme_id ?? (o.id != null ? String(o.id) : null),
-        logo_asset: existing?.logo_asset ?? o.logo?.id ?? null,
-        gymnase: existing?.gymnase ?? null,
-        adresse: existing?.adresse ?? null,
+        display_name: existing?.display_name ?? already?.display_name ?? o.nom,
+        ffbb_organisme_id:
+          existing?.ffbb_organisme_id ?? already?.ffbb_organisme_id ?? (o.id != null ? String(o.id) : null),
+        logo_asset: existing?.logo_asset ?? already?.logo_asset ?? o.logo?.id ?? null,
+        gymnase: existing?.gymnase ?? already?.gymnase ?? null,
+        adresse: existing?.adresse ?? already?.adresse ?? null,
         updated_at: new Date().toISOString(),
       });
     }
@@ -741,55 +727,62 @@ export async function syncComiteClubs(formData) {
       .upsert(clubRows, { onConflict: "club_key" });
     if (clubsError) throw new Error(`Écriture des clubs impossible (${clubsError.message}).`);
 
-    // 2) Toutes les équipes (engagements) de ces clubs, en un seul appel
-    // plutôt qu'un par club.
-    const engagementsRes = await withAuthRetry(() =>
-      client.list(COLLECTIONS.engagements, {
-        filter: { idOrganisme: { code: { _starts_with: codePrefix } } },
-        fields: [
-          "id",
-          "nom",
-          "idOrganisme.id",
-          "idOrganisme.nom",
-          "idOrganisme.code",
-          "idCompetition.nom",
-          "idCompetition.categorie.nom",
-        ],
-        limit: -1,
-      })
-    );
-    const engList = Array.isArray(engagementsRes) ? engagementsRes : engagementsRes?.data ?? [];
-    teamsFound = engList.length;
+    // 2) Les équipes (engagements) de chaque club, via la relation
+    // officielle "engagements" sur l'organisme — le pattern documenté par
+    // le client FFBB (getOrganisme(id, { deep: { engagements: ... } })).
+    // Un filtre groupé sur une relation imbriquée (idOrganisme.code) n'est
+    // pas fiable côté API FFBB ; on boucle donc club par club, une requête
+    // par club plutôt qu'un seul filtre "en masse" interdit.
+    const { data: clubsByKey } = await supabase
+      .from("basketball_clubs")
+      .select("id, club_key")
+      .in("club_key", keys);
+    const clubIdByKey = new Map((clubsByKey ?? []).map((c) => [c.club_key, c.id]));
 
-    if (teamsFound > 0) {
-      const { data: clubsByKey } = await supabase
-        .from("basketball_clubs")
-        .select("id, club_key")
-        .in("club_key", keys);
-      const clubIdByKey = new Map((clubsByKey ?? []).map((c) => [c.club_key, c.id]));
+    const teamRows = [];
+    for (const [key, clubRow] of clubRowsByKey) {
+      const organismeId = clubRow.ffbb_organisme_id;
+      const clubId = clubIdByKey.get(key);
+      if (!organismeId || !clubId) continue;
 
-      const teamRows = engList
-        .map((e) => {
-          const clubKey = stripTeamSuffix(e.idOrganisme?.nom);
-          const clubId = clubIdByKey.get(clubKey);
-          if (!clubId || e.id == null) return null;
-          return {
-            club_id: clubId,
-            ffbb_engagement_id: String(e.id),
-            team_name: e.nom || e.idOrganisme?.nom || "Équipe inconnue",
-            category: e.idCompetition?.categorie?.nom || null,
-            competition_name: e.idCompetition?.nom || null,
-            synced_at: new Date().toISOString(),
-          };
-        })
-        .filter(Boolean);
-
-      if (teamRows.length > 0) {
-        const { error: teamsError } = await supabase
-          .from("basketball_club_teams")
-          .upsert(teamRows, { onConflict: "ffbb_engagement_id" });
-        if (teamsError) throw new Error(`Écriture des équipes impossible (${teamsError.message}).`);
+      let org;
+      try {
+        org = await client.getOrganisme(organismeId, {
+          fields: [
+            "id",
+            "nom",
+            "engagements.id",
+            "engagements.nom",
+            "engagements.idCompetition.nom",
+            "engagements.idCompetition.categorie.nom",
+          ],
+          deep: { engagements: { _limit: 100 } },
+        });
+      } catch {
+        // Un club en échec (ID invalide, timeout...) ne doit pas bloquer
+        // l'import des autres clubs du comité.
+        continue;
       }
+
+      for (const e of org?.engagements ?? []) {
+        if (e.id == null) continue;
+        teamRows.push({
+          club_id: clubId,
+          ffbb_engagement_id: String(e.id),
+          team_name: e.nom || org.nom || "Équipe inconnue",
+          category: e.idCompetition?.categorie?.nom || null,
+          competition_name: e.idCompetition?.nom || null,
+          synced_at: new Date().toISOString(),
+        });
+      }
+    }
+    teamsFound = teamRows.length;
+
+    if (teamRows.length > 0) {
+      const { error: teamsError } = await supabase
+        .from("basketball_club_teams")
+        .upsert(teamRows, { onConflict: "ffbb_engagement_id" });
+      if (teamsError) throw new Error(`Écriture des équipes impossible (${teamsError.message}).`);
     }
 
     await supabase.from("basketball_comite_imports").upsert({
