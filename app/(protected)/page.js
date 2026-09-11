@@ -12,12 +12,11 @@ const PARTICIPANT_COLORS = ["#1E88C7", "#2E9E6B", "#E08E1D", "#8E44AD", "#C2185B
 
 const SPORT_ICONS = {
   basket: "🏀",
-  natation: "🏊🚴🏃",
-  "course-a-pied": "🏃",
-  velo: "🏊🚴🏃",
-  cyclisme: "🚴",
+  natation: "🏊",
+  "course-a-pied": "🏃‍♀️",
+  triathlon: "🚴",
   plongee: "🤿",
-  ulm: "🛩️",
+  Parapente: "🪁",
 };
 function iconFor(slug) {
   return SPORT_ICONS[slug] ?? "📅";
