@@ -78,6 +78,14 @@ export default async function HomePage({ searchParams }) {
     .select("*, participant_sports(participant_id, participants(first_name))")
     .gte("match_date", startIso)
     .lt("match_date", endIso)
+    // Depuis qu'on synchronise TOUTE la poule (pas que nos matchs, pour
+    // permettre la vue "Toute la poule" côté Basket), cette table contient
+    // aussi les matchs des autres équipes, rattachés au même
+    // participant_sport_id que celui qui a fait la synchro. us_is_team1
+    // n'est renseigné (true/false) QUE pour les matchs qui nous concernent
+    // vraiment — sans ce filtre, le calendrier affichait n'importe quel
+    // match de la poule comme si c'était le nôtre.
+    .not("us_is_team1", "is", null)
     .order("match_date");
 
   const basketEvents = (bbMatches ?? [])
@@ -131,6 +139,8 @@ export default async function HomePage({ searchParams }) {
       })
       .map((r) => {
         const comp = competitions.find((c) => c.id === r.competition_id);
+        const location = comp?.city || "LIEU INCONNU";
+        const title = comp?.name || "COMPÉTITION";
         return {
           key: `sw-${r.competition_id}-${r.swimmers.participant_id}`,
           date: comp?.competition_date,
@@ -138,14 +148,47 @@ export default async function HomePage({ searchParams }) {
           sportSlug: "natation",
           participantId: r.swimmers.participant_id,
           participantName: r.swimmers.participants?.first_name,
-          title: comp?.name || comp?.city || "Compétition",
-          location: comp?.city || "Lieu inconnu",
+          location,
+          title,
+          subtitle: `${location} - ${title}`.toUpperCase(),
           href: "/natation?tab=performances",
         };
       });
   }
 
-  let events = [...basketEvents, ...swimEvents];
+  // Compétitions natation à venir saisies à la main (le calendrier
+  // prévisionnel de la page Natation) — la synchro FFN ne récupère les
+  // compétitions qu'une fois leurs résultats publiés, donc c'est la seule
+  // source pour les événements natation réellement à venir.
+  const { data: plannedRows } = await supabase
+    .from("swim_planned_competitions")
+    .select("*, participant_sports(participant_id, participants(first_name))")
+    .gte("start_date", startDateStr)
+    .lt("start_date", endDateStr);
+
+  const plannedEvents = (plannedRows ?? []).map((row) => {
+    const location = row.location || "LIEU INCONNU";
+    const title = row.title || "COMPÉTITION";
+    return {
+      key: `swp-${row.id}`,
+      date: row.start_date,
+      time: null,
+      sportSlug: "natation",
+      participantId: row.participant_sports?.participant_id,
+      participantName: row.participant_sports?.participants?.first_name,
+      location,
+      title,
+      subtitle: `${location} - ${title}`.toUpperCase(),
+      href: "/natation?tab=performances",
+    };
+  });
+
+  const basketEventsWithSubtitle = basketEvents.map((e) => ({
+    ...e,
+    subtitle: `${e.time} : ${e.location}`,
+  }));
+
+  let events = [...basketEventsWithSubtitle, ...swimEvents, ...plannedEvents];
   if (selectedParticipantId) {
     events = events.filter((e) => e.participantId === selectedParticipantId);
   }
@@ -249,7 +292,7 @@ export default async function HomePage({ searchParams }) {
                             {iconFor(e.sportSlug)}
                           </span>
                           <span className="min-w-0 flex-1 truncate">
-                            {e.time ? `${e.time} : ${e.location}` : `Toute la journée : ${e.location}`}
+                            {e.subtitle}
                           </span>
                         </Link>
                       ))}
