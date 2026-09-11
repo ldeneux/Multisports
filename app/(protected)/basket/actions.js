@@ -648,7 +648,6 @@ export async function syncComiteClubs(formData) {
   // ligues/ara/...). Auvergne-Rhône-Alpes = "ARA".
   const codePrefix = `ARA${comiteCode}`;
   let clubsFound = 0;
-  let teamsFound = 0;
 
   try {
     const { FFBBClient, COLLECTIONS, FFBBAuthError } = await import("ffbb-api-client");
@@ -742,70 +741,20 @@ export async function syncComiteClubs(formData) {
       .upsert(clubRows, { onConflict: "club_key" });
     if (clubsError) throw new Error(`Écriture des clubs impossible (${clubsError.message}).`);
 
-    // 2) Toutes les équipes (engagements) de ces clubs. Filtrer directement
-    // ffbbserver_engagements avec une relation imbriquée (idOrganisme.code)
-    // est rejeté en 403 par l'API — de façon systématique, même après
-    // ré-authentification, donc ce n'est pas un token expiré mais une
-    // restriction de l'API sur ce type de filtre en liste groupée. On
-    // repasse par la relation "engagements" de chaque organisme (pattern
-    // documenté par la librairie via `deep`), une requête par club.
-    const engList = [];
-    for (const o of orgList) {
-      if (o.id == null) continue;
-      const clubDetail = await withAuthRetry(() =>
-        client.getOrganisme(String(o.id), {
-          fields: [
-            "id",
-            "engagements.id",
-            "engagements.nom",
-            "engagements.idCompetition.nom",
-            "engagements.idCompetition.categorie.nom",
-          ],
-          deep: { engagements: { _limit: 1000 } },
-        })
-      );
-      const clubKey = stripTeamSuffix(o.nom);
-      for (const e of clubDetail?.engagements ?? []) {
-        engList.push({ ...e, __clubKey: clubKey });
-      }
-    }
-    teamsFound = engList.length;
-
-    if (teamsFound > 0) {
-      const { data: clubsByKey } = await supabase
-        .from("basketball_clubs")
-        .select("id, club_key")
-        .in("club_key", keys);
-      const clubIdByKey = new Map((clubsByKey ?? []).map((c) => [c.club_key, c.id]));
-
-      const teamRows = engList
-        .map((e) => {
-          const clubId = clubIdByKey.get(e.__clubKey);
-          if (!clubId || e.id == null) return null;
-          return {
-            club_id: clubId,
-            ffbb_engagement_id: String(e.id),
-            team_name: e.nom || "Équipe inconnue",
-            category: e.idCompetition?.categorie?.nom || null,
-            competition_name: e.idCompetition?.nom || null,
-            synced_at: new Date().toISOString(),
-          };
-        })
-        .filter(Boolean);
-
-      if (teamRows.length > 0) {
-        const { error: teamsError } = await supabase
-          .from("basketball_club_teams")
-          .upsert(teamRows, { onConflict: "ffbb_engagement_id" });
-        if (teamsError) throw new Error(`Écriture des équipes impossible (${teamsError.message}).`);
-      }
-    }
+    // L'import des équipes (engagements) d'un club a été retiré : l'API
+    // FFBB rejette systématiquement (403) toute tentative de LISTER les
+    // équipes d'un club, que ce soit par un filtre groupé sur
+    // ffbbserver_engagements ou par la relation `deep` depuis l'organisme —
+    // les deux ont été testés. Elle n'autorise que la lecture d'une équipe
+    // ou d'une poule dont on connaît déjà l'ID (voir syncPhase, qui lui
+    // fonctionne). Ce n'est donc pas contournable côté client : on se
+    // limite à l'import des clubs, qui fonctionne bien.
 
     await supabase.from("basketball_comite_imports").upsert({
       comite_code: comiteCode,
       last_sync_at: new Date().toISOString(),
       last_sync_error: null,
-      last_sync_summary: `${clubsFound} club(s), ${teamsFound} équipe(s) importés.`,
+      last_sync_summary: `${clubsFound} club(s) importé(s).`,
     });
   } catch (err) {
     await supabase.from("basketball_comite_imports").upsert({
