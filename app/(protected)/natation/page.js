@@ -2,8 +2,15 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
+import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import { SwimRadarChart, SwimPercentileTrendChart, SwimScatterChart, SwimTimeTrendChart } from "@/components/SwimCharts";
-import { syncClubCompetitions, toggleSwimmerFlag } from "./actions";
+import {
+  syncClubCompetitions,
+  toggleSwimmerFlag,
+  addPlannedCompetition,
+  updatePlannedCompetition,
+  deletePlannedCompetition,
+} from "./actions";
 
 export const dynamic = "force-dynamic";
 // La synchro FFN (appelée via l'action syncClubCompetitions depuis cette
@@ -61,6 +68,155 @@ function SyncCard({ ps }) {
         </p>
       )}
     </div>
+  );
+}
+
+// Calendrier prévisionnel saisi à la main : la synchro FFN ne récupère les
+// compétitions qu'UNE FOIS leurs résultats publiés, donc les compétitions à
+// venir de la saison n'apparaissent nulle part ailleurs tant qu'elles n'ont
+// pas eu lieu. Ce tableau comble ce manque — aucune donnée n'y est
+// synchronisée automatiquement, tout est saisi à la main, et reste
+// entièrement éditable/supprimable (contrairement aux lignes issues de la
+// FFN ailleurs dans l'app).
+function PlannedCompetitionRow({ row, ps }) {
+  return (
+    <form
+      action={updatePlannedCompetition}
+      className="grid grid-cols-2 gap-2 border-b border-ink/5 p-3 text-xs last:border-0 sm:grid-cols-[130px_70px_140px_1fr_80px_1fr_140px_1fr_auto]"
+    >
+      <input type="hidden" name="planned_competition_id" value={row.id} />
+      <input
+        type="date"
+        name="start_date"
+        defaultValue={row.start_date}
+        required
+        className="rounded-lg border border-ink/15 px-2 py-1"
+      />
+      <input
+        type="number"
+        min="1"
+        name="nb_days"
+        defaultValue={row.nb_days}
+        className="rounded-lg border border-ink/15 px-2 py-1"
+      />
+      <input
+        name="location"
+        defaultValue={row.location ?? ""}
+        placeholder="Lieu"
+        className="rounded-lg border border-ink/15 px-2 py-1"
+      />
+      <input
+        name="comment"
+        defaultValue={row.comment ?? ""}
+        placeholder="Commentaire"
+        className="rounded-lg border border-ink/15 px-2 py-1"
+      />
+      <select
+        name="pool_length"
+        defaultValue={row.pool_length ?? ""}
+        className="rounded-lg border border-ink/15 px-2 py-1"
+      >
+        <option value="">Bassin</option>
+        <option value="25">25m</option>
+        <option value="50">50m</option>
+      </select>
+      <input
+        name="title"
+        defaultValue={row.title ?? ""}
+        placeholder="Intitulé de la compétition"
+        className="rounded-lg border border-ink/15 px-2 py-1"
+      />
+      <input
+        name="categories"
+        defaultValue={row.categories ?? ""}
+        placeholder="Catégories"
+        className="rounded-lg border border-ink/15 px-2 py-1"
+      />
+      <input
+        name="ffn_link"
+        defaultValue={row.ffn_link ?? ""}
+        placeholder="Lien FFN"
+        className="rounded-lg border border-ink/15 px-2 py-1"
+      />
+      <div className="col-span-2 flex items-center gap-2 sm:col-span-1">
+        <button
+          type="submit"
+          className="rounded-full bg-navy px-2.5 py-1 font-semibold text-white hover:bg-navy-light"
+        >
+          Enregistrer
+        </button>
+        <ConfirmSubmitButton
+          formAction={deletePlannedCompetition}
+          confirmMessage="Supprimer cette ligne du calendrier prévisionnel ?"
+          className="font-semibold text-ink/30 hover:text-cardinal"
+        >
+          ✕
+        </ConfirmSubmitButton>
+      </div>
+    </form>
+  );
+}
+
+function PlannedCompetitionsCard({ ps, plannedCompetitions }) {
+  return (
+    <details className="rounded-card bg-white shadow-sm">
+      <summary className="cursor-pointer p-4 text-sm font-semibold text-navy">
+        Calendrier prévisionnel — {ps.participants?.first_name ?? "Natation"} ({plannedCompetitions.length})
+      </summary>
+
+      <div className="border-t border-ink/5">
+        <div className="hidden grid-cols-[130px_70px_140px_1fr_80px_1fr_140px_1fr_auto] gap-2 px-3 pt-3 text-[10px] font-semibold uppercase tracking-wide text-ink/40 sm:grid">
+          <span>Date de début</span>
+          <span>Nb jours</span>
+          <span>Lieu</span>
+          <span>Commentaire</span>
+          <span>Bassin</span>
+          <span>Intitulé</span>
+          <span>Catégories</span>
+          <span>Lien FFN</span>
+          <span></span>
+        </div>
+
+        {plannedCompetitions.map((row) => (
+          <PlannedCompetitionRow key={row.id} row={row} ps={ps} />
+        ))}
+
+        <form
+          action={addPlannedCompetition}
+          className="grid grid-cols-2 gap-2 border-t border-ink/10 bg-sand p-3 text-xs sm:grid-cols-[130px_70px_140px_1fr_80px_1fr_140px_1fr_auto]"
+        >
+          <input type="hidden" name="participant_sport_id" value={ps.id} />
+          <input type="date" name="start_date" required className="rounded-lg border border-ink/15 px-2 py-1" />
+          <input
+            type="number"
+            min="1"
+            name="nb_days"
+            defaultValue="1"
+            className="rounded-lg border border-ink/15 px-2 py-1"
+          />
+          <input name="location" placeholder="Lieu" className="rounded-lg border border-ink/15 px-2 py-1" />
+          <input name="comment" placeholder="Commentaire" className="rounded-lg border border-ink/15 px-2 py-1" />
+          <select name="pool_length" defaultValue="" className="rounded-lg border border-ink/15 px-2 py-1">
+            <option value="">Bassin</option>
+            <option value="25">25m</option>
+            <option value="50">50m</option>
+          </select>
+          <input
+            name="title"
+            placeholder="Intitulé de la compétition"
+            className="rounded-lg border border-ink/15 px-2 py-1"
+          />
+          <input name="categories" placeholder="Catégories" className="rounded-lg border border-ink/15 px-2 py-1" />
+          <input name="ffn_link" placeholder="Lien FFN" className="rounded-lg border border-ink/15 px-2 py-1" />
+          <button
+            type="submit"
+            className="col-span-2 rounded-full bg-cardinal px-3 py-1.5 text-xs font-semibold text-white hover:bg-cardinal-dark sm:col-span-1"
+          >
+            Ajouter
+          </button>
+        </form>
+      </div>
+    </details>
   );
 }
 
@@ -1169,6 +1325,22 @@ export default async function NatationPage({ searchParams }) {
     );
   }
 
+  const { data: allPlannedCompetitions } = assignments && assignments.length > 0
+    ? await supabase
+        .from("swim_planned_competitions")
+        .select("*")
+        .in(
+          "participant_sport_id",
+          assignments.map((a) => a.id)
+        )
+        .order("start_date")
+    : { data: [] };
+  const plannedByPs = {};
+  (allPlannedCompetitions ?? []).forEach((row) => {
+    if (!plannedByPs[row.participant_sport_id]) plannedByPs[row.participant_sport_id] = [];
+    plannedByPs[row.participant_sport_id].push(row);
+  });
+
   return (
     <div className="space-y-6">
       <div>
@@ -1187,7 +1359,10 @@ export default async function NatationPage({ searchParams }) {
 
       <div className="space-y-3">
         {(assignments ?? []).map((ps) => (
-          <SyncCard key={ps.id} ps={ps} />
+          <div key={ps.id} className="space-y-3">
+            <SyncCard ps={ps} />
+            <PlannedCompetitionsCard ps={ps} plannedCompetitions={plannedByPs[ps.id] ?? []} />
+          </div>
         ))}
       </div>
 
