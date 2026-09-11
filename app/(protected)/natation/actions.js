@@ -585,3 +585,59 @@ export async function toggleSwimmerFlag(formData) {
 
   revalidatePath("/natation");
 }
+
+// ---- Calendrier de compétitions saisi à la main ---------------------------
+// Complète la synchro FFN (qui ne récupère que les compétitions déjà
+// disputées) : permet de préparer/afficher la saison à venir à la main.
+
+function plannedCompetitionPayload(formData) {
+  const poolLength = formData.get("pool_length");
+  return {
+    start_date: formData.get("start_date") || null,
+    nb_days: formData.get("nb_days") ? Number(formData.get("nb_days")) : 1,
+    location: (formData.get("location") || "").trim() || null,
+    comment: (formData.get("comment") || "").trim() || null,
+    pool_length: poolLength ? Number(poolLength) : null,
+    title: (formData.get("title") || "").trim() || null,
+    categories: (formData.get("categories") || "").trim() || null,
+    ffn_link: (formData.get("ffn_link") || "").trim() || null,
+  };
+}
+
+export async function addPlannedCompetition(formData) {
+  const supabase = createClient();
+  const startDate = formData.get("start_date");
+  if (!startDate) return;
+
+  const { error } = await supabase.from("swim_planned_competitions").insert({
+    participant_sport_id: formData.get("participant_sport_id"),
+    ...plannedCompetitionPayload(formData),
+  });
+  assertNoError("Ajout de la compétition planifiée", error);
+
+  revalidatePath("/natation");
+}
+
+export async function updatePlannedCompetition(formData) {
+  const supabase = createClient();
+  const startDate = formData.get("start_date");
+  if (!startDate) return;
+
+  const { error } = await supabase
+    .from("swim_planned_competitions")
+    .update(plannedCompetitionPayload(formData))
+    .eq("id", formData.get("planned_competition_id"));
+  assertNoError("Mise à jour de la compétition planifiée", error);
+
+  revalidatePath("/natation");
+}
+
+export async function deletePlannedCompetition(formData) {
+  const supabase = createClient();
+  await supabase
+    .from("swim_planned_competitions")
+    .delete()
+    .eq("id", formData.get("planned_competition_id"));
+
+  revalidatePath("/natation");
+}
