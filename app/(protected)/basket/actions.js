@@ -651,16 +651,34 @@ export async function syncComiteClubs(formData) {
   let teamsFound = 0;
 
   try {
-    const { FFBBClient, COLLECTIONS } = await import("ffbb-api-client");
+    const { FFBBClient, COLLECTIONS, FFBBAuthError } = await import("ffbb-api-client");
     const client = new FFBBClient();
     await client.authenticate();
 
+    // Le token de cette API non officielle semble expirer rapidement — assez
+    // pour ne plus être valide entre deux appels FFBB séparés par un
+    // aller-retour Supabase. En cas de FFBBAuthError (401/403), on
+    // ré-authentifie une fois et on rejoue l'appel avant d'abandonner.
+    const withAuthRetry = async (fn) => {
+      try {
+        return await fn();
+      } catch (err) {
+        if (err instanceof FFBBAuthError) {
+          await client.authenticate();
+          return await fn();
+        }
+        throw err;
+      }
+    };
+
     // 1) Tous les clubs du comité.
-    const organismesRes = await client.list(COLLECTIONS.organismes, {
-      filter: { code: { _starts_with: codePrefix } },
-      fields: ["id", "nom", "code", "logo.id"],
-      limit: -1,
-    });
+    const organismesRes = await withAuthRetry(() =>
+      client.list(COLLECTIONS.organismes, {
+        filter: { code: { _starts_with: codePrefix } },
+        fields: ["id", "nom", "code", "logo.id"],
+        limit: -1,
+      })
+    );
     const orgList = Array.isArray(organismesRes) ? organismesRes : organismesRes?.data ?? [];
     clubsFound = orgList.length;
 
@@ -725,19 +743,21 @@ export async function syncComiteClubs(formData) {
 
     // 2) Toutes les équipes (engagements) de ces clubs, en un seul appel
     // plutôt qu'un par club.
-    const engagementsRes = await client.list(COLLECTIONS.engagements, {
-      filter: { idOrganisme: { code: { _starts_with: codePrefix } } },
-      fields: [
-        "id",
-        "nom",
-        "idOrganisme.id",
-        "idOrganisme.nom",
-        "idOrganisme.code",
-        "idCompetition.nom",
-        "idCompetition.categorie.nom",
-      ],
-      limit: -1,
-    });
+    const engagementsRes = await withAuthRetry(() =>
+      client.list(COLLECTIONS.engagements, {
+        filter: { idOrganisme: { code: { _starts_with: codePrefix } } },
+        fields: [
+          "id",
+          "nom",
+          "idOrganisme.id",
+          "idOrganisme.nom",
+          "idOrganisme.code",
+          "idCompetition.nom",
+          "idCompetition.categorie.nom",
+        ],
+        limit: -1,
+      })
+    );
     const engList = Array.isArray(engagementsRes) ? engagementsRes : engagementsRes?.data ?? [];
     teamsFound = engList.length;
 
