@@ -642,7 +642,11 @@ export async function syncComiteClubs(formData) {
     return;
   }
 
-  const codePrefix = `ara${comiteCode}`;
+  // Format confirmé par un échantillon réel de la base : le préfixe région
+  // est en MAJUSCULES (ex. "CVL0045063", "OCC0009012"), pas en minuscules
+  // comme le laissait penser l'URL du site public (competitions.ffbb.com/
+  // ligues/ara/...). Auvergne-Rhône-Alpes = "ARA".
+  const codePrefix = `ARA${comiteCode}`;
   let clubsFound = 0;
   let teamsFound = 0;
 
