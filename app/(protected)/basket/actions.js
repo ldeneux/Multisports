@@ -695,22 +695,28 @@ export async function syncComiteClubs(formData) {
       .in("club_key", keys);
     const existingByKey = new Map((existingRows ?? []).map((row) => [row.club_key, row]));
 
-    const clubRows = orgList
-      .map((o) => {
-        const key = stripTeamSuffix(o.nom);
-        if (!key) return null;
-        const existing = existingByKey.get(key);
-        return {
-          club_key: key,
-          display_name: existing?.display_name ?? o.nom,
-          ffbb_organisme_id: existing?.ffbb_organisme_id ?? (o.id != null ? String(o.id) : null),
-          logo_asset: existing?.logo_asset ?? o.logo?.id ?? null,
-          gymnase: existing?.gymnase ?? null,
-          adresse: existing?.adresse ?? null,
-          updated_at: new Date().toISOString(),
-        };
-      })
-      .filter(Boolean);
+    // On déduplique par club_key AVANT l'upsert : deux organismes FFBB
+    // distincts peuvent se réduire à la même clé une fois passés dans
+    // stripTeamSuffix, et Postgres refuse un upsert où la même clé de
+    // conflit apparaît deux fois dans le même batch ("ON CONFLICT DO
+    // UPDATE command cannot affect row a second time"). On garde la
+    // première occurrence rencontrée pour chaque clé.
+    const clubRowsByKey = new Map();
+    for (const o of orgList) {
+      const key = stripTeamSuffix(o.nom);
+      if (!key || clubRowsByKey.has(key)) continue;
+      const existing = existingByKey.get(key);
+      clubRowsByKey.set(key, {
+        club_key: key,
+        display_name: existing?.display_name ?? o.nom,
+        ffbb_organisme_id: existing?.ffbb_organisme_id ?? (o.id != null ? String(o.id) : null),
+        logo_asset: existing?.logo_asset ?? o.logo?.id ?? null,
+        gymnase: existing?.gymnase ?? null,
+        adresse: existing?.adresse ?? null,
+        updated_at: new Date().toISOString(),
+      });
+    }
+    const clubRows = [...clubRowsByKey.values()];
 
     const { error: clubsError } = await supabase
       .from("basketball_clubs")
