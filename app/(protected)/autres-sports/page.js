@@ -55,6 +55,46 @@ function ResultEditForm({ result, sportSlug }) {
       </label>
 
       <label className="text-xs font-semibold text-ink/60">
+        Heure
+        <input
+          type="time"
+          name="event_time"
+          defaultValue={result.event_time ?? ""}
+          className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+        />
+      </label>
+
+      <label className="text-xs font-semibold text-ink/60">
+        Libellé
+        <input
+          name="title"
+          defaultValue={result.title ?? ""}
+          placeholder="Nom de la compétition / de l'événement"
+          className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+        />
+      </label>
+
+      <label className="text-xs font-semibold text-ink/60">
+        Nb jours
+        <input
+          type="number"
+          min="1"
+          name="nb_days"
+          defaultValue={result.nb_days ?? 1}
+          className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+        />
+      </label>
+
+      <label className="text-xs font-semibold text-ink/60">
+        Lieu
+        <input
+          name="location"
+          defaultValue={result.location ?? ""}
+          className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+        />
+      </label>
+
+      <label className="text-xs font-semibold text-ink/60">
         Lien (course, site...)
         <input
           type="url"
@@ -137,8 +177,13 @@ function ResultCard({ result, sportSlug }) {
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <p className="font-semibold text-ink">
-            {result.result_date ? formatDate(result.result_date, { weekday: false }) : "Date inconnue"}
+            {result.title ? result.title : result.result_date ? "Résultat" : "Date inconnue"}
+          </p>
+          <p className="text-xs text-ink/50">
+            {result.result_date ? formatDate(result.result_date, { weekday: false }) : ""}
+            {result.event_time ? ` à ${result.event_time}` : ""}
             {result.location ? ` · ${result.location}` : ""}
+            {result.nb_days > 1 ? ` · ${result.nb_days} jours` : ""}
           </p>
           {result.link_url && (
             <a
