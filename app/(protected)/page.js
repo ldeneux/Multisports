@@ -45,6 +45,40 @@ function homeHref({ month, year, participant }) {
   return `/?${params.toString()}`;
 }
 
+// "SALLE DE SPORT, VILLE" -> "VILLE - SALLE DE SPORT". Uniquement pour
+// l'affichage (jamais écrit en base) : le lieu est saisi/synchronisé au
+// format "salle, ville", mais on veut la ville en avant dans le calendrier.
+function invertLocation(location) {
+  if (!location) return "";
+  const parts = location.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return location.toUpperCase();
+  return [...parts].reverse().join(" - ").toUpperCase();
+}
+
+function addDaysStr(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Pour un événement sur plusieurs jours (nb_days > 1) : un bandeau de
+// couleur uni, sans texte, sur chacun des jours suivants — juste pour
+// signaler visuellement que ça continue, sans dupliquer l'information.
+function buildContinuationEntries(baseEvent, nbDays, rangeStartStr, rangeEndStr) {
+  const extra = [];
+  for (let i = 1; i < (nbDays || 1); i++) {
+    const date = addDaysStr(baseEvent.date, i);
+    if (date < rangeStartStr || date >= rangeEndStr) continue;
+    extra.push({
+      ...baseEvent,
+      key: `${baseEvent.key}-cont-${i}`,
+      date,
+      continuation: true,
+    });
+  }
+  return extra;
+}
+
 export default async function HomePage({ searchParams }) {
   const supabase = createClient();
 
@@ -64,6 +98,11 @@ export default async function HomePage({ searchParams }) {
   const endIso = endDate.toISOString();
   const startDateStr = startIso.slice(0, 10);
   const endDateStr = endIso.slice(0, 10);
+  // Fenêtre élargie en amont pour récupérer les événements multi-jours
+  // commencés le mois précédent mais qui débordent sur le mois affiché
+  // (ex. une compétition de 3 jours démarrée le 31) — 13 jours de marge
+  // couvre largement tout événement raisonnable.
+  const lookbackDateStr = addDaysStr(startDateStr, -13);
 
   const prevMonth = month === 1 ? 12 : month - 1;
   const prevYear = month === 1 ? year - 1 : year;
@@ -91,18 +130,18 @@ export default async function HomePage({ searchParams }) {
     .filter((m) => m.match_date)
     .map((m) => {
       const participantId = m.participant_sports?.participant_id;
-      const opponent = m.us_is_team1 === false ? m.team1_name : m.team2_name;
       const d = new Date(m.match_date);
+      const homeTeamName = m.team1_name || "Équipe inconnue";
       return {
         key: `bb-${m.id}`,
         date: m.match_date.slice(0, 10),
         time: d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
         sportSlug: "basket",
         participantId,
-        participantName: m.participant_sports?.participants?.first_name,
-        title: opponent ? `vs ${opponent}` : "Match",
-        location: m.location || "Lieu à confirmer",
-        href: `/basket?ps=${m.participant_sport_id}&tab=calendrier`,
+        title: homeTeamName,
+        subtitle: `${d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} : ${invertLocation(
+          m.location || ""
+        )}`,
       };
     });
 
@@ -110,7 +149,7 @@ export default async function HomePage({ searchParams }) {
   // nageuses "suivies" d'autres clubs) a un résultat enregistré. Limite
   // connue : la synchro FFN récupère les compétitions via leurs RÉSULTATS,
   // donc une compétition future sans résultat publié n'apparaît pas encore
-  // ici — elle remontera dès que la FFN aura publié ses résultats.
+  // ici — c'est le calendrier prévisionnel (ci-dessous) qui comble ce trou.
   const { data: competitions } = await supabase
     .from("swim_competitions")
     .select("*")
@@ -138,56 +177,74 @@ export default async function HomePage({ searchParams }) {
       })
       .map((r) => {
         const comp = competitions.find((c) => c.id === r.competition_id);
-        const location = comp?.city || "LIEU INCONNU";
-        const title = comp?.name || "COMPÉTITION";
+        const title = comp?.name || "Compétition";
         return {
           key: `sw-${r.competition_id}-${r.swimmers.participant_id}`,
           date: comp?.competition_date,
           time: null,
           sportSlug: "natation",
           participantId: r.swimmers.participant_id,
-          participantName: r.swimmers.participants?.first_name,
-          location,
           title,
-          subtitle: `${location} - ${title}`.toUpperCase(),
-          href: "/natation?tab=performances",
+          subtitle: (comp?.city || "LIEU INCONNU").toUpperCase(),
         };
       });
   }
 
   // Compétitions natation à venir saisies à la main (le calendrier
-  // prévisionnel de la page Natation) — la synchro FFN ne récupère les
-  // compétitions qu'une fois leurs résultats publiés, donc c'est la seule
-  // source pour les événements natation réellement à venir.
+  // prévisionnel de la page Natation) — seule source pour les événements
+  // natation réellement à venir, y compris sur plusieurs jours.
   const { data: plannedRows } = await supabase
     .from("swim_planned_competitions")
     .select("*, participant_sports(participant_id, participants(first_name))")
-    .gte("start_date", startDateStr)
+    .gte("start_date", lookbackDateStr)
     .lt("start_date", endDateStr);
 
-  const plannedEvents = (plannedRows ?? []).map((row) => {
-    const location = row.location || "LIEU INCONNU";
-    const title = row.title || "COMPÉTITION";
-    return {
+  let plannedEvents = [];
+  (plannedRows ?? []).forEach((row) => {
+    const location = (row.location || "LIEU INCONNU").toUpperCase();
+    const base = {
       key: `swp-${row.id}`,
       date: row.start_date,
-      time: null,
+      time: row.start_time,
       sportSlug: "natation",
       participantId: row.participant_sports?.participant_id,
-      participantName: row.participant_sports?.participants?.first_name,
-      location,
-      title,
-      subtitle: `${location} - ${title}`.toUpperCase(),
-      href: "/natation?tab=performances",
+      title: row.title || "Compétition",
+      subtitle: row.start_time ? `${row.start_time} : ${location}` : location,
     };
+    if (base.date >= startDateStr && base.date < endDateStr) {
+      plannedEvents.push(base);
+    }
+    plannedEvents.push(...buildContinuationEntries(base, row.nb_days, startDateStr, endDateStr));
   });
 
-  const basketEventsWithSubtitle = basketEvents.map((e) => ({
-    ...e,
-    subtitle: `${e.time} : ${e.location}`,
-  }));
+  // ---- Autres sports (plongée, triathlon, course à pied, parapente...) —
+  // même logique que le calendrier prévisionnel natation, avec bandeaux de
+  // continuation sur les événements de plusieurs jours.
+  const { data: otherSportRows } = await supabase
+    .from("other_sport_results")
+    .select("*, sports(slug)")
+    .gte("result_date", lookbackDateStr)
+    .lt("result_date", endDateStr);
 
-  let events = [...basketEventsWithSubtitle, ...swimEvents, ...plannedEvents];
+  let otherSportEvents = [];
+  (otherSportRows ?? []).forEach((row) => {
+    const location = (row.location || "LIEU INCONNU").toUpperCase();
+    const base = {
+      key: `os-${row.id}`,
+      date: row.result_date,
+      time: row.event_time,
+      sportSlug: row.sports?.slug,
+      participantId: row.participant_id,
+      title: row.title || row.sports?.name || "Événement",
+      subtitle: row.event_time ? `${row.event_time} : ${location}` : location,
+    };
+    if (base.date >= startDateStr && base.date < endDateStr) {
+      otherSportEvents.push(base);
+    }
+    otherSportEvents.push(...buildContinuationEntries(base, row.nb_days, startDateStr, endDateStr));
+  });
+
+  let events = [...basketEvents, ...swimEvents, ...plannedEvents, ...otherSportEvents];
   if (selectedParticipantId) {
     events = events.filter((e) => e.participantId === selectedParticipantId);
   }
@@ -280,32 +337,35 @@ export default async function HomePage({ searchParams }) {
                       {formatDate(date, { year: false })}
                     </div>
                     <div className="flex-1 space-y-1.5">
-                      {byDate[date].map((e) => (
-                        <Link
-                          key={e.key}
-                          href={e.href}
-                          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white hover:opacity-90"
-                          style={{ backgroundColor: colorByParticipant.get(e.participantId) ?? "#607D8B" }}
-                        >
-                          <span className="w-5 shrink-0 text-center text-base" aria-hidden="true">
-                            {iconFor(e.sportSlug)}
-                          </span>
-                          <span className="min-w-0 flex-1 truncate">
-                            {e.subtitle}
-                          </span>
-                        </Link>
-                      ))}
+                      {byDate[date].map((e) =>
+                        e.continuation ? (
+                          <div
+                            key={e.key}
+                            className="h-3 rounded-full"
+                            style={{ backgroundColor: colorByParticipant.get(e.participantId) ?? "#607D8B" }}
+                            title="Compétition sur plusieurs jours"
+                          />
+                        ) : (
+                          <div
+                            key={e.key}
+                            className="flex items-center gap-2 rounded-lg px-3 py-2 text-white"
+                            style={{ backgroundColor: colorByParticipant.get(e.participantId) ?? "#607D8B" }}
+                          >
+                            <span className="w-5 shrink-0 text-center text-base" aria-hidden="true">
+                              {iconFor(e.sportSlug)}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-semibold">{e.title}</span>
+                              <span className="block truncate text-xs text-white/75">{e.subtitle}</span>
+                            </span>
+                          </div>
+                        )
+                      )}
                     </div>
                   </div>
                 ))
               )}
             </div>
-          </div>
-
-          <div>
-            <Link href="/parametres" className="text-sm font-semibold text-navy hover:underline">
-              Gérer les participants, sports et affectations →
-            </Link>
           </div>
         </>
       )}
