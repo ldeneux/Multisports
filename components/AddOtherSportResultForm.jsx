@@ -38,6 +38,43 @@ export default function AddOtherSportResultForm({ participantId, participantSpor
           </label>
 
           <label className="text-xs font-semibold text-ink/60">
+            Heure
+            <input
+              type="time"
+              name="event_time"
+              className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+            />
+          </label>
+
+          <label className="text-xs font-semibold text-ink/60">
+            Libellé
+            <input
+              name="title"
+              placeholder="Nom de la compétition / de l'événement"
+              className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+            />
+          </label>
+
+          <label className="text-xs font-semibold text-ink/60">
+            Nb jours
+            <input
+              type="number"
+              min="1"
+              name="nb_days"
+              defaultValue="1"
+              className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+            />
+          </label>
+
+          <label className="text-xs font-semibold text-ink/60">
+            Lieu
+            <input
+              name="location"
+              className="mt-1 w-full rounded-lg border border-ink/15 px-3 py-2"
+            />
+          </label>
+
+          <label className="text-xs font-semibold text-ink/60">
             Lien (course, site...)
             <input
               type="url"
