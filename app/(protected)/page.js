@@ -131,14 +131,17 @@ export default async function HomePage({ searchParams }) {
     .map((m) => {
       const participantId = m.participant_sports?.participant_id;
       const d = new Date(m.match_date);
-      const homeTeamName = m.team1_name || "Équipe inconnue";
+      // L'adversaire, pas l'équipe qui reçoit — à domicile, l'équipe qui
+      // reçoit est presque toujours la nôtre, ce serait redondant/inutile
+      // de l'afficher (ex. systématiquement "OLYMPIC SATHONAY").
+      const opponentName = (m.us_is_team1 ? m.team2_name : m.team1_name) || "Adversaire inconnu";
       return {
         key: `bb-${m.id}`,
         date: m.match_date.slice(0, 10),
         time: d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
         sportSlug: "basket",
         participantId,
-        title: homeTeamName,
+        title: opponentName,
         subtitle: `${d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} : ${invertLocation(
           m.location || ""
         )}`,
