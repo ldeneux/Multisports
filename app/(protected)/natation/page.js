@@ -120,16 +120,7 @@ function PlannedCompetitionRow({ row }) {
           className="w-14 rounded-lg border border-ink/15 px-2 py-1"
         />
       </td>
-      <td className="px-2 py-1.5">
-        <input
-          form={formId}
-          name="location"
-          defaultValue={row.location ?? ""}
-          placeholder="Lieu"
-          className="w-32 rounded-lg border border-ink/15 px-2 py-1"
-        />
-      </td>
-      <td className="px-2 py-1.5">
+          <td className="px-2 py-1.5">
         <input
           form={formId}
           name="comment"
@@ -216,9 +207,6 @@ function NewPlannedCompetitionRow({ ps }) {
       </td>
       <td className="px-2 py-1.5">
         <input type="number" min="1" form={formId} name="nb_days" defaultValue="1" className="w-14 rounded-lg border border-ink/15 px-2 py-1" />
-      </td>
-      <td className="px-2 py-1.5">
-        <input form={formId} name="location" placeholder="Lieu" className="w-32 rounded-lg border border-ink/15 px-2 py-1" />
       </td>
       <td className="px-2 py-1.5">
         <input form={formId} name="comment" placeholder="Commentaire" className="w-40 rounded-lg border border-ink/15 px-2 py-1" />
