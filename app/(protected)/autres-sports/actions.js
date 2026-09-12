@@ -52,6 +52,9 @@ export async function addOtherSportResult(formData) {
       participant_id: formData.get("participant_id"),
       sport_id: formData.get("sport_id"),
       result_date: formData.get("result_date") || null,
+      event_time: formData.get("event_time") || null,
+      title: (formData.get("title") || "").trim() || null,
+      nb_days: formData.get("nb_days") ? Number(formData.get("nb_days")) : 1,
       location: formData.get("location") || null,
       link_url: formData.get("link_url") || null,
       notes: formData.get("notes") || null,
@@ -76,6 +79,9 @@ export async function updateOtherSportResult(formData) {
     .from("other_sport_results")
     .update({
       result_date: formData.get("result_date") || null,
+      event_time: formData.get("event_time") || null,
+      title: (formData.get("title") || "").trim() || null,
+      nb_days: formData.get("nb_days") ? Number(formData.get("nb_days")) : 1,
       location: formData.get("location") || null,
       link_url: formData.get("link_url") || null,
       notes: formData.get("notes") || null,
