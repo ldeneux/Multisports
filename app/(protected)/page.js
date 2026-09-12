@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { formatDate } from "@/lib/utils";
 
@@ -267,11 +268,58 @@ export default async function HomePage({ searchParams }) {
 
   const todayStr = now.toISOString().slice(0, 10);
 
+  const feedSecret = process.env.CALENDAR_FEED_SECRET;
+  const host = headers().get("host");
+  const proto = host?.startsWith("localhost") ? "http" : "https";
+  const feedUrl = feedSecret ? `${proto}://${host}/calendrier/${feedSecret}/feed.ics` : null;
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-3xl uppercase tracking-tight text-navy">Calendrier</h1>
-        <p className="mt-1 text-ink/60">Tous les événements à venir, en un coup d'œil.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-3xl uppercase tracking-tight text-navy">Calendrier</h1>
+          <p className="mt-1 text-ink/60">Tous les événements à venir, en un coup d'œil.</p>
+        </div>
+
+        <details className="rounded-card bg-white p-3 shadow-sm">
+          <summary className="cursor-pointer whitespace-nowrap rounded-full bg-lagoon px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+            📅 Abonnement calendrier
+          </summary>
+
+          <div className="mt-3 max-w-sm text-xs text-ink/60">
+            {feedUrl ? (
+              <>
+                <p className="mb-2">
+                  Ce lien donne un accès en lecture seule à ton calendrier — ne le partage qu'avec les
+                  personnes de confiance.
+                </p>
+                <input
+                  readOnly
+                  value={feedUrl}
+                  className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-[11px] text-ink"
+                />
+                <p className="mt-3 font-semibold text-ink/70">Dans Google Calendar :</p>
+                <ol className="mt-1 list-decimal space-y-1 pl-4">
+                  <li>Sélectionne le lien ci-dessus et copie-le (Ctrl/Cmd+C).</li>
+                  <li>
+                    Sur calendar.google.com, en bas à gauche de "Autres agendas", clique sur{" "}
+                    <strong>+</strong> puis <strong>"À partir de l'URL"</strong>.
+                  </li>
+                  <li>Colle le lien, puis "Ajouter un agenda".</li>
+                </ol>
+                <p className="mt-2 text-ink/40">
+                  Google se resynchronise automatiquement toutes les quelques heures — pas en temps réel,
+                  mais sans rien faire de ton côté.
+                </p>
+              </>
+            ) : (
+              <p className="text-cardinal-dark">
+                Variable d'environnement <code>CALENDAR_FEED_SECRET</code> manquante côté serveur —
+                défini une valeur secrète (une longue chaîne aléatoire) pour activer l'abonnement.
+              </p>
+            )}
+          </div>
+        </details>
       </div>
 
       {(!participants || participants.length === 0) ? (
