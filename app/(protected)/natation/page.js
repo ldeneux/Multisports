@@ -103,6 +103,15 @@ function PlannedCompetitionRow({ row }) {
       </td>
       <td className="px-2 py-1.5">
         <input
+          type="time"
+          form={formId}
+          name="start_time"
+          defaultValue={row.start_time ?? ""}
+          className="w-24 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="px-2 py-1.5">
+        <input
           type="number"
           min="1"
           form={formId}
@@ -203,6 +212,9 @@ function NewPlannedCompetitionRow({ ps }) {
         <input type="date" form={formId} name="start_date" required className="w-36 rounded-lg border border-ink/15 px-2 py-1" />
       </td>
       <td className="px-2 py-1.5">
+        <input type="time" form={formId} name="start_time" className="w-24 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
         <input type="number" min="1" form={formId} name="nb_days" defaultValue="1" className="w-14 rounded-lg border border-ink/15 px-2 py-1" />
       </td>
       <td className="px-2 py-1.5">
@@ -248,10 +260,11 @@ function PlannedCompetitionsCard({ ps, plannedCompetitions }) {
       </summary>
 
       <div className="overflow-x-auto border-t border-ink/5">
-        <table className="w-full min-w-[920px] border-collapse text-xs">
+        <table className="w-full min-w-[1020px] border-collapse text-xs">
           <thead>
             <tr className="text-left text-[10px] font-semibold uppercase tracking-wide text-ink/40">
               <th className="px-2 pb-2 pt-3">Date de début</th>
+              <th className="px-2 pb-2 pt-3">Heure</th>
               <th className="px-2 pb-2 pt-3">Nb jours</th>
               <th className="px-2 pb-2 pt-3">Lieu</th>
               <th className="px-2 pb-2 pt-3">Commentaire</th>
@@ -860,8 +873,14 @@ function buildNageOptions(rows) {
 // chaque nageuse SUIVIE (elle aussi filtrée par catégorie) pour la courbe
 // d'évolution. Genre forcé à "F" (voir plus haut) : on ne compare jamais à
 // des temps de garçons, même sur un relais mixte.
-async function buildSuiviData(supabase, nage, followedSwimmers, selectedCategories) {
-  const { data: fieldRows } = await supabase
+// Quand on arrive via l'icône graphique d'une performance précise
+// (competitionId renseigné), le champ de comparaison et la position de
+// chaque nageuse ne portent QUE sur cette compétition-là (son temps du
+// jour, pas son record). Sans competitionId (accès direct par l'onglet
+// Suivi), c'est le record de chacune, tous meetings confondus, comme
+// avant.
+async function buildSuiviData(supabase, nage, followedSwimmers, selectedCategories, competitionId) {
+  let fieldQuery = supabase
     .from("swim_results")
     .select("swimmer_id, time_ms, swimmers(full_name, is_flagged, club, birth_year)")
     .eq("event_name", nage.eventName)
@@ -869,6 +888,10 @@ async function buildSuiviData(supabase, nage, followedSwimmers, selectedCategori
     .eq("pool_length", nage.poolLength)
     .not("time_ms", "is", null)
     .limit(1000);
+  if (competitionId) {
+    fieldQuery = fieldQuery.eq("competition_id", competitionId);
+  }
+  const { data: fieldRows } = await fieldQuery;
 
   // Une nageuse sans année de naissance connue reste affichée (catégorie
   // inconnue) plutôt que d'être silencieusement écartée par le filtre.
@@ -1318,7 +1341,8 @@ export default async function NatationPage({ searchParams }) {
           supabase,
           selectedNage,
           followedInCategory,
-          selectedCategories
+          selectedCategories,
+          competitionId
         );
         suiviContent = (
           <SuiviTab
