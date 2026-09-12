@@ -50,6 +50,9 @@ export async function middleware(request) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|icon.png|manifest.json|.*\\.(?:png|jpg|jpeg|svg|webp|json)$).*)",
+    // /calendrier/* est exclu ici : c'est le flux iCal public (protégé par
+    // un jeton secret dans l'URL, pas par une session utilisateur — Google
+    // Calendar ne peut évidemment pas se connecter à l'app).
+    "/((?!_next/static|_next/image|favicon.ico|icon.png|manifest.json|calendrier/|.*\\.(?:png|jpg|jpeg|svg|webp|json)$).*)",
   ],
 };
