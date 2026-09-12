@@ -594,6 +594,7 @@ function plannedCompetitionPayload(formData) {
   const poolLength = formData.get("pool_length");
   return {
     start_date: formData.get("start_date") || null,
+    start_time: (formData.get("start_time") || "").trim() || null,
     nb_days: formData.get("nb_days") ? Number(formData.get("nb_days")) : 1,
     location: (formData.get("location") || "").trim() || null,
     comment: (formData.get("comment") || "").trim() || null,
