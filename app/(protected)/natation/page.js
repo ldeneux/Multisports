@@ -552,14 +552,37 @@ function PerformancesTab({ swimmerId, results, mppRows, view, meetRowsByKey, rel
     );
   }
 
-  return view === "mpp" ? (
-    <MppTable
-      rows={mppRows}
-      meetRowsByKey={meetRowsByKey}
-      relayFieldByKey={relayFieldByKey}
-      swimmerId={swimmerId}
-    />
-  ) : (
+  if (view === "mpp") {
+    return (
+      <MppTable
+        rows={mppRows}
+        meetRowsByKey={meetRowsByKey}
+        relayFieldByKey={relayFieldByKey}
+        swimmerId={swimmerId}
+      />
+    );
+  }
+
+  if (view === "relay") {
+    const relayResults = results.filter((r) => r.relay_ffn_result_id);
+    if (relayResults.length === 0) {
+      return (
+        <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
+          Aucune performance en relais enregistrée pour l'instant.
+        </p>
+      );
+    }
+    return (
+      <PerformancesByEvent
+        results={relayResults}
+        meetRowsByKey={meetRowsByKey}
+        relayFieldByKey={relayFieldByKey}
+        swimmerId={swimmerId}
+      />
+    );
+  }
+
+  return (
     <PerformancesByEvent
       results={results}
       meetRowsByKey={meetRowsByKey}
@@ -1101,7 +1124,13 @@ export default async function NatationPage({ searchParams }) {
   const tab =
     searchParams?.tab === "participants" ? "participants" : searchParams?.tab === "suivi" ? "suivi" : "performances";
   const view =
-    searchParams?.view === "all" ? "all" : searchParams?.view === "graph" ? "graph" : "mpp";
+    searchParams?.view === "all"
+      ? "all"
+      : searchParams?.view === "relay"
+      ? "relay"
+      : searchParams?.view === "graph"
+      ? "graph"
+      : "mpp";
 
   const { data: sport } = await supabase
     .from("sports")
@@ -1507,6 +1536,14 @@ export default async function NatationPage({ searchParams }) {
               }`}
             >
               Performances
+            </Link>
+            <Link
+              href={`/natation?tab=performances&view=relay&swimmer=${selectedSwimmerId ?? ""}`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                view === "relay" ? "bg-lagoon text-white" : "bg-white text-ink/50"
+              }`}
+            >
+              Relais
             </Link>
             <Link
               href={`/natation?tab=performances&view=graph&swimmer=${selectedSwimmerId ?? ""}`}
