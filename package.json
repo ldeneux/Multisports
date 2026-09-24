@@ -13,6 +13,7 @@
     "@supabase/supabase-js": "^2.45.4",
     "cheerio": "^1.0.0",
     "ffbb-api-client": "latest",
+    "lucide-react": "^0.383.0",
     "next": "14.2.15",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
