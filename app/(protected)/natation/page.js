@@ -437,7 +437,178 @@ function ResultRow({ r, showEventName, meetRowsByKey, relayFieldByKey, swimmerId
   );
 }
 
-// Vue MPP : une ligne par épreuve, groupée par bassin.
+// "1ère relayeuse" / "3e relayeur" — position + genre de l'équipe.
+function relayLegLabel(position, gender) {
+  const fem = gender === "F";
+  if (position === 1) return fem ? "1ère relayeuse" : "1er relayeur";
+  return `${position}e ${fem ? "relayeuse" : "relayeur"}`;
+}
+
+// "4x50 Nage Libre" + position 1 -> "50m Nage Libre". Pour un 4 Nages,
+// l'ordre officiel est Dos, Brasse, Papillon, Nage Libre (le 1er relayeur
+// nage donc le Dos) — même logique que côté sync (actions.js).
+function relayLegDistanceStroke(eventName, position) {
+  const match = (eventName ?? "").match(/^(\d+)\s*x\s*(\d+)\s*(.+)$/i);
+  if (!match) return "";
+  const legDistance = match[2];
+  const baseStroke = match[3].trim();
+  const isMedley = /4 Nages/i.test(baseStroke);
+  const stroke = isMedley ? ["Dos", "Brasse", "Papillon", "Nage Libre"][position - 1] ?? baseStroke : baseStroke;
+  return `${legDistance}m ${stroke}`;
+}
+
+// Pour trier les groupes d'épreuves de relais dans le même ordre que les
+// épreuves individuelles (par distance totale croissante).
+function relayEventTotalDistance(eventName) {
+  const match = (eventName ?? "").match(/^(\d+)\s*x\s*(\d+)/i);
+  if (!match) return 0;
+  return parseInt(match[1], 10) * parseInt(match[2], 10);
+}
+
+// Une ligne = un relais nagé par la nageuse suivie, pour une équipe précise.
+// Contrairement à ResultRow (performance individuelle), le temps affiché en
+// gros est celui de l'ÉQUIPE, pas son propre temps de relais — sa propre
+// performance (poste + temps + équivalent individuel) passe dans le libellé.
+function RelayResultRow({ leg, showEventName, relayFieldByTeamId, swimmerId, striped }) {
+  const team = leg.swim_relay_teams;
+  if (!team) return null;
+
+  const relayField = relayFieldByTeamId[team.id];
+  const expandable = !!relayField;
+  const count = relayField ? relayField.teams.length : 0;
+
+  const cityLabel = team.swim_competitions?.city ?? team.swim_competitions?.name ?? "";
+  const legDetail = relayLegDistanceStroke(team.event_name, leg.position);
+  const label = `${cityLabel} (${relayLegLabel(leg.position, team.gender)} - ${
+    leg.leg_time_ms != null ? msToSwimTime(leg.leg_time_ms) : "—"
+  }${legDetail ? ` (${legDetail})` : ""})`;
+
+  const eventLabel = `${team.event_name}${team.gender ? ` ${GENDER_LABELS[team.gender] ?? ""}` : ""}`;
+
+  const rowContent = (
+    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
+      {showEventName && <span className="w-28 shrink-0 font-semibold text-ink">{eventLabel}</span>}
+      <span className="w-24 shrink-0 text-right font-display text-lg text-navy">
+        {team.team_time_ms != null ? msToSwimTime(team.team_time_ms) : "—"}
+      </span>
+      <span className="hidden flex-1 truncate text-xs text-ink/50 sm:block">{label}</span>
+      <span className="shrink-0 text-xs text-ink/50">
+        {team.swim_competitions?.competition_date
+          ? formatDate(team.swim_competitions.competition_date, { weekday: false })
+          : ""}
+      </span>
+      <span className="w-12 shrink-0 text-right text-xs italic text-lagoon">
+        {team.points ? `${team.points}p` : ""}
+      </span>
+      {expandable ? (
+        <span className="shrink-0 text-xs font-semibold text-cardinal">⭐ {count}</span>
+      ) : (
+        <span className="w-8 shrink-0" />
+      )}
+    </summary>
+  );
+
+  const bg = striped ? "bg-lagoon-light/40" : "bg-white";
+
+  if (!expandable) {
+    return <div className={bg}>{rowContent}</div>;
+  }
+
+  return (
+    <details className={bg}>
+      {rowContent}
+      <RelayFieldDetails teams={relayField.teams} highlightSwimmerId={swimmerId} />
+    </details>
+  );
+}
+
+// Vue Relais (historique complet) : groupée par bassin PUIS par épreuve de
+// relais, chaque groupe trié chronologiquement — même principe que
+// PerformancesByEvent, mais construite depuis swim_relay_legs (qui seule
+// contient TOUS les relais nagés par la nageuse, quelle que soit sa
+// position, contrairement à swim_results qui ne garde que le 1er relayeur).
+function RelayByEvent({ relayLegs, relayFieldByTeamId, swimmerId }) {
+  const byPool = {};
+  relayLegs.forEach((leg) => {
+    const pool = leg.swim_relay_teams?.swim_competitions?.pool_length ?? "?";
+    const eventKey = `${leg.swim_relay_teams?.event_name}|${leg.swim_relay_teams?.gender}`;
+    if (!byPool[pool]) byPool[pool] = {};
+    if (!byPool[pool][eventKey]) byPool[pool][eventKey] = [];
+    byPool[pool][eventKey].push(leg);
+  });
+
+  return (
+    <div className="space-y-4">
+      {Object.entries(byPool).map(([pool, events]) => (
+        <div key={pool} className="overflow-hidden rounded-card shadow-sm">
+          <div className="bg-navy px-4 py-2 text-white">
+            <p className="font-display text-sm uppercase tracking-tight">Relais</p>
+            <p className="text-xs opacity-70">Bassin : {pool} mètres</p>
+          </div>
+          <div>
+            {Object.entries(events)
+              .sort((a, b) => {
+                const da = relayEventTotalDistance(a[1][0]?.swim_relay_teams?.event_name);
+                const db = relayEventTotalDistance(b[1][0]?.swim_relay_teams?.event_name);
+                return da - db || a[0].localeCompare(b[0]);
+              })
+              .map(([eventKey, legs]) => {
+                const team0 = legs[0]?.swim_relay_teams;
+                const eventLabel = `${team0?.event_name ?? ""}${
+                  team0?.gender ? ` ${GENDER_LABELS[team0.gender] ?? ""}` : ""
+                }`;
+                const sortedLegs = [...legs].sort((a, b) =>
+                  (a.swim_relay_teams?.swim_competitions?.competition_date ?? "").localeCompare(
+                    b.swim_relay_teams?.swim_competitions?.competition_date ?? ""
+                  )
+                );
+                return (
+                  <div key={eventKey}>
+                    <p className="bg-sand px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink/60">
+                      {eventLabel}
+                    </p>
+                    {sortedLegs.map((leg, i) => (
+                      <RelayResultRow
+                        key={leg.id}
+                        leg={leg}
+                        showEventName={false}
+                        relayFieldByTeamId={relayFieldByTeamId}
+                        swimmerId={swimmerId}
+                        striped={i % 2 === 0}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RelayTab({ swimmerId, relayLegs, relayFieldByTeamId }) {
+  if (!swimmerId) {
+    return (
+      <p className="rounded-card bg-white p-8 text-center text-ink/60 shadow-sm">
+        Pas encore de nageuse à afficher — lance une synchro, ou va dans l'onglet
+        Participants pour en suivre une.
+      </p>
+    );
+  }
+
+  if (relayLegs.length === 0) {
+    return (
+      <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
+        Aucun relais enregistré pour l'instant.
+      </p>
+    );
+  }
+
+  return <RelayByEvent relayLegs={relayLegs} relayFieldByTeamId={relayFieldByTeamId} swimmerId={swimmerId} />;
+}
+
+
 function MppTable({ rows, meetRowsByKey, relayFieldByKey, swimmerId }) {
   const byPool = {};
   rows.forEach((r) => {
@@ -556,25 +727,6 @@ function PerformancesTab({ swimmerId, results, mppRows, view, meetRowsByKey, rel
     return (
       <MppTable
         rows={mppRows}
-        meetRowsByKey={meetRowsByKey}
-        relayFieldByKey={relayFieldByKey}
-        swimmerId={swimmerId}
-      />
-    );
-  }
-
-  if (view === "relay") {
-    const relayResults = results.filter((r) => r.relay_ffn_result_id);
-    if (relayResults.length === 0) {
-      return (
-        <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
-          Aucune performance en relais enregistrée pour l'instant.
-        </p>
-      );
-    }
-    return (
-      <PerformancesByEvent
-        results={relayResults}
         meetRowsByKey={meetRowsByKey}
         relayFieldByKey={relayFieldByKey}
         swimmerId={swimmerId}
