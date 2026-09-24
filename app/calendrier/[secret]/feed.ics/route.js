@@ -34,7 +34,9 @@ export async function GET(request, { params }) {
   // session) ne verrait rien à cause des policies RLS ("authenticated"
   // uniquement). L'accès est protégé à la place par le jeton secret dans
   // l'URL, vérifié juste au-dessus.
-  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, serviceKey);
+  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, serviceKey, {
+    db: { schema: "multisports" },
+  });
 
   const { data: participants } = await supabase.from("participants").select("id, first_name");
   const nameById = new Map((participants ?? []).map((p) => [p.id, p.first_name]));
