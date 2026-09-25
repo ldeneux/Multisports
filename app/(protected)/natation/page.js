@@ -1369,6 +1369,54 @@ export default async function NatationPage({ searchParams }) {
         performancesContent = (
           <GraphiqueTab swimmerLabel={swimmerOptions.find((o) => o.id === selectedSwimmerId)?.label} radarData={radarData} trendSeries={trendSeries} />
         );
+      } else if (view === "relay") {
+        // Construite depuis swim_relay_legs (et non swim_results) : c'est la
+        // seule table qui garde TOUTES les positions nagées par la nageuse
+        // dans un relais. swim_results ne contient que le 1er relayeur
+        // (seule position assimilable à une épreuve individuelle côté FFN),
+        // donc filtrer swim_results par relay_ffn_result_id faisait
+        // disparaître les relais nagés en 2e/3e/4e position.
+        const { data: legRows } = await supabase
+          .from("swim_relay_legs")
+          .select("*, swim_relay_teams(*, swim_competitions(name, city, competition_date, pool_length))")
+          .eq("swimmer_id", selectedSwimmerId);
+
+        const relayLegs = (legRows ?? []).filter((l) => l.swim_relay_teams);
+
+        // Classement complet de chaque épreuve de relais rencontrée (une
+        // requête par épreuve/genre/compétition distincte, pas par relais
+        // individuel), pour alimenter le détail dépliable de chaque ligne.
+        const relayFieldByTeamId = {};
+        const seenEventKeys = new Set();
+        for (const leg of relayLegs) {
+          const team = leg.swim_relay_teams;
+          const eventKey = `${team.competition_id}-${team.event_name}-${team.gender}`;
+          if (seenEventKeys.has(eventKey)) continue;
+          seenEventKeys.add(eventKey);
+
+          const { data: allTeams } = await supabase
+            .from("swim_relay_teams")
+            .select(
+              "*, swim_relay_legs(position, swimmer_id, leg_time_ms, cumulative_time_ms, swimmers(full_name, club, gender))"
+            )
+            .eq("competition_id", team.competition_id)
+            .eq("event_name", team.event_name)
+            .eq("gender", team.gender)
+            .order("team_time_ms", { ascending: true })
+            .limit(100);
+
+          if (allTeams && allTeams.length > 0) {
+            // Toutes les équipes de cette épreuve partagent la même entrée —
+            // on la retrouve par team.id pour chacune d'entre elles.
+            for (const t of allTeams) {
+              relayFieldByTeamId[t.id] = { teams: allTeams, eventName: team.event_name };
+            }
+          }
+        }
+
+        performancesContent = (
+          <RelayTab swimmerId={selectedSwimmerId} relayLegs={relayLegs} relayFieldByTeamId={relayFieldByTeamId} />
+        );
       } else {
         // Pour chaque ligne réellement affichée (pas toutes ses performances,
         // juste celles de la vue courante), on va chercher le classement
