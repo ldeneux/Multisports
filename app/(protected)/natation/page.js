@@ -907,16 +907,31 @@ async function buildGraphData(supabase, mppRows, results) {
   const trendSeries = [];
   const fieldCache = new Map();
 
-  for (const mpp of mppRows) {
-    if (mpp.time_ms == null || !mpp.event_name) continue;
+  const validMpp = mppRows.filter((mpp) => mpp.time_ms != null && mpp.event_name);
+
+  // 1er passage (parallèle) : une seule requête réseau par épreuve/bassin
+  // distinct, toutes lancées en même temps plutôt qu'en attendant chacune
+  // avant de lancer la suivante.
+  const uniqueFields = new Map();
+  for (const mpp of validMpp) {
     const poolLength = mpp.swim_competitions?.pool_length ?? mpp.pool_length;
     const cacheKey = `${mpp.event_name}-${mpp.gender}-${poolLength}`;
-
-    let field = fieldCache.get(cacheKey);
-    if (field === undefined) {
-      field = await fetchEventField(supabase, { eventName: mpp.event_name, poolLength });
-      fieldCache.set(cacheKey, field);
+    if (!uniqueFields.has(cacheKey)) {
+      uniqueFields.set(cacheKey, { eventName: mpp.event_name, poolLength });
     }
+  }
+  await Promise.all(
+    [...uniqueFields.entries()].map(async ([cacheKey, { eventName, poolLength }]) => {
+      fieldCache.set(cacheKey, await fetchEventField(supabase, { eventName, poolLength }));
+    })
+  );
+
+  // 2e passage (en mémoire, aucun await) : construit radarData/trendSeries
+  // dans le même ordre qu'avant à partir du cache maintenant complet.
+  for (const mpp of validMpp) {
+    const poolLength = mpp.swim_competitions?.pool_length ?? mpp.pool_length;
+    const cacheKey = `${mpp.event_name}-${mpp.gender}-${poolLength}`;
+    const field = fieldCache.get(cacheKey);
     if (!field) continue;
 
     const percentile = percentileFromField(mpp.time_ms, field.best, field.worst);
@@ -1099,28 +1114,29 @@ async function buildSuiviData(supabase, nage, followedSwimmers, selectedCategori
   const rank1Time = scatterPoints[0]?.timeMs ?? null;
   const rank3Time = scatterPoints[2]?.timeMs ?? null;
 
-  const trendSeries = [];
-  for (const sw of followedSwimmers) {
-    if (!categoryAllowed(sw.birth_year)) continue;
+  const trendSeries = (
+    await Promise.all(
+      followedSwimmers
+        .filter((sw) => categoryAllowed(sw.birth_year))
+        .map(async (sw) => {
+          const { data: rows } = await supabase
+            .from("swim_results")
+            .select("time_ms, swim_competitions(competition_date)")
+            .eq("swimmer_id", sw.id)
+            .eq("event_name", nage.eventName)
+            .eq("gender", "F")
+            .eq("pool_length", nage.poolLength)
+            .not("time_ms", "is", null);
 
-    const { data: rows } = await supabase
-      .from("swim_results")
-      .select("time_ms, swim_competitions(competition_date)")
-      .eq("swimmer_id", sw.id)
-      .eq("event_name", nage.eventName)
-      .eq("gender", "F")
-      .eq("pool_length", nage.poolLength)
-      .not("time_ms", "is", null);
+          const points = (rows ?? [])
+            .filter((r) => r.swim_competitions?.competition_date)
+            .map((r) => ({ date: r.swim_competitions.competition_date, time_ms: r.time_ms }))
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    const points = (rows ?? [])
-      .filter((r) => r.swim_competitions?.competition_date)
-      .map((r) => ({ date: r.swim_competitions.competition_date, time_ms: r.time_ms }))
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    if (points.length > 0) {
-      trendSeries.push({ label: sw.full_name, points });
-    }
-  }
+          return points.length > 0 ? { label: sw.full_name, points } : null;
+        })
+    )
+  ).filter(Boolean);
 
   return { scatterPoints, avgTime, rank1Time, rank3Time, trendSeries };
 }
@@ -1388,31 +1404,37 @@ export default async function NatationPage({ searchParams }) {
         // individuel), pour alimenter le détail dépliable de chaque ligne.
         const relayFieldByTeamId = {};
         const seenEventKeys = new Set();
+        const uniqueEvents = [];
         for (const leg of relayLegs) {
           const team = leg.swim_relay_teams;
           const eventKey = `${team.competition_id}-${team.event_name}-${team.gender}`;
           if (seenEventKeys.has(eventKey)) continue;
           seenEventKeys.add(eventKey);
-
-          const { data: allTeams } = await supabase
-            .from("swim_relay_teams")
-            .select(
-              "*, swim_relay_legs(position, swimmer_id, leg_time_ms, cumulative_time_ms, swimmers(full_name, club, gender))"
-            )
-            .eq("competition_id", team.competition_id)
-            .eq("event_name", team.event_name)
-            .eq("gender", team.gender)
-            .order("team_time_ms", { ascending: true })
-            .limit(100);
-
-          if (allTeams && allTeams.length > 0) {
-            // Toutes les équipes de cette épreuve partagent la même entrée —
-            // on la retrouve par team.id pour chacune d'entre elles.
-            for (const t of allTeams) {
-              relayFieldByTeamId[t.id] = { teams: allTeams, eventName: team.event_name };
-            }
-          }
+          uniqueEvents.push(team);
         }
+
+        await Promise.all(
+          uniqueEvents.map(async (team) => {
+            const { data: allTeams } = await supabase
+              .from("swim_relay_teams")
+              .select(
+                "*, swim_relay_legs(position, swimmer_id, leg_time_ms, cumulative_time_ms, swimmers(full_name, club, gender))"
+              )
+              .eq("competition_id", team.competition_id)
+              .eq("event_name", team.event_name)
+              .eq("gender", team.gender)
+              .order("team_time_ms", { ascending: true })
+              .limit(100);
+
+            if (allTeams && allTeams.length > 0) {
+              // Toutes les équipes de cette épreuve partagent la même entrée —
+              // on la retrouve par team.id pour chacune d'entre elles.
+              for (const t of allTeams) {
+                relayFieldByTeamId[t.id] = { teams: allTeams, eventName: team.event_name };
+              }
+            }
+          })
+        );
 
         performancesContent = (
           <RelayTab swimmerId={selectedSwimmerId} relayLegs={relayLegs} relayFieldByTeamId={relayFieldByTeamId} />
@@ -1428,20 +1450,26 @@ export default async function NatationPage({ searchParams }) {
         // les résultats.
         const rowsToExpand = view === "mpp" ? mppRows : results;
         const seenKeys = new Set();
+        const uniqueRows = [];
         for (const r of rowsToExpand) {
           const key = `${r.competition_id}-${r.event_name}-${r.gender}-${r.relay_ffn_result_id ?? "solo"}`;
           if (seenKeys.has(key)) continue;
           seenKeys.add(key);
+          uniqueRows.push({ key, r });
+        }
 
-          if (r.relay_ffn_result_id) {
-            const { data: thisTeam } = await supabase
-              .from("swim_relay_teams")
-              .select("*")
-              .eq("competition_id", r.competition_id)
-              .eq("ffn_result_id", r.relay_ffn_result_id)
-              .maybeSingle();
+        await Promise.all(
+          uniqueRows.map(async ({ key, r }) => {
+            if (r.relay_ffn_result_id) {
+              const { data: thisTeam } = await supabase
+                .from("swim_relay_teams")
+                .select("*")
+                .eq("competition_id", r.competition_id)
+                .eq("ffn_result_id", r.relay_ffn_result_id)
+                .maybeSingle();
 
-            if (thisTeam) {
+              if (!thisTeam) return;
+
               const { data: allTeams } = await supabase
                 .from("swim_relay_teams")
                 .select(
@@ -1456,22 +1484,22 @@ export default async function NatationPage({ searchParams }) {
               if (allTeams && allTeams.length > 0) {
                 relayFieldByKey[key] = { teams: allTeams, eventName: thisTeam.event_name };
               }
+              return;
             }
-            continue;
-          }
 
-          const { data: meetRows } = await supabase
-            .from("swim_results")
-            .select("*, swimmers(full_name, club, is_flagged)")
-            .eq("competition_id", r.competition_id)
-            .eq("event_name", r.event_name)
-            .eq("gender", r.gender)
-            .limit(300);
+            const { data: meetRows } = await supabase
+              .from("swim_results")
+              .select("*, swimmers(full_name, club, is_flagged)")
+              .eq("competition_id", r.competition_id)
+              .eq("event_name", r.event_name)
+              .eq("gender", r.gender)
+              .limit(300);
 
-          if (meetRows && meetRows.length > 1) {
-            meetRowsByKey[key] = meetRows;
-          }
-        }
+            if (meetRows && meetRows.length > 1) {
+              meetRowsByKey[key] = meetRows;
+            }
+          })
+        );
 
         performancesContent = (
           <PerformancesTab
