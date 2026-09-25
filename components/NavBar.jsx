@@ -4,9 +4,10 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { CircleDot, Waves, Trophy, FolderOpen, Settings, LogOut } from "lucide-react";
+import { CalendarDays, CircleDot, Waves, Trophy, FolderOpen, Settings, LogOut } from "lucide-react";
 
 const LINKS = [
+  { href: "/", label: "Calendrier", icon: CalendarDays },
   { href: "/basket", label: "Basket", icon: CircleDot },
   { href: "/natation", label: "Natation", icon: Waves },
   { href: "/autres-sports", label: "Autres sports", icon: Trophy },
@@ -29,12 +30,12 @@ export default function NavBar() {
     <>
       {/* Sidebar (desktop) */}
       <aside className="w-56 shrink-0 bg-white border-r border-ink/10 min-h-screen p-4 hidden sm:flex flex-col">
-        <Link href="/" className="mb-6 px-1 flex flex-col items-center text-center gap-2">
+        <div className="mb-6 px-1 flex flex-col items-center text-center gap-2">
           <Image src="/icon-nav.png" alt="" width={80} height={80} className="rounded-2xl shrink-0" priority />
           <span className="font-display text-lg uppercase tracking-tight text-navy leading-tight">
             Sport Famille
           </span>
-        </Link>
+        </div>
 
         <nav className="space-y-1 flex-1">
           {LINKS.map((link) => {
