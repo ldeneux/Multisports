@@ -34,7 +34,8 @@ import {
   checkTeamStatsAvailability,
 } from "./actions";
 import ImportTeamStatsButton from "@/components/ImportTeamStatsButton";
-import { secondsToMinutes, titleCase } from "@/lib/teamstats";
+import PeriodStatsTable from "@/components/PeriodStatsTable";
+import { displayFirstName } from "@/lib/teamstats";
 
 export const dynamic = "force-dynamic";
 
@@ -1767,8 +1768,7 @@ async function MatchSheetPage({ matchId, backHref }) {
                   return (
                     <tr key={p.id} className="border-b border-ink/5 last:border-0">
                       <td className="py-1.5 pr-2 font-semibold text-ink">
-                        {p.jersey_number != null ? `#${p.jersey_number} ` : ""}
-                        {titleCase(p.name)}
+                        {displayFirstName(p)}
                         <input type="hidden" name="player_id" value={p.id} />
                       </td>
                       <td className="px-1.5">

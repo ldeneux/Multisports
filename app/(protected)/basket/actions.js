@@ -1172,17 +1172,16 @@ export async function importMatchStatsFromTeamStats(matchId) {
     }
     let player = found.player;
     if (found.kind === "new") {
-      const { titleCase } = await import("@/lib/teamstats");
-      const first = titleCase(found.parsed.first);
-      const lastGuess = found.parsed.prefix ? `${titleCase(found.parsed.prefix)}.` : null;
+      const first = found.parsed.first.toUpperCase();
+      const last = (found.parsed.last || "INCONNU").toUpperCase();
       const { data: inserted, error } = await supabase
         .from("basketball_players")
         .insert({
           participant_sport_id: match.participant_sport_id,
           role: "joueur",
-          name: [lastGuess, first].filter(Boolean).join(" ") || row.player_name,
+          name: `${first} ${last}`,
           first_name: first,
-          last_name: lastGuess,
+          last_name: last,
           jersey_number: row.player_number ?? null,
         })
         .select()
