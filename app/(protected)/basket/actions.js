@@ -408,15 +408,23 @@ export async function saveMatchStats(formData) {
   }
 
   const numberOr0 = (v) => (v !== null && v !== "" ? Number(v) : 0);
+  const numberOrNull = (v) => (v !== null && v !== "" ? Number(v) : null);
 
   const rows = playerIds.map((playerId) => ({
     match_id: matchId,
     player_id: playerId,
+    jersey_number_match: numberOrNull(formData.get(`jersey_match_${playerId}`)),
     fouls: numberOr0(formData.get(`fouls_${playerId}`)),
+    fouls_drawn: numberOr0(formData.get(`fouls_drawn_${playerId}`)),
     ft_made: numberOr0(formData.get(`ft_made_${playerId}`)),
     ft_att: numberOr0(formData.get(`ft_att_${playerId}`)),
     two_made: numberOr0(formData.get(`two_made_${playerId}`)),
+    two_att: numberOr0(formData.get(`two_att_${playerId}`)),
     three_made: numberOr0(formData.get(`three_made_${playerId}`)),
+    three_att: numberOr0(formData.get(`three_att_${playerId}`)),
+    reb_off: numberOr0(formData.get(`reb_off_${playerId}`)),
+    reb_def: numberOr0(formData.get(`reb_def_${playerId}`)),
+    assists: numberOr0(formData.get(`assists_${playerId}`)),
     is_captain: formData.get(`captain_${playerId}`) === "on",
     is_starting_five: formData.get(`starting_${playerId}`) === "on",
     minutes_played: formData.get(`minutes_${playerId}`) || null,

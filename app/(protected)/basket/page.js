@@ -34,6 +34,7 @@ import {
   checkTeamStatsAvailability,
 } from "./actions";
 import ImportTeamStatsButton from "@/components/ImportTeamStatsButton";
+import { secondsToMinutes, titleCase } from "@/lib/teamstats";
 
 export const dynamic = "force-dynamic";
 
@@ -1547,7 +1548,7 @@ async function MatchSheetPage({ matchId, backHref }) {
   statsParams.delete("journees");
   const statsHref = `/basket?${statsParams.toString()}`;
 
-  const [{ data: phase }, { data: ps }, { data: allPeople }, { data: statsRows }, teamStatsPreview] =
+  const [{ data: phase }, { data: ps }, { data: allPeople }, { data: statsRows }, { data: periodStatsRows }, teamStatsPreview] =
     await Promise.all([
       match.phase_id
         ? supabase
@@ -1567,6 +1568,11 @@ async function MatchSheetPage({ matchId, backHref }) {
         .eq("participant_sport_id", match.participant_sport_id)
         .order("name", { ascending: true }),
       supabase.from("basketball_match_stats").select("*").eq("match_id", matchId),
+      supabase
+        .from("basketball_match_period_stats")
+        .select("*")
+        .eq("match_id", matchId)
+        .order("period", { ascending: true }),
       checkTeamStatsAvailability(matchId),
     ]);
 
@@ -1735,17 +1741,22 @@ async function MatchSheetPage({ matchId, backHref }) {
         ) : (
           <form action={saveMatchStats} className="mt-3 overflow-x-auto">
             <input type="hidden" name="match_id" value={match.id} />
-            <table className="w-full min-w-[820px] text-sm">
+            <table className="w-full min-w-[1180px] text-sm">
               <thead>
                 <tr className="border-b border-ink/10 text-left text-[10px] uppercase tracking-wide text-ink/40">
                   <th className="py-1.5 pr-2">Joueuse</th>
+                  <th className="px-1.5 text-center">N° du jour</th>
                   <th className="px-1.5 text-center">Cap.</th>
                   <th className="px-1.5 text-center">5 majeur</th>
                   <th className="px-1.5 text-center">Temps (MM:SS)</th>
                   <th className="px-1.5 text-center">Fautes</th>
+                  <th className="px-1.5 text-center">Fautes subies</th>
                   <th className="px-1.5 text-center">LF (réuss./tent.)</th>
-                  <th className="px-1.5 text-center">2 pts marqués</th>
-                  <th className="px-1.5 text-center">3 pts marqués</th>
+                  <th className="px-1.5 text-center">2 pts (réuss./tent.)</th>
+                  <th className="px-1.5 text-center">3 pts (réuss./tent.)</th>
+                  <th className="px-1.5 text-center">Reb. O</th>
+                  <th className="px-1.5 text-center">Reb. D</th>
+                  <th className="px-1.5 text-center">Passes déc.</th>
                   <th className="px-1.5 text-center">Pts</th>
                   <th className="px-1.5 text-center"></th>
                 </tr>
@@ -1757,8 +1768,19 @@ async function MatchSheetPage({ matchId, backHref }) {
                     <tr key={p.id} className="border-b border-ink/5 last:border-0">
                       <td className="py-1.5 pr-2 font-semibold text-ink">
                         {p.jersey_number != null ? `#${p.jersey_number} ` : ""}
-                        {p.name}
+                        {titleCase(p.name)}
                         <input type="hidden" name="player_id" value={p.id} />
+                      </td>
+                      <td className="px-1.5">
+                        <input
+                          type="number"
+                          min="0"
+                          name={`jersey_match_${p.id}`}
+                          defaultValue={s?.jersey_number_match ?? p.jersey_number ?? ""}
+                          placeholder={p.jersey_number ?? "—"}
+                          title="Numéro porté ce jour-là, s'il diffère du numéro habituel"
+                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                        />
                       </td>
                       <td className="px-1.5 text-center">
                         <input
@@ -1797,6 +1819,15 @@ async function MatchSheetPage({ matchId, backHref }) {
                         />
                       </td>
                       <td className="px-1.5">
+                        <input
+                          type="number"
+                          min="0"
+                          name={`fouls_drawn_${p.id}`}
+                          defaultValue={s?.fouls_drawn ?? 0}
+                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                        />
+                      </td>
+                      <td className="px-1.5">
                         <div className="flex items-center justify-center gap-1">
                           <input
                             type="number"
@@ -1816,12 +1847,53 @@ async function MatchSheetPage({ matchId, backHref }) {
                         </div>
                       </td>
                       <td className="px-1.5">
+                        <div className="flex items-center justify-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            name={`two_made_${p.id}`}
+                            defaultValue={s?.two_made ?? 0}
+                            title="Nombre de paniers à 2 points marqués"
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                          <span className="text-ink/30">/</span>
+                          <input
+                            type="number"
+                            min="0"
+                            name={`two_att_${p.id}`}
+                            defaultValue={s?.two_att ?? 0}
+                            title="Nombre de tirs à 2 points tentés"
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-1.5">
+                        <div className="flex items-center justify-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            name={`three_made_${p.id}`}
+                            defaultValue={s?.three_made ?? 0}
+                            title="Nombre de paniers à 3 points marqués"
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                          <span className="text-ink/30">/</span>
+                          <input
+                            type="number"
+                            min="0"
+                            name={`three_att_${p.id}`}
+                            defaultValue={s?.three_att ?? 0}
+                            title="Nombre de tirs à 3 points tentés"
+                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-1.5">
                         <input
                           type="number"
                           min="0"
-                          name={`two_made_${p.id}`}
-                          defaultValue={s?.two_made ?? 0}
-                          title="Nombre de paniers à 2 points marqués"
+                          name={`reb_off_${p.id}`}
+                          defaultValue={s?.reb_off ?? 0}
                           className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
                         />
                       </td>
@@ -1829,9 +1901,17 @@ async function MatchSheetPage({ matchId, backHref }) {
                         <input
                           type="number"
                           min="0"
-                          name={`three_made_${p.id}`}
-                          defaultValue={s?.three_made ?? 0}
-                          title="Nombre de paniers à 3 points marqués"
+                          name={`reb_def_${p.id}`}
+                          defaultValue={s?.reb_def ?? 0}
+                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
+                        />
+                      </td>
+                      <td className="px-1.5">
+                        <input
+                          type="number"
+                          min="0"
+                          name={`assists_${p.id}`}
+                          defaultValue={s?.assists ?? 0}
                           className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
                         />
                       </td>
@@ -1904,6 +1984,69 @@ async function MatchSheetPage({ matchId, backHref }) {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {periodStatsRows && periodStatsRows.length > 0 && (
+          <div className="mt-4 border-t border-ink/5 pt-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">
+              Statistiques par quart-temps (import TeamStats)
+            </p>
+            {Array.from(new Set(periodStatsRows.map((r) => r.period)))
+              .sort((a, b) => a - b)
+              .map((period) => {
+                const rowsForPeriod = periodStatsRows.filter((r) => r.period === period);
+                return (
+                  <div key={period} className="mb-3 overflow-x-auto">
+                    <p className="mb-1 text-[11px] font-semibold text-navy">Q{period}</p>
+                    <table className="w-full min-w-[760px] text-xs">
+                      <thead>
+                        <tr className="border-b border-ink/10 text-left text-[10px] uppercase tracking-wide text-ink/40">
+                          <th className="py-1 pr-2">Joueuse</th>
+                          <th className="px-1.5 text-center">5 maj.</th>
+                          <th className="px-1.5 text-center">Temps</th>
+                          <th className="px-1.5 text-center">Pts</th>
+                          <th className="px-1.5 text-center">2 pts</th>
+                          <th className="px-1.5 text-center">3 pts</th>
+                          <th className="px-1.5 text-center">LF</th>
+                          <th className="px-1.5 text-center">Reb. O</th>
+                          <th className="px-1.5 text-center">Reb. D</th>
+                          <th className="px-1.5 text-center">Passes</th>
+                          <th className="px-1.5 text-center">Fautes</th>
+                          <th className="px-1.5 text-center">F. subies</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rowsForPeriod.map((r) => {
+                          const player = players.find((p) => p.id === r.player_id);
+                          return (
+                            <tr key={r.player_id} className="border-b border-ink/5 last:border-0">
+                              <td className="py-1 pr-2 font-semibold text-ink">{player ? titleCase(player.name) : "—"}</td>
+                              <td className="px-1.5 text-center">{r.is_starter ? "✓" : ""}</td>
+                              <td className="px-1.5 text-center">{secondsToMinutes(r.playing_time_seconds)}</td>
+                              <td className="px-1.5 text-center font-semibold">{r.points}</td>
+                              <td className="px-1.5 text-center">
+                                {r.pts2_made}/{r.pts2_att}
+                              </td>
+                              <td className="px-1.5 text-center">
+                                {r.pts3_made}/{r.pts3_att}
+                              </td>
+                              <td className="px-1.5 text-center">
+                                {r.ft_made}/{r.ft_att}
+                              </td>
+                              <td className="px-1.5 text-center">{r.reb_off}</td>
+                              <td className="px-1.5 text-center">{r.reb_def}</td>
+                              <td className="px-1.5 text-center">{r.assists}</td>
+                              <td className="px-1.5 text-center">{r.fouls}</td>
+                              <td className="px-1.5 text-center">{r.fouls_drawn}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })}
           </div>
         )}
 
