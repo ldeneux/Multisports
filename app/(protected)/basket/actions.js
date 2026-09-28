@@ -1064,3 +1064,217 @@ export async function syncPhase(formData) {
 
   revalidatePath("/basket");
 }
+
+// ---- Import des statistiques TeamStats -------------------------------------
+// TeamStats (appli séparée, même base) saisit la feuille de match en direct
+// (temps de jeu, tirs, rebonds... par quart-temps) et la range dans
+// stats_matches / stats_player_game_stats / stats_player_period_stats, liée
+// à NOTRE match via l'ID FFBB de la rencontre (basketball_matches.ffbb_rencontre_id
+// = stats_matches.ffbb_match_id). Cette action rapatrie ces statistiques dans
+// Multisports (basketball_match_stats + basketball_match_period_stats), et
+// rattache (en MERGE, jamais en remplacement) les joueuses reconnues à
+// l'effectif de l'équipe et à basketball_team pour la phase du match.
+//
+// Le nom TeamStats ("LAURA B.", "CHLOE"...) est notre seule clé pour
+// retrouver la fiche joueuse : voir lib/teamstats.js pour la convention et
+// l'algorithme de rapprochement (roster de la phase en priorité, puis reste
+// de l'effectif, jamais de fiche choisie au hasard en cas d'ambiguïté).
+export async function checkTeamStatsAvailability(matchId) {
+  const supabase = createClient();
+  const { data: match } = await supabase
+    .from("basketball_matches")
+    .select("ffbb_rencontre_id")
+    .eq("id", matchId)
+    .maybeSingle();
+  if (!match?.ffbb_rencontre_id) return null;
+
+  const { data: statsMatch } = await supabase
+    .from("stats_matches")
+    .select("id, team_home, team_away, score_home, score_away, period_count")
+    .eq("ffbb_match_id", match.ffbb_rencontre_id)
+    .maybeSingle();
+  if (!statsMatch) return null;
+
+  const { count } = await supabase
+    .from("stats_player_game_stats")
+    .select("id", { count: "exact", head: true })
+    .eq("match_id", statsMatch.id);
+
+  return {
+    teamHome: statsMatch.team_home,
+    teamAway: statsMatch.team_away,
+    scoreHome: statsMatch.score_home,
+    scoreAway: statsMatch.score_away,
+    periodCount: statsMatch.period_count,
+    playerCount: count ?? 0,
+  };
+}
+
+export async function importMatchStatsFromTeamStats(matchId) {
+  const { findPlayerForTeamStatsName, secondsToMinutes } = await import("@/lib/teamstats");
+  const supabase = createClient();
+
+  const { data: match } = await supabase.from("basketball_matches").select("*").eq("id", matchId).maybeSingle();
+  if (!match) throw new Error("Ce match n'existe plus.");
+  if (!isCurrentSeason(match.season)) throw new Error("Import impossible : cette saison est archivée.");
+  if (!match.ffbb_rencontre_id) throw new Error("Ce match n'a pas d'ID FFBB : rien à retrouver dans TeamStats.");
+
+  const { data: statsMatch } = await supabase
+    .from("stats_matches")
+    .select("id")
+    .eq("ffbb_match_id", match.ffbb_rencontre_id)
+    .maybeSingle();
+  if (!statsMatch) throw new Error("Aucune saisie TeamStats trouvée pour ce match.");
+
+  const [{ data: totals }, { data: periodRows }, { data: phase }, { data: allPlayers }, { data: rosterRows }] =
+    await Promise.all([
+      supabase.from("stats_player_game_stats").select("*").eq("match_id", statsMatch.id),
+      supabase.from("stats_player_period_stats").select("*").eq("match_id", statsMatch.id),
+      match.phase_id
+        ? supabase.from("basketball_phases").select("season, ffbb_engagement_id, poule_id").eq("id", match.phase_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      supabase.from("basketball_players").select("*").eq("participant_sport_id", match.participant_sport_id),
+      match.phase_id
+        ? supabase.from("basketball_team").select("player_id").eq("phase_id", match.phase_id)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+  if (!totals || totals.length === 0) throw new Error("La saisie TeamStats de ce match est vide.");
+
+  // Conserve la valeur "capitaine" déjà saisie à la main (TeamStats ne la
+  // connaît pas) pour ne pas la perdre lors du remplacement des stats.
+  const { data: existingStats } = await supabase
+    .from("basketball_match_stats")
+    .select("player_id, is_captain")
+    .eq("match_id", matchId);
+  const captainByPlayer = new Map((existingStats ?? []).map((s) => [s.player_id, s.is_captain]));
+
+  const players = [...(allPlayers ?? [])];
+  const rosterIds = new Set((rosterRows ?? []).map((r) => r.player_id));
+  const usedIds = new Set();
+  const created = [];
+  const ambiguous = [];
+  const resolvedByName = new Map(); // nom TeamStats -> player_id
+
+  for (const row of totals) {
+    const found = findPlayerForTeamStatsName(row.player_name, players, rosterIds, usedIds);
+    if (found.kind === "ambiguous") {
+      ambiguous.push(row.player_name);
+      continue;
+    }
+    let player = found.player;
+    if (found.kind === "new") {
+      const { titleCase } = await import("@/lib/teamstats");
+      const first = titleCase(found.parsed.first);
+      const lastGuess = found.parsed.prefix ? `${titleCase(found.parsed.prefix)}.` : null;
+      const { data: inserted, error } = await supabase
+        .from("basketball_players")
+        .insert({
+          participant_sport_id: match.participant_sport_id,
+          role: "joueur",
+          name: [lastGuess, first].filter(Boolean).join(" ") || row.player_name,
+          first_name: first,
+          last_name: lastGuess,
+          jersey_number: row.player_number ?? null,
+        })
+        .select()
+        .single();
+      if (error) throw new Error(`Création de la fiche pour "${row.player_name}" : ${error.message}`);
+      player = inserted;
+      players.push(player);
+      created.push(row.player_name);
+    }
+    usedIds.add(player.id);
+    resolvedByName.set(row.player_name, player.id);
+
+    // MERGE dans l'effectif de la phase : on ajoute le lien s'il manque,
+    // sans jamais toucher aux joueuses déjà rattachées.
+    if (match.phase_id) {
+      await supabase.from("basketball_team").upsert(
+        {
+          player_id: player.id,
+          phase_id: match.phase_id,
+          season: phase?.season ?? match.season,
+          ffbb_engagement_id: phase?.ffbb_engagement_id ?? null,
+          ffbb_poule_id: phase?.poule_id ?? null,
+        },
+        { onConflict: "player_id,phase_id" }
+      );
+    }
+  }
+
+  if (resolvedByName.size === 0) {
+    throw new Error("Aucune joueuse TeamStats n'a pu être reconnue — import annulé.");
+  }
+
+  // Remplace entièrement les stats de CE match (c'est le sens de la
+  // confirmation demandée à l'utilisateur avant l'import).
+  await supabase.from("basketball_match_stats").delete().eq("match_id", matchId);
+  await supabase.from("basketball_match_period_stats").delete().eq("match_id", matchId);
+
+  const statsRows = totals
+    .filter((row) => resolvedByName.has(row.player_name))
+    .map((row) => {
+      const playerId = resolvedByName.get(row.player_name);
+      const isStarter = (periodRows ?? []).some(
+        (p) => p.player_name === row.player_name && p.period === 1 && p.is_starter
+      );
+      return {
+        match_id: matchId,
+        player_id: playerId,
+        jersey_number_match: row.player_number ?? null,
+        fouls: row.fouls ?? 0,
+        fouls_drawn: row.fouls_drawn ?? 0,
+        ft_made: row.ft_made ?? 0,
+        ft_att: row.ft_att ?? 0,
+        two_made: row.pts2_made ?? 0,
+        two_att: row.pts2_att ?? 0,
+        three_made: row.pts3_made ?? 0,
+        three_att: row.pts3_att ?? 0,
+        reb_off: row.reb_off ?? 0,
+        reb_def: row.reb_def ?? 0,
+        assists: row.assists ?? 0,
+        is_captain: captainByPlayer.get(playerId) ?? false,
+        is_starting_five: isStarter,
+        on_sheet: true,
+        minutes_played: secondsToMinutes(row.playing_time_seconds),
+        updated_at: new Date().toISOString(),
+      };
+    });
+  const { error: statsErr } = await supabase.from("basketball_match_stats").insert(statsRows);
+  if (statsErr) throw new Error(`Enregistrement des statistiques : ${statsErr.message}`);
+
+  const periodStatsRows = (periodRows ?? [])
+    .filter((row) => resolvedByName.has(row.player_name))
+    .map((row) => ({
+      match_id: matchId,
+      player_id: resolvedByName.get(row.player_name),
+      period: row.period,
+      is_starter: row.is_starter ?? false,
+      playing_time_seconds: row.playing_time_seconds ?? 0,
+      points: row.points ?? 0,
+      pts2_made: row.pts2_made ?? 0,
+      pts2_att: row.pts2_att ?? 0,
+      pts3_made: row.pts3_made ?? 0,
+      pts3_att: row.pts3_att ?? 0,
+      ft_made: row.ft_made ?? 0,
+      ft_att: row.ft_att ?? 0,
+      reb_off: row.reb_off ?? 0,
+      reb_def: row.reb_def ?? 0,
+      assists: row.assists ?? 0,
+      fouls: row.fouls ?? 0,
+      fouls_drawn: row.fouls_drawn ?? 0,
+    }));
+  if (periodStatsRows.length > 0) {
+    const { error: periodErr } = await supabase.from("basketball_match_period_stats").insert(periodStatsRows);
+    if (periodErr) throw new Error(`Enregistrement du détail par quart-temps : ${periodErr.message}`);
+  }
+
+  revalidatePath("/basket");
+
+  return {
+    imported: resolvedByName.size,
+    created,
+    ambiguous,
+  };
+}

@@ -31,7 +31,9 @@ import {
   deletePhase,
   syncPhase,
   syncComiteClubs,
+  checkTeamStatsAvailability,
 } from "./actions";
+import ImportTeamStatsButton from "@/components/ImportTeamStatsButton";
 
 export const dynamic = "force-dynamic";
 
@@ -1545,26 +1547,28 @@ async function MatchSheetPage({ matchId, backHref }) {
   statsParams.delete("journees");
   const statsHref = `/basket?${statsParams.toString()}`;
 
-  const [{ data: phase }, { data: ps }, { data: allPeople }, { data: statsRows }] = await Promise.all([
-    match.phase_id
-      ? supabase
-          .from("basketball_phases")
-          .select("phase_name, competition_name, poule_label, our_team_name")
-          .eq("id", match.phase_id)
-          .maybeSingle()
-      : Promise.resolve({ data: null }),
-    supabase
-      .from("participant_sports")
-      .select("club, participants(first_name)")
-      .eq("id", match.participant_sport_id)
-      .maybeSingle(),
-    supabase
-      .from("basketball_players")
-      .select("*")
-      .eq("participant_sport_id", match.participant_sport_id)
-      .order("name", { ascending: true }),
-    supabase.from("basketball_match_stats").select("*").eq("match_id", matchId),
-  ]);
+  const [{ data: phase }, { data: ps }, { data: allPeople }, { data: statsRows }, teamStatsPreview] =
+    await Promise.all([
+      match.phase_id
+        ? supabase
+            .from("basketball_phases")
+            .select("phase_name, competition_name, poule_label, our_team_name")
+            .eq("id", match.phase_id)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+      supabase
+        .from("participant_sports")
+        .select("club, participants(first_name)")
+        .eq("id", match.participant_sport_id)
+        .maybeSingle(),
+      supabase
+        .from("basketball_players")
+        .select("*")
+        .eq("participant_sport_id", match.participant_sport_id)
+        .order("name", { ascending: true }),
+      supabase.from("basketball_match_stats").select("*").eq("match_id", matchId),
+      checkTeamStatsAvailability(matchId),
+    ]);
 
   const players = (allPeople ?? []).filter((p) => p.role !== "entraineur");
   const staff = (allPeople ?? []).filter((p) => p.role === "entraineur");
@@ -1633,7 +1637,12 @@ async function MatchSheetPage({ matchId, backHref }) {
             <span className="mx-2 text-ink/30">vs</span>
             <span className={usIsRight ? "font-bold" : ""}>{rightName}</span>
           </h1>
-          <p className="text-sm text-ink/50">{match.location || "Lieu inconnu"}</p>
+          <div className="text-right">
+            <p className="text-sm text-ink/50">{match.location || "Lieu inconnu"}</p>
+            <div className="mt-1">
+              <ImportTeamStatsButton matchId={match.id} preview={teamStatsPreview} />
+            </div>
+          </div>
         </div>
         <p className="mt-1 text-sm text-ink/50">
           {match.match_date ? formatDateTime(match.match_date) : "Date à confirmer"}
