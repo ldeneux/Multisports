@@ -1753,7 +1753,6 @@ async function MatchSheetPage({ matchId, backHref }) {
                 return {
                   playerId: p.id,
                   jerseyNumberMatch: s?.jersey_number_match ?? null,
-                  isCaptain: s?.is_captain ?? false,
                   isStartingFive: s?.is_starting_five ?? false,
                   minutesPlayed: s?.minutes_played ?? null,
                   ftMade: s?.ft_made ?? 0,

@@ -394,9 +394,11 @@ export async function deletePlayer(formData) {
 // tout l'effectif, en "upsert" (crée ou met à jour la ligne de chaque
 // joueuse dont le formulaire contient au moins un champ modifié).
 export async function saveMatchStats(formData) {
+  const { minutesToSeconds } = await import("@/lib/teamstats");
   const supabase = createClient();
   const matchId = formData.get("match_id");
   const playerIds = formData.getAll("player_id");
+  const period = formData.get("period");
 
   if (playerIds.length === 0) {
     revalidatePath("/basket");
@@ -410,6 +412,119 @@ export async function saveMatchStats(formData) {
   const numberOr0 = (v) => (v !== null && v !== "" ? Number(v) : 0);
   const numberOrNull = (v) => (v !== null && v !== "" ? Number(v) : null);
 
+  // Toujours enregistrables quel que soit l'onglet : numéro du jour et
+  // sélection dans le cinq de départ (concept par match, pas par période,
+  // sauf lorsqu'il existe des périodes importées — dans ce cas la case "5
+  // majeur" n'est proposée que sur les onglets Q1..Qn, jamais sur TOUT).
+  const jerseyRows = playerIds.map((playerId) => ({
+    match_id: matchId,
+    player_id: playerId,
+    jersey_number_match: numberOrNull(formData.get(`jersey_match_${playerId}`)),
+    updated_at: new Date().toISOString(),
+  }));
+
+  if (period) {
+    // Édition d'un quart-temps précis : on écrit dans basketball_match_period_stats,
+    // puis on recalcule le total du match (basketball_match_stats) comme la
+    // somme de TOUTES les périodes connues, pour que ce total (lu par les
+    // graphiques) reste toujours exact sans jamais avoir à le ressaisir.
+    const periodNum = Number(period);
+    const periodRows = playerIds.map((playerId) => ({
+      match_id: matchId,
+      player_id: playerId,
+      period: periodNum,
+      is_starter: formData.get(`starting_${playerId}`) === "on",
+      playing_time_seconds: minutesToSeconds(formData.get(`minutes_${playerId}`)),
+      ft_made: numberOr0(formData.get(`ft_made_${playerId}`)),
+      ft_att: numberOr0(formData.get(`ft_att_${playerId}`)),
+      pts2_made: numberOr0(formData.get(`two_made_${playerId}`)),
+      pts2_att: numberOr0(formData.get(`two_att_${playerId}`)),
+      pts3_made: numberOr0(formData.get(`three_made_${playerId}`)),
+      pts3_att: numberOr0(formData.get(`three_att_${playerId}`)),
+      reb_off: numberOr0(formData.get(`reb_off_${playerId}`)),
+      reb_def: numberOr0(formData.get(`reb_def_${playerId}`)),
+      assists: numberOr0(formData.get(`assists_${playerId}`)),
+      fouls: numberOr0(formData.get(`fouls_${playerId}`)),
+      fouls_drawn: numberOr0(formData.get(`fouls_drawn_${playerId}`)),
+      points:
+        numberOr0(formData.get(`two_made_${playerId}`)) * 2 +
+        numberOr0(formData.get(`three_made_${playerId}`)) * 3 +
+        numberOr0(formData.get(`ft_made_${playerId}`)),
+    }));
+
+    const [{ error: periodErr }, { error: jerseyErr }] = await Promise.all([
+      supabase.from("basketball_match_period_stats").upsert(periodRows, { onConflict: "match_id,player_id,period" }),
+      supabase.from("basketball_match_stats").upsert(jerseyRows, { onConflict: "match_id,player_id" }),
+    ]);
+    if (periodErr || jerseyErr) throw new Error((periodErr || jerseyErr).message);
+
+    // Recalcule et réécrit le total à partir de TOUTES les périodes en base
+    // (pas seulement celle qu'on vient d'éditer).
+    const { data: allPeriodRows } = await supabase
+      .from("basketball_match_period_stats")
+      .select("*")
+      .eq("match_id", matchId);
+    const totalsByPlayer = new Map();
+    for (const r of allPeriodRows ?? []) {
+      const cur = totalsByPlayer.get(r.player_id) ?? {
+        playing_time_seconds: 0,
+        ft_made: 0,
+        ft_att: 0,
+        two_made: 0,
+        two_att: 0,
+        three_made: 0,
+        three_att: 0,
+        reb_off: 0,
+        reb_def: 0,
+        assists: 0,
+        fouls: 0,
+        fouls_drawn: 0,
+      };
+      cur.playing_time_seconds += r.playing_time_seconds ?? 0;
+      cur.ft_made += r.ft_made ?? 0;
+      cur.ft_att += r.ft_att ?? 0;
+      cur.two_made += r.pts2_made ?? 0;
+      cur.two_att += r.pts2_att ?? 0;
+      cur.three_made += r.pts3_made ?? 0;
+      cur.three_att += r.pts3_att ?? 0;
+      cur.reb_off += r.reb_off ?? 0;
+      cur.reb_def += r.reb_def ?? 0;
+      cur.assists += r.assists ?? 0;
+      cur.fouls += r.fouls ?? 0;
+      cur.fouls_drawn += r.fouls_drawn ?? 0;
+      totalsByPlayer.set(r.player_id, cur);
+    }
+    const { secondsToMinutes } = await import("@/lib/teamstats");
+    const totalRows = Array.from(totalsByPlayer.entries()).map(([playerId, t]) => ({
+      match_id: matchId,
+      player_id: playerId,
+      minutes_played: secondsToMinutes(t.playing_time_seconds),
+      ft_made: t.ft_made,
+      ft_att: t.ft_att,
+      two_made: t.two_made,
+      two_att: t.two_att,
+      three_made: t.three_made,
+      three_att: t.three_att,
+      reb_off: t.reb_off,
+      reb_def: t.reb_def,
+      assists: t.assists,
+      fouls: t.fouls,
+      fouls_drawn: t.fouls_drawn,
+      updated_at: new Date().toISOString(),
+    }));
+    if (totalRows.length > 0) {
+      const { error: totalsErr } = await supabase
+        .from("basketball_match_stats")
+        .upsert(totalRows, { onConflict: "match_id,player_id" });
+      if (totalsErr) throw new Error(totalsErr.message);
+    }
+
+    revalidatePath("/basket");
+    return;
+  }
+
+  // Pas de période (match sans import TeamStats) : formulaire de saisie
+  // manuelle classique, directement sur le total du match.
   const rows = playerIds.map((playerId) => ({
     match_id: matchId,
     player_id: playerId,
@@ -425,7 +540,6 @@ export async function saveMatchStats(formData) {
     reb_off: numberOr0(formData.get(`reb_off_${playerId}`)),
     reb_def: numberOr0(formData.get(`reb_def_${playerId}`)),
     assists: numberOr0(formData.get(`assists_${playerId}`)),
-    is_captain: formData.get(`captain_${playerId}`) === "on",
     is_starting_five: formData.get(`starting_${playerId}`) === "on",
     minutes_played: formData.get(`minutes_${playerId}`) || null,
     updated_at: new Date().toISOString(),
@@ -434,6 +548,7 @@ export async function saveMatchStats(formData) {
   const { error } = await supabase
     .from("basketball_match_stats")
     .upsert(rows, { onConflict: "match_id,player_id" });
+
   assertNoError("Enregistrement des statistiques", error);
 
   revalidatePath("/basket");
@@ -1149,14 +1264,6 @@ export async function importMatchStatsFromTeamStats(matchId) {
 
   if (!totals || totals.length === 0) throw new Error("La saisie TeamStats de ce match est vide.");
 
-  // Conserve la valeur "capitaine" déjà saisie à la main (TeamStats ne la
-  // connaît pas) pour ne pas la perdre lors du remplacement des stats.
-  const { data: existingStats } = await supabase
-    .from("basketball_match_stats")
-    .select("player_id, is_captain")
-    .eq("match_id", matchId);
-  const captainByPlayer = new Map((existingStats ?? []).map((s) => [s.player_id, s.is_captain]));
-
   const players = [...(allPlayers ?? [])];
   const rosterIds = new Set((rosterRows ?? []).map((r) => r.player_id));
   const usedIds = new Set();
@@ -1241,7 +1348,6 @@ export async function importMatchStatsFromTeamStats(matchId) {
         reb_off: row.reb_off ?? 0,
         reb_def: row.reb_def ?? 0,
         assists: row.assists ?? 0,
-        is_captain: captainByPlayer.get(playerId) ?? false,
         is_starting_five: isStarter,
         on_sheet: true,
         minutes_played: secondsToMinutes(row.playing_time_seconds),

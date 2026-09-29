@@ -14,16 +14,18 @@ function pointsFrom(row) {
   return (row.twoMade ?? 0) * 2 + (row.threeMade ?? 0) * 3 + (row.ftMade ?? 0);
 }
 
-// Une seule table pour la feuille de match : colonnes fixes à gauche (N° du
-// jour, Cap., 5 majeur — toujours éditables, identiques quel que soit
-// l'onglet) + colonnes de stats à droite, dont le contenu bascule avec les
-// boutons TOUT / Q1 / Q2... Sans import TeamStats (pas de périodes), TOUT
-// reste le formulaire de saisie manuelle habituel. Dès qu'il y a des
-// périodes, TOUT devient un total calculé en lecture seule (somme des
-// périodes — jamais la valeur stockée, potentiellement fausse) et
-// ré-injecté dans le formulaire via des champs cachés pour que
-// l'enregistrement garde `basketball_match_stats` à jour (c'est cette table
-// que lisent les graphiques de la page Profil).
+const inputCls = "w-10 rounded-lg border border-ink/15 px-1 py-1 text-center";
+
+// Une seule table pour la feuille de match : boutons TOUT / Q1 / Q2... au-dessus.
+//  - Pas de période importée pour ce match -> TOUT est le formulaire de
+//    saisie manuelle habituel (comportement historique, inchangé).
+//  - Dès qu'il y a des périodes -> TOUT devient un total calculé en LECTURE
+//    SEULE (somme des périodes, jamais la valeur brute stockée) et on édite
+//    à la place directement sur chaque onglet Q1..Qn ; l'enregistrement y
+//    écrit dans basketball_match_period_stats puis recalcule le total.
+// Colonnes toujours en lecture seule : Joueuse (jamais éditable) et Pts
+// (toujours calculé). "5 majeur" ne concerne que les onglets de période dès
+// qu'il y en a (un cinq de départ, c'est par quart-temps).
 export default function MatchStatsTable({ players, totals, periodStats }) {
   const sortedPeriods = useMemo(() => [...new Set(periodStats.map((r) => r.period))].sort((a, b) => a - b), [periodStats]);
   const hasPeriods = sortedPeriods.length > 0;
@@ -39,8 +41,6 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
     return map;
   }, [periodStats]);
 
-  // Somme des périodes pour une joueuse — c'est CETTE valeur qui fait foi
-  // pour l'onglet TOUT dès qu'il y a un import, jamais le total brut stocké.
   function sumPeriods(playerId) {
     const rows = sortedPeriods.map((p) => periodByPlayer.get(p)?.get(playerId)).filter(Boolean);
     const sum = (key) => rows.reduce((s, r) => s + (r[key] ?? 0), 0);
@@ -60,27 +60,14 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
     };
   }
 
-  const activeRowFor = (playerId) => {
-    if (tab === "TOUT") return hasPeriods ? sumPeriods(playerId) : null; // null => on lit les defaultValue des inputs
-    const r = periodByPlayer.get(tab)?.get(playerId);
-    return {
-      playingTimeSeconds: r?.playingTimeSeconds ?? 0,
-      ftMade: r?.ftMade ?? 0,
-      ftAtt: r?.ftAtt ?? 0,
-      twoMade: r?.pts2Made ?? 0,
-      twoAtt: r?.pts2Att ?? 0,
-      threeMade: r?.pts3Made ?? 0,
-      threeAtt: r?.pts3Att ?? 0,
-      rebOff: r?.rebOff ?? 0,
-      rebDef: r?.rebDef ?? 0,
-      assists: r?.assists ?? 0,
-      fouls: r?.fouls ?? 0,
-      foulsDrawn: r?.foulsDrawn ?? 0,
-    };
-  };
+  // TOUT n'est éditable QUE s'il n'existe aucune période importée pour ce
+  // match. Dès qu'il y en a, on édite uniquement sur les onglets Q1..Qn.
+  const editable = tab === "TOUT" ? !hasPeriods : true;
+  const showStartingColumn = tab !== "TOUT" || !hasPeriods;
 
   return (
     <div>
+      <input type="hidden" name="period" value={tab === "TOUT" ? "" : tab} />
       <div className="mb-2 flex flex-wrap gap-1.5">
         <button
           type="button"
@@ -106,13 +93,12 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[720px] text-xs">
+        <table className="w-full min-w-[680px] text-xs">
           <thead>
             <tr className="border-b border-ink/10 text-left text-[10px] uppercase tracking-wide text-ink/40">
               <th className="py-1 pr-2">#</th>
               <th className="py-1 pr-2">Joueuse</th>
-              <th className="px-1.5 text-center">Cap.</th>
-              <th className="px-1.5 text-center">5 maj.</th>
+              {showStartingColumn && <th className="px-1.5 text-center">5 maj.</th>}
               <th className="px-1.5 text-center">Tps</th>
               <th className="px-1.5 text-center">LF</th>
               <th className="px-1.5 text-center">2 pts</th>
@@ -129,9 +115,45 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
           <tbody>
             {players.map((p) => {
               const totalRow = totalsByPlayer.get(p.id);
-              const active = activeRowFor(p.id); // null si TOUT éditable (pas de période)
-              const editable = tab === "TOUT" && !hasPeriods;
-              const points = editable ? null : pointsFrom(active);
+              const periodRow = tab !== "TOUT" ? periodByPlayer.get(tab)?.get(p.id) : null;
+              // Valeurs affichées : celles de la période active si on est sur
+              // un onglet Qn, sinon la somme des périodes (TOUT+périodes) ou
+              // le total brut (TOUT sans période).
+              const display =
+                tab === "TOUT"
+                  ? hasPeriods
+                    ? sumPeriods(p.id)
+                    : {
+                        playingTimeSeconds: null,
+                        ftMade: totalRow?.ftMade ?? 0,
+                        ftAtt: totalRow?.ftAtt ?? 0,
+                        twoMade: totalRow?.twoMade ?? 0,
+                        twoAtt: totalRow?.twoAtt ?? 0,
+                        threeMade: totalRow?.threeMade ?? 0,
+                        threeAtt: totalRow?.threeAtt ?? 0,
+                        rebOff: totalRow?.rebOff ?? 0,
+                        rebDef: totalRow?.rebDef ?? 0,
+                        assists: totalRow?.assists ?? 0,
+                        fouls: totalRow?.fouls ?? 0,
+                        foulsDrawn: totalRow?.foulsDrawn ?? 0,
+                      }
+                  : {
+                      playingTimeSeconds: periodRow?.playingTimeSeconds ?? 0,
+                      ftMade: periodRow?.ftMade ?? 0,
+                      ftAtt: periodRow?.ftAtt ?? 0,
+                      twoMade: periodRow?.pts2Made ?? 0,
+                      twoAtt: periodRow?.pts2Att ?? 0,
+                      threeMade: periodRow?.pts3Made ?? 0,
+                      threeAtt: periodRow?.pts3Att ?? 0,
+                      rebOff: periodRow?.rebOff ?? 0,
+                      rebDef: periodRow?.rebDef ?? 0,
+                      assists: periodRow?.assists ?? 0,
+                      fouls: periodRow?.fouls ?? 0,
+                      foulsDrawn: periodRow?.foulsDrawn ?? 0,
+                    };
+              const points = pointsFrom(display);
+              const startingChecked = tab === "TOUT" ? totalRow?.isStartingFive ?? false : periodRow?.isStarter ?? false;
+
               return (
                 <tr key={p.id} className="border-b border-ink/5 last:border-0">
                   <td className="py-1 pr-2">
@@ -149,22 +171,18 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
                     {p.firstName}
                     <input type="hidden" name="player_id" value={p.id} />
                   </td>
-                  <td className="px-1.5 text-center">
-                    <input
-                      type="checkbox"
-                      name={`captain_${p.id}`}
-                      defaultChecked={totalRow?.isCaptain ?? false}
-                      className="h-4 w-4"
-                    />
-                  </td>
-                  <td className="px-1.5 text-center">
-                    <input
-                      type="checkbox"
-                      name={`starting_${p.id}`}
-                      defaultChecked={totalRow?.isStartingFive ?? false}
-                      className="h-4 w-4"
-                    />
-                  </td>
+
+                  {showStartingColumn && (
+                    <td className="px-1.5 text-center">
+                      <input
+                        type="checkbox"
+                        name={`starting_${p.id}`}
+                        defaultChecked={startingChecked}
+                        disabled={!editable}
+                        className="h-4 w-4"
+                      />
+                    </td>
+                  )}
 
                   {editable ? (
                     <>
@@ -172,7 +190,7 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
                         <input
                           type="text"
                           name={`minutes_${p.id}`}
-                          defaultValue={totalRow?.minutesPlayed ?? ""}
+                          defaultValue={tab === "TOUT" ? totalRow?.minutesPlayed ?? "" : formatMinutes(display.playingTimeSeconds)}
                           placeholder="MM:SS"
                           pattern="^[0-9]{1,3}:[0-5][0-9]$"
                           title="Format MM:SS, ex. 12:30"
@@ -181,75 +199,72 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
                       </td>
                       <td className="px-1.5">
                         <div className="flex items-center justify-center gap-0.5">
-                          <input type="number" min="0" name={`ft_made_${p.id}`} defaultValue={totalRow?.ftMade ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                          <input type="number" min="0" name={`ft_made_${p.id}`} defaultValue={display.ftMade} className={inputCls} />
                           <span className="text-ink/30">/</span>
-                          <input type="number" min="0" name={`ft_att_${p.id}`} defaultValue={totalRow?.ftAtt ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                          <input type="number" min="0" name={`ft_att_${p.id}`} defaultValue={display.ftAtt} className={inputCls} />
                         </div>
                       </td>
                       <td className="px-1.5">
                         <div className="flex items-center justify-center gap-0.5">
-                          <input type="number" min="0" name={`two_made_${p.id}`} defaultValue={totalRow?.twoMade ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                          <input type="number" min="0" name={`two_made_${p.id}`} defaultValue={display.twoMade} className={inputCls} />
                           <span className="text-ink/30">/</span>
-                          <input type="number" min="0" name={`two_att_${p.id}`} defaultValue={totalRow?.twoAtt ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                          <input type="number" min="0" name={`two_att_${p.id}`} defaultValue={display.twoAtt} className={inputCls} />
                         </div>
                       </td>
                       <td className="px-1.5">
                         <div className="flex items-center justify-center gap-0.5">
-                          <input type="number" min="0" name={`three_made_${p.id}`} defaultValue={totalRow?.threeMade ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                          <input type="number" min="0" name={`three_made_${p.id}`} defaultValue={display.threeMade} className={inputCls} />
                           <span className="text-ink/30">/</span>
-                          <input type="number" min="0" name={`three_att_${p.id}`} defaultValue={totalRow?.threeAtt ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                          <input type="number" min="0" name={`three_att_${p.id}`} defaultValue={display.threeAtt} className={inputCls} />
                         </div>
                       </td>
                       <td className="px-1.5">
-                        <input type="number" min="0" name={`reb_off_${p.id}`} defaultValue={totalRow?.rebOff ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                        <input type="number" min="0" name={`reb_off_${p.id}`} defaultValue={display.rebOff} className={inputCls} />
                       </td>
                       <td className="px-1.5">
-                        <input type="number" min="0" name={`reb_def_${p.id}`} defaultValue={totalRow?.rebDef ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                        <input type="number" min="0" name={`reb_def_${p.id}`} defaultValue={display.rebDef} className={inputCls} />
                       </td>
                       <td className="px-1.5">
-                        <input type="number" min="0" name={`assists_${p.id}`} defaultValue={totalRow?.assists ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center" />
+                        <input type="number" min="0" name={`assists_${p.id}`} defaultValue={display.assists} className={inputCls} />
                       </td>
                       <td className="px-1.5">
-                        <input type="number" min="0" name={`fouls_${p.id}`} defaultValue={totalRow?.fouls ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center text-cardinal" />
+                        <input type="number" min="0" name={`fouls_${p.id}`} defaultValue={display.fouls} className={`${inputCls} text-cardinal`} />
                       </td>
                       <td className="px-1.5">
-                        <input type="number" min="0" name={`fouls_drawn_${p.id}`} defaultValue={totalRow?.foulsDrawn ?? 0} className="w-10 rounded-lg border border-ink/15 px-1 py-1 text-center text-lagoon" />
+                        <input type="number" min="0" name={`fouls_drawn_${p.id}`} defaultValue={display.foulsDrawn} className={`${inputCls} text-lagoon`} />
                       </td>
-                      <td className="px-1.5 text-center font-display font-bold text-navy">
-                        {pointsFrom({ twoMade: totalRow?.twoMade ?? 0, threeMade: totalRow?.threeMade ?? 0, ftMade: totalRow?.ftMade ?? 0 })}
-                      </td>
+                      <td className="px-1.5 text-center font-display font-bold text-navy">{points}</td>
                     </>
                   ) : (
                     <>
-                      <td className="px-1.5 text-center text-ink/70">{formatMinutes(active.playingTimeSeconds)}</td>
-                      <td className="px-1.5 text-center text-ink/70">{active.ftMade}/{active.ftAtt}</td>
-                      <td className="px-1.5 text-center text-ink/70">{active.twoMade}/{active.twoAtt}</td>
-                      <td className="px-1.5 text-center text-ink/70">{active.threeMade}/{active.threeAtt}</td>
-                      <td className="px-1.5 text-center text-ink/70">{active.rebOff}</td>
-                      <td className="px-1.5 text-center text-ink/70">{active.rebDef}</td>
-                      <td className="px-1.5 text-center text-ink/70">{active.assists}</td>
-                      <td className="px-1.5 text-center font-semibold text-cardinal">{active.fouls}</td>
-                      <td className="px-1.5 text-center font-semibold text-lagoon">{active.foulsDrawn}</td>
+                      <td className="px-1.5 text-center text-ink/70">{formatMinutes(display.playingTimeSeconds)}</td>
+                      <td className="px-1.5 text-center text-ink/70">{display.ftMade}/{display.ftAtt}</td>
+                      <td className="px-1.5 text-center text-ink/70">{display.twoMade}/{display.twoAtt}</td>
+                      <td className="px-1.5 text-center text-ink/70">{display.threeMade}/{display.threeAtt}</td>
+                      <td className="px-1.5 text-center text-ink/70">{display.rebOff}</td>
+                      <td className="px-1.5 text-center text-ink/70">{display.rebDef}</td>
+                      <td className="px-1.5 text-center text-ink/70">{display.assists}</td>
+                      <td className="px-1.5 text-center font-semibold text-cardinal">{display.fouls}</td>
+                      <td className="px-1.5 text-center font-semibold text-lagoon">{display.foulsDrawn}</td>
                       <td className="px-1.5 text-center font-display font-bold text-navy">{points}</td>
-                      {/* Onglet TOUT calculé (import) : on republie la somme des périodes
-                          dans le formulaire via des champs cachés, pour que
+                      {/* TOUT calculé (import) : on republie la somme des périodes dans
+                          le formulaire via des champs cachés, pour que
                           "Enregistrer les statistiques" garde basketball_match_stats
-                          (lu par les graphiques) synchronisé avec les périodes. */}
-                      {tab === "TOUT" && (
-                        <>
-                          <input type="hidden" name={`minutes_${p.id}`} value={formatMinutes(active.playingTimeSeconds)} />
-                          <input type="hidden" name={`ft_made_${p.id}`} value={active.ftMade} />
-                          <input type="hidden" name={`ft_att_${p.id}`} value={active.ftAtt} />
-                          <input type="hidden" name={`two_made_${p.id}`} value={active.twoMade} />
-                          <input type="hidden" name={`two_att_${p.id}`} value={active.twoAtt} />
-                          <input type="hidden" name={`three_made_${p.id}`} value={active.threeMade} />
-                          <input type="hidden" name={`three_att_${p.id}`} value={active.threeAtt} />
-                          <input type="hidden" name={`reb_off_${p.id}`} value={active.rebOff} />
-                          <input type="hidden" name={`reb_def_${p.id}`} value={active.rebDef} />
-                          <input type="hidden" name={`assists_${p.id}`} value={active.assists} />
-                          <input type="hidden" name={`fouls_${p.id}`} value={active.fouls} />
-                          <input type="hidden" name={`fouls_drawn_${p.id}`} value={active.foulsDrawn} />
-                        </>
+                          (lu par les graphiques) synchronisé. */}
+                      <input type="hidden" name={`minutes_${p.id}`} value={formatMinutes(display.playingTimeSeconds)} />
+                      <input type="hidden" name={`ft_made_${p.id}`} value={display.ftMade} />
+                      <input type="hidden" name={`ft_att_${p.id}`} value={display.ftAtt} />
+                      <input type="hidden" name={`two_made_${p.id}`} value={display.twoMade} />
+                      <input type="hidden" name={`two_att_${p.id}`} value={display.twoAtt} />
+                      <input type="hidden" name={`three_made_${p.id}`} value={display.threeMade} />
+                      <input type="hidden" name={`three_att_${p.id}`} value={display.threeAtt} />
+                      <input type="hidden" name={`reb_off_${p.id}`} value={display.rebOff} />
+                      <input type="hidden" name={`reb_def_${p.id}`} value={display.rebDef} />
+                      <input type="hidden" name={`assists_${p.id}`} value={display.assists} />
+                      <input type="hidden" name={`fouls_${p.id}`} value={display.fouls} />
+                      <input type="hidden" name={`fouls_drawn_${p.id}`} value={display.foulsDrawn} />
+                      {!showStartingColumn && (
+                        <input type="hidden" name={`starting_${p.id}`} value={startingChecked ? "on" : ""} />
                       )}
                     </>
                   )}
@@ -270,9 +285,9 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
           </tbody>
         </table>
       </div>
-      {hasPeriods && tab !== "TOUT" && (
+      {tab !== "TOUT" && (
         <p className="mt-1.5 text-[11px] text-ink/40">
-          Détail importé de TeamStats pour ce quart-temps — lecture seule.
+          Quart-temps {tab} — modifie et enregistre normalement, le total se recalcule tout seul.
         </p>
       )}
     </div>
