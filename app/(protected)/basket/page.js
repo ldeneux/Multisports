@@ -34,7 +34,7 @@ import {
   checkTeamStatsAvailability,
 } from "./actions";
 import ImportTeamStatsButton from "@/components/ImportTeamStatsButton";
-import PeriodStatsTable from "@/components/PeriodStatsTable";
+import MatchStatsTable from "@/components/MatchStatsTable";
 import { displayFirstName } from "@/lib/teamstats";
 
 export const dynamic = "force-dynamic";
@@ -1740,197 +1740,52 @@ async function MatchSheetPage({ matchId, backHref }) {
         {players.length === 0 ? (
           <p className="mt-3 text-sm text-ink/50">Aucune joueuse dans l'effectif — ajoute-en une ci-dessous.</p>
         ) : (
-          <form action={saveMatchStats} className="mt-3 overflow-x-auto">
+          <form action={saveMatchStats} className="mt-3">
             <input type="hidden" name="match_id" value={match.id} />
-            <table className="w-full min-w-[1180px] text-sm">
-              <thead>
-                <tr className="border-b border-ink/10 text-left text-[10px] uppercase tracking-wide text-ink/40">
-                  <th className="py-1.5 pr-2">Joueuse</th>
-                  <th className="px-1.5 text-center">N° du jour</th>
-                  <th className="px-1.5 text-center">Cap.</th>
-                  <th className="px-1.5 text-center">5 majeur</th>
-                  <th className="px-1.5 text-center">Temps (MM:SS)</th>
-                  <th className="px-1.5 text-center">Fautes</th>
-                  <th className="px-1.5 text-center">Fautes subies</th>
-                  <th className="px-1.5 text-center">LF (réuss./tent.)</th>
-                  <th className="px-1.5 text-center">2 pts (réuss./tent.)</th>
-                  <th className="px-1.5 text-center">3 pts (réuss./tent.)</th>
-                  <th className="px-1.5 text-center">Reb. O</th>
-                  <th className="px-1.5 text-center">Reb. D</th>
-                  <th className="px-1.5 text-center">Passes déc.</th>
-                  <th className="px-1.5 text-center">Pts</th>
-                  <th className="px-1.5 text-center"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {sheetPlayers.map((p) => {
-                  const s = statsByPlayer.get(p.id);
-                  return (
-                    <tr key={p.id} className="border-b border-ink/5 last:border-0">
-                      <td className="py-1.5 pr-2 font-semibold text-ink">
-                        {displayFirstName(p)}
-                        <input type="hidden" name="player_id" value={p.id} />
-                      </td>
-                      <td className="px-1.5">
-                        <input
-                          type="number"
-                          min="0"
-                          name={`jersey_match_${p.id}`}
-                          defaultValue={s?.jersey_number_match ?? p.jersey_number ?? ""}
-                          placeholder={p.jersey_number ?? "—"}
-                          title="Numéro porté ce jour-là, s'il diffère du numéro habituel"
-                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                        />
-                      </td>
-                      <td className="px-1.5 text-center">
-                        <input
-                          type="checkbox"
-                          name={`captain_${p.id}`}
-                          defaultChecked={s?.is_captain ?? false}
-                          className="h-4 w-4"
-                        />
-                      </td>
-                      <td className="px-1.5 text-center">
-                        <input
-                          type="checkbox"
-                          name={`starting_${p.id}`}
-                          defaultChecked={s?.is_starting_five ?? false}
-                          className="h-4 w-4"
-                        />
-                      </td>
-                      <td className="px-1.5">
-                        <input
-                          type="text"
-                          name={`minutes_${p.id}`}
-                          defaultValue={s?.minutes_played ?? ""}
-                          placeholder="MM:SS"
-                          pattern="^[0-9]{1,3}:[0-5][0-9]$"
-                          title="Format MM:SS, ex. 12:30"
-                          className="w-20 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                        />
-                      </td>
-                      <td className="px-1.5">
-                        <input
-                          type="number"
-                          min="0"
-                          name={`fouls_${p.id}`}
-                          defaultValue={s?.fouls ?? 0}
-                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                        />
-                      </td>
-                      <td className="px-1.5">
-                        <input
-                          type="number"
-                          min="0"
-                          name={`fouls_drawn_${p.id}`}
-                          defaultValue={s?.fouls_drawn ?? 0}
-                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                        />
-                      </td>
-                      <td className="px-1.5">
-                        <div className="flex items-center justify-center gap-1">
-                          <input
-                            type="number"
-                            min="0"
-                            name={`ft_made_${p.id}`}
-                            defaultValue={s?.ft_made ?? 0}
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                          <span className="text-ink/30">/</span>
-                          <input
-                            type="number"
-                            min="0"
-                            name={`ft_att_${p.id}`}
-                            defaultValue={s?.ft_att ?? 0}
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                        </div>
-                      </td>
-                      <td className="px-1.5">
-                        <div className="flex items-center justify-center gap-1">
-                          <input
-                            type="number"
-                            min="0"
-                            name={`two_made_${p.id}`}
-                            defaultValue={s?.two_made ?? 0}
-                            title="Nombre de paniers à 2 points marqués"
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                          <span className="text-ink/30">/</span>
-                          <input
-                            type="number"
-                            min="0"
-                            name={`two_att_${p.id}`}
-                            defaultValue={s?.two_att ?? 0}
-                            title="Nombre de tirs à 2 points tentés"
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                        </div>
-                      </td>
-                      <td className="px-1.5">
-                        <div className="flex items-center justify-center gap-1">
-                          <input
-                            type="number"
-                            min="0"
-                            name={`three_made_${p.id}`}
-                            defaultValue={s?.three_made ?? 0}
-                            title="Nombre de paniers à 3 points marqués"
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                          <span className="text-ink/30">/</span>
-                          <input
-                            type="number"
-                            min="0"
-                            name={`three_att_${p.id}`}
-                            defaultValue={s?.three_att ?? 0}
-                            title="Nombre de tirs à 3 points tentés"
-                            className="w-12 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                          />
-                        </div>
-                      </td>
-                      <td className="px-1.5">
-                        <input
-                          type="number"
-                          min="0"
-                          name={`reb_off_${p.id}`}
-                          defaultValue={s?.reb_off ?? 0}
-                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                        />
-                      </td>
-                      <td className="px-1.5">
-                        <input
-                          type="number"
-                          min="0"
-                          name={`reb_def_${p.id}`}
-                          defaultValue={s?.reb_def ?? 0}
-                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                        />
-                      </td>
-                      <td className="px-1.5">
-                        <input
-                          type="number"
-                          min="0"
-                          name={`assists_${p.id}`}
-                          defaultValue={s?.assists ?? 0}
-                          className="w-14 rounded-lg border border-ink/15 px-1 py-1 text-center"
-                        />
-                      </td>
-                      <td className="px-1.5 text-center font-display font-bold text-navy">{pointsFor(s)}</td>
-                      <td className="px-1.5 text-center">
-                        <button
-                          type="submit"
-                          form={`remove-${p.id}`}
-                          title="Marquer absente pour ce match"
-                          className="text-ink/30 hover:text-cardinal"
-                        >
-                          ✕
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <MatchStatsTable
+              players={sheetPlayers.map((p) => ({
+                id: p.id,
+                firstName: displayFirstName(p),
+                jerseyNumber: p.jersey_number ?? null,
+              }))}
+              totals={sheetPlayers.map((p) => {
+                const s = statsByPlayer.get(p.id);
+                return {
+                  playerId: p.id,
+                  jerseyNumberMatch: s?.jersey_number_match ?? null,
+                  isCaptain: s?.is_captain ?? false,
+                  isStartingFive: s?.is_starting_five ?? false,
+                  minutesPlayed: s?.minutes_played ?? null,
+                  ftMade: s?.ft_made ?? 0,
+                  ftAtt: s?.ft_att ?? 0,
+                  twoMade: s?.two_made ?? 0,
+                  twoAtt: s?.two_att ?? 0,
+                  threeMade: s?.three_made ?? 0,
+                  threeAtt: s?.three_att ?? 0,
+                  rebOff: s?.reb_off ?? 0,
+                  rebDef: s?.reb_def ?? 0,
+                  assists: s?.assists ?? 0,
+                  fouls: s?.fouls ?? 0,
+                  foulsDrawn: s?.fouls_drawn ?? 0,
+                };
+              })}
+              periodStats={(periodStatsRows ?? []).map((r) => ({
+                playerId: r.player_id,
+                period: r.period,
+                pts2Made: r.pts2_made ?? 0,
+                pts2Att: r.pts2_att ?? 0,
+                pts3Made: r.pts3_made ?? 0,
+                pts3Att: r.pts3_att ?? 0,
+                ftMade: r.ft_made ?? 0,
+                ftAtt: r.ft_att ?? 0,
+                rebOff: r.reb_off ?? 0,
+                rebDef: r.reb_def ?? 0,
+                assists: r.assists ?? 0,
+                fouls: r.fouls ?? 0,
+                foulsDrawn: r.fouls_drawn ?? 0,
+                playingTimeSeconds: r.playing_time_seconds ?? 0,
+              }))}
+            />
             <button
               type="submit"
               className="mt-3 rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
@@ -1984,55 +1839,6 @@ async function MatchSheetPage({ matchId, backHref }) {
                 </li>
               ))}
             </ul>
-          </div>
-        )}
-
-        {sheetPlayers.length > 0 && statsRows && statsRows.length > 0 && (
-          <div className="mt-4 border-t border-ink/5 pt-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">
-              Statistiques par période (import TeamStats)
-            </p>
-            <PeriodStatsTable
-              players={sheetPlayers.map((p) => ({
-                id: p.id,
-                firstName: displayFirstName(p),
-                jerseyNumberMatch: statsByPlayer.get(p.id)?.jersey_number_match ?? p.jersey_number ?? null,
-              }))}
-              totals={statsRows.map((s) => ({
-                playerId: s.player_id,
-                points: pointsFor(s),
-                pts2Made: s.two_made ?? 0,
-                pts2Att: s.two_att ?? 0,
-                pts3Made: s.three_made ?? 0,
-                pts3Att: s.three_att ?? 0,
-                ftMade: s.ft_made ?? 0,
-                ftAtt: s.ft_att ?? 0,
-                rebOff: s.reb_off ?? 0,
-                rebDef: s.reb_def ?? 0,
-                assists: s.assists ?? 0,
-                fouls: s.fouls ?? 0,
-                foulsDrawn: s.fouls_drawn ?? 0,
-                playingTimeSeconds: null,
-                minutesPlayed: s.minutes_played ?? null,
-              }))}
-              periodStats={(periodStatsRows ?? []).map((r) => ({
-                playerId: r.player_id,
-                period: r.period,
-                points: r.points ?? 0,
-                pts2Made: r.pts2_made ?? 0,
-                pts2Att: r.pts2_att ?? 0,
-                pts3Made: r.pts3_made ?? 0,
-                pts3Att: r.pts3_att ?? 0,
-                ftMade: r.ft_made ?? 0,
-                ftAtt: r.ft_att ?? 0,
-                rebOff: r.reb_off ?? 0,
-                rebDef: r.reb_def ?? 0,
-                assists: r.assists ?? 0,
-                fouls: r.fouls ?? 0,
-                foulsDrawn: r.fouls_drawn ?? 0,
-                playingTimeSeconds: r.playing_time_seconds ?? 0,
-              }))}
-            />
           </div>
         )}
 
