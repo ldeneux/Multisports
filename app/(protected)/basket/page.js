@@ -1987,66 +1987,52 @@ async function MatchSheetPage({ matchId, backHref }) {
           </div>
         )}
 
-        {periodStatsRows && periodStatsRows.length > 0 && (
+        {sheetPlayers.length > 0 && statsRows && statsRows.length > 0 && (
           <div className="mt-4 border-t border-ink/5 pt-3">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">
-              Statistiques par quart-temps (import TeamStats)
+              Statistiques par période (import TeamStats)
             </p>
-            {Array.from(new Set(periodStatsRows.map((r) => r.period)))
-              .sort((a, b) => a - b)
-              .map((period) => {
-                const rowsForPeriod = periodStatsRows.filter((r) => r.period === period);
-                return (
-                  <div key={period} className="mb-3 overflow-x-auto">
-                    <p className="mb-1 text-[11px] font-semibold text-navy">Q{period}</p>
-                    <table className="w-full min-w-[760px] text-xs">
-                      <thead>
-                        <tr className="border-b border-ink/10 text-left text-[10px] uppercase tracking-wide text-ink/40">
-                          <th className="py-1 pr-2">Joueuse</th>
-                          <th className="px-1.5 text-center">5 maj.</th>
-                          <th className="px-1.5 text-center">Temps</th>
-                          <th className="px-1.5 text-center">Pts</th>
-                          <th className="px-1.5 text-center">2 pts</th>
-                          <th className="px-1.5 text-center">3 pts</th>
-                          <th className="px-1.5 text-center">LF</th>
-                          <th className="px-1.5 text-center">Reb. O</th>
-                          <th className="px-1.5 text-center">Reb. D</th>
-                          <th className="px-1.5 text-center">Passes</th>
-                          <th className="px-1.5 text-center">Fautes</th>
-                          <th className="px-1.5 text-center">F. subies</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rowsForPeriod.map((r) => {
-                          const player = players.find((p) => p.id === r.player_id);
-                          return (
-                            <tr key={r.player_id} className="border-b border-ink/5 last:border-0">
-                              <td className="py-1 pr-2 font-semibold text-ink">{player ? titleCase(player.name) : "—"}</td>
-                              <td className="px-1.5 text-center">{r.is_starter ? "✓" : ""}</td>
-                              <td className="px-1.5 text-center">{secondsToMinutes(r.playing_time_seconds)}</td>
-                              <td className="px-1.5 text-center font-semibold">{r.points}</td>
-                              <td className="px-1.5 text-center">
-                                {r.pts2_made}/{r.pts2_att}
-                              </td>
-                              <td className="px-1.5 text-center">
-                                {r.pts3_made}/{r.pts3_att}
-                              </td>
-                              <td className="px-1.5 text-center">
-                                {r.ft_made}/{r.ft_att}
-                              </td>
-                              <td className="px-1.5 text-center">{r.reb_off}</td>
-                              <td className="px-1.5 text-center">{r.reb_def}</td>
-                              <td className="px-1.5 text-center">{r.assists}</td>
-                              <td className="px-1.5 text-center">{r.fouls}</td>
-                              <td className="px-1.5 text-center">{r.fouls_drawn}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              })}
+            <PeriodStatsTable
+              players={sheetPlayers.map((p) => ({
+                id: p.id,
+                firstName: displayFirstName(p),
+                jerseyNumberMatch: statsByPlayer.get(p.id)?.jersey_number_match ?? p.jersey_number ?? null,
+              }))}
+              totals={statsRows.map((s) => ({
+                playerId: s.player_id,
+                points: pointsFor(s),
+                pts2Made: s.two_made ?? 0,
+                pts2Att: s.two_att ?? 0,
+                pts3Made: s.three_made ?? 0,
+                pts3Att: s.three_att ?? 0,
+                ftMade: s.ft_made ?? 0,
+                ftAtt: s.ft_att ?? 0,
+                rebOff: s.reb_off ?? 0,
+                rebDef: s.reb_def ?? 0,
+                assists: s.assists ?? 0,
+                fouls: s.fouls ?? 0,
+                foulsDrawn: s.fouls_drawn ?? 0,
+                playingTimeSeconds: null,
+                minutesPlayed: s.minutes_played ?? null,
+              }))}
+              periodStats={(periodStatsRows ?? []).map((r) => ({
+                playerId: r.player_id,
+                period: r.period,
+                points: r.points ?? 0,
+                pts2Made: r.pts2_made ?? 0,
+                pts2Att: r.pts2_att ?? 0,
+                pts3Made: r.pts3_made ?? 0,
+                pts3Att: r.pts3_att ?? 0,
+                ftMade: r.ft_made ?? 0,
+                ftAtt: r.ft_att ?? 0,
+                rebOff: r.reb_off ?? 0,
+                rebDef: r.reb_def ?? 0,
+                assists: r.assists ?? 0,
+                fouls: r.fouls ?? 0,
+                foulsDrawn: r.fouls_drawn ?? 0,
+                playingTimeSeconds: r.playing_time_seconds ?? 0,
+              }))}
+            />
           </div>
         )}
 
