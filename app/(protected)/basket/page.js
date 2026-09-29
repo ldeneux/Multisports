@@ -35,7 +35,7 @@ import {
 } from "./actions";
 import ImportTeamStatsButton from "@/components/ImportTeamStatsButton";
 import MatchStatsTable from "@/components/MatchStatsTable";
-import { displayFirstName } from "@/lib/teamstats";
+import { displayFirstName, periodsForCategory } from "@/lib/teamstats";
 
 export const dynamic = "force-dynamic";
 
@@ -1595,6 +1595,8 @@ async function MatchSheetPage({ matchId, backHref }) {
   const rightName = match.team2_name || "Équipe inconnue";
   const report = match.match_report;
   const isManual = match.source === "manuel";
+  const { count: periodCount, prefix: periodPrefix } = periodsForCategory(phase?.competition_name);
+  const periodLabel = periodPrefix === "P" ? "Période" : "Quart-temps";
 
   const pointsFor = (s) => (s ? s.two_made * 2 + s.three_made * 3 + s.ft_made : 0);
   const totalTeamPoints = sheetPlayers.reduce((sum, p) => sum + pointsFor(statsByPlayer.get(p.id)), 0);
@@ -1668,9 +1670,12 @@ async function MatchSheetPage({ matchId, backHref }) {
 
         <form action={saveMatchSheet} className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <input type="hidden" name="match_id" value={match.id} />
-          {[1, 2, 3, 4].map((q) => (
+          {[1, 2, 3, 4].filter((q) => q <= 4).length && null}
+          {Array.from({ length: periodCount }, (_, i) => i + 1).map((q) => (
             <div key={q} className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase text-ink/40">Quart-temps {q}</span>
+              <span className="text-[10px] uppercase text-ink/40">
+                {periodLabel} {q}
+              </span>
               <div className="flex items-center gap-1">
                 <input
                   type="number"
