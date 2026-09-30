@@ -1664,13 +1664,12 @@ async function MatchSheetPage({ matchId, backHref }) {
         {!isManual && (
           <p className="mt-1 text-xs text-ink/40">
             Score officiel FFBB — {isPlayed ? `${match.team1_score ?? "–"} - ${match.team2_score ?? "–"}` : "match non joué"}.
-            Les quarts-temps ci-dessous sont juste indicatifs, ils ne changent pas le score officiel.
+            Les {periodLabel.toLowerCase()}s ci-dessous sont juste indicatifs, ils ne changent pas le score officiel.
           </p>
         )}
 
         <form action={saveMatchSheet} className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <input type="hidden" name="match_id" value={match.id} />
-          {[1, 2, 3, 4].filter((q) => q <= 4).length && null}
           {Array.from({ length: periodCount }, (_, i) => i + 1).map((q) => (
             <div key={q} className="flex flex-col gap-1">
               <span className="text-[10px] uppercase text-ink/40">
@@ -1748,6 +1747,8 @@ async function MatchSheetPage({ matchId, backHref }) {
           <form action={saveMatchStats} className="mt-3">
             <input type="hidden" name="match_id" value={match.id} />
             <MatchStatsTable
+              periodCount={periodCount}
+              periodPrefix={periodPrefix}
               players={sheetPlayers.map((p) => ({
                 id: p.id,
                 firstName: displayFirstName(p),

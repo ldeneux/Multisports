@@ -230,7 +230,7 @@ export async function saveMatchSheet(formData) {
     return;
   }
 
-  const quarters = [1, 2, 3, 4].map((q) => {
+  const quarters = [1, 2, 3, 4, 5, 6, 7, 8].map((q) => {
     const us = formData.get(`q${q}_us`);
     const them = formData.get(`q${q}_them`);
     return {
@@ -663,17 +663,6 @@ export async function resetCurrentSeason(formData) {
   revalidatePath("/basket");
 }
 
-// Comparaison tolérante (casse, accents, ponctuation) pour repérer si l'ID
-// FFBB renseigné correspond bien au club attendu — ex. détecter qu'un ID
-// copié par erreur pointe vers l'équipe adverse plutôt que la nôtre.
-function normalizeClubName(s) {
-  return (s || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]/g, "");
-}
-
 // "NEUVILLE BASKET - 2" -> "NEUVILLE BASKET" : retire le suffixe de numéro
 // d'équipe pour obtenir la clé de club (basketball_clubs.club_key). Un club
 // engageant plusieurs équipes (ex. "- 1", "- 2") partage ainsi la même fiche
@@ -977,22 +966,6 @@ export async function syncPhase(formData) {
     const competitionLogoAsset =
       engagement.idCompetition?.logo?.id || engagement.idCompetition?.categorie?.logo?.id || null;
 
-    // Garde-fou : l'ID FFBB renseigné pointe-t-il vers LE BON club ? Piège
-    // fréquent en copiant l'ID depuis le site FFBB : cliquer sur l'équipe
-    // adverse croisée dans un tableau plutôt que sur sa propre équipe.
-    const { data: psRow } = await supabase
-      .from("participant_sports")
-      .select("club")
-      .eq("id", participantSportId)
-      .maybeSingle();
-    const expectedClub = normalizeClubName(psRow?.club);
-    const actualTeam = normalizeClubName(engagement.nom);
-    const clubMismatch =
-      expectedClub &&
-      actualTeam &&
-      !actualTeam.includes(expectedClub) &&
-      !expectedClub.includes(actualTeam);
-
     const poule = await client.getPoule(engagement.idPoule.id, {
       fields: [
         "id",
@@ -1155,9 +1128,8 @@ export async function syncPhase(formData) {
         competition_logo_asset: competitionLogoAsset,
         our_team_name: engagement.nom || null,
         last_sync_at: new Date().toISOString(),
-        last_sync_error: clubMismatch
-          ? `⚠️ Cet ID FFBB correspond à « ${engagement.nom} », qui ne ressemble pas à « ${psRow.club} ». As-tu bien pris l'ID de TON équipe (et pas celui d'un adversaire croisé sur le site FFBB) ?`
-          : ourMatchesCount === 0
+        last_sync_error:
+          ourMatchesCount === 0
             ? "Synchro OK mais aucun match trouvé pour cet ID — vérifie qu'il s'agit bien du bon engagement."
             : null,
       })

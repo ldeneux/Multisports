@@ -26,9 +26,9 @@ const inputCls = "w-10 rounded-lg border border-ink/15 px-1 py-1 text-center";
 // Colonnes toujours en lecture seule : Joueuse (jamais éditable) et Pts
 // (toujours calculé). "5 majeur" ne concerne que les onglets de période dès
 // qu'il y en a (un cinq de départ, c'est par quart-temps).
-export default function MatchStatsTable({ players, totals, periodStats }) {
-  const sortedPeriods = useMemo(() => [...new Set(periodStats.map((r) => r.period))].sort((a, b) => a - b), [periodStats]);
-  const hasPeriods = sortedPeriods.length > 0;
+export default function MatchStatsTable({ players, totals, periodStats, periodCount = 4, periodPrefix = "Q" }) {
+  const sortedPeriods = useMemo(() => Array.from({ length: periodCount }, (_, i) => i + 1), [periodCount]);
+  const hasPeriods = periodStats.length > 0;
   const [tab, setTab] = useState("TOUT");
 
   const totalsByPlayer = useMemo(() => new Map(totals.map((r) => [r.playerId, r])), [totals]);
@@ -87,7 +87,7 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
               tab === p ? "bg-navy text-white" : "bg-sand text-ink/60 hover:bg-sand/70"
             }`}
           >
-            Q{p}
+            {periodPrefix}{p}
           </button>
         ))}
       </div>
@@ -287,7 +287,7 @@ export default function MatchStatsTable({ players, totals, periodStats }) {
       </div>
       {tab !== "TOUT" && (
         <p className="mt-1.5 text-[11px] text-ink/40">
-          Quart-temps {tab} — modifie et enregistre normalement, le total se recalcule tout seul.
+          {periodPrefix === "P" ? "Période" : "Quart-temps"} {tab} — modifie et enregistre normalement, le total se recalcule tout seul.
         </p>
       )}
     </div>
