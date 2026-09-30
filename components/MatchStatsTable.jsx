@@ -155,7 +155,7 @@ export default function MatchStatsTable({ players, totals, periodStats, periodCo
               const startingChecked = tab === "TOUT" ? totalRow?.isStartingFive ?? false : periodRow?.isStarter ?? false;
 
               return (
-                <tr key={p.id} className="border-b border-ink/5 last:border-0">
+                <tr key={`${p.id}-${tab}`} className="border-b border-ink/5 last:border-0">
                   <td className="py-1 pr-2">
                     <input
                       type="number"
