@@ -795,11 +795,56 @@ function computeTeamStats(playedMatches) {
 // Discipline : nombre de minutes de jeu "attendues" pour une faute — en
 // dessous, le score baisse ; au-dessus (ou 0 faute), il plafonne à 100.
 const FOUL_MINUTES_REFERENCE = 6;
-// Classement % LF : nombre de points marqués dans un match pour que ce match
-// compte "à plein" dans le calcul — en dessous, il compte proportionnellement
-// moins (jamais zéro), pour ne pas laisser un petit match diluer un vrai 9/10
-// tout en ne l'effaçant pas non plus complètement.
+// Objectif de points par match de référence quand la division n'est pas
+// lisible dans le libellé de compétition (l'ancienne valeur unique).
 const POINTS_WEIGHT_REFERENCE = 12;
+
+// Objectif de points par match selon la division de la compétition de la
+// phase, lue dans son libellé ("Départementale féminine U15 - Division 2") :
+// Division 3 et plus -> 10 pts, Division 2 -> 8 pts, Division 1 -> 6 pts.
+// Sans "Division N" dans le libellé, on garde la référence historique (12).
+function pointsObjectiveForCompetition(label) {
+  const m = /division\s*(\d+)/i.exec(String(label || ""));
+  if (!m) return POINTS_WEIGHT_REFERENCE;
+  const division = Number(m[1]);
+  if (division <= 1) return 6;
+  if (division === 2) return 8;
+  return 10;
+}
+
+// Contexte commun aux calculs individuels : objectif de points de chaque
+// match (selon la phase) et meilleur total de points marqué par UNE joueuse
+// de l'équipe sur chaque match (hors absentes de la feuille).
+function buildStatsContext(statsRows, phases) {
+  const objectiveByPhaseId = new Map(
+    (phases ?? []).map((p) => [p.id, pointsObjectiveForCompetition(p.competition_name)])
+  );
+  const bestPointsByMatch = new Map();
+  statsRows.forEach((s) => {
+    if (s.on_sheet === false) return;
+    const pts = (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0);
+    if (pts > (bestPointsByMatch.get(s.match_id) ?? 0)) bestPointsByMatch.set(s.match_id, pts);
+  });
+  return {
+    bestPointsByMatch,
+    objectiveForMatch: (match) => objectiveByPhaseId.get(match?.phase_id) ?? POINTS_WEIGHT_REFERENCE,
+  };
+}
+
+// Moyenne des % de points vs meilleure marqueuse, en ignorant les matchs où
+// personne n'a marqué (ratio indéfini) plutôt que de les compter à 0.
+function avgPctVsBest(rows) {
+  const valid = rows.filter((m) => m.pctVsBest != null);
+  return valid.length > 0 ? valid.reduce((sum, m) => sum + m.pctVsBest, 0) / valid.length : null;
+}
+
+// Libellé de l'objectif de points sur un ensemble de matchs : "8" si toutes
+// les phases ont le même, "6 à 10" si elles diffèrent.
+function objectiveLabelFor(rows) {
+  const objectives = [...new Set(rows.map((m) => m.objective))].sort((a, b) => a - b);
+  if (objectives.length === 0) return String(POINTS_WEIGHT_REFERENCE);
+  return objectives.length === 1 ? String(objectives[0]) : `${objectives[0]} à ${objectives[objectives.length - 1]}`;
+}
 
 function parseMinutesToSeconds(v) {
   if (!v) return null;
@@ -819,7 +864,7 @@ function shortMatchDate(iso) {
   return new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit" }).format(new Date(iso));
 }
 
-// Note du match, pour un objectif de {POINTS_WEIGHT_REFERENCE} points :
+// Note du match, pour l'objectif de points de la division de la phase :
 // moyenne entre l'adresse aux lancers francs (seul geste où on a à la fois
 // les tentés ET les réussis) et les points marqués rapportés à l'objectif.
 // Volontairement PAS plafonnée à 100% : un très gros match doit ressortir
@@ -827,8 +872,8 @@ function shortMatchDate(iso) {
 // — on veut accentuer les matchs où la joueuse a surperformé, pas les lisser.
 // Si aucun lancer franc n'a été tenté ce match-là, la note retombe
 // entièrement sur les points marqués (rien à évaluer côté adresse).
-function matchNote(ftMade, ftAtt, points) {
-  const pointsRatio = (points / POINTS_WEIGHT_REFERENCE) * 100;
+function matchNote(ftMade, ftAtt, points, objective = POINTS_WEIGHT_REFERENCE) {
+  const pointsRatio = (points / objective) * 100;
   if (ftAtt > 0) {
     const ftRatio = (ftMade / ftAtt) * 100;
     return (ftRatio + pointsRatio) / 2;
@@ -840,7 +885,7 @@ function matchNote(ftMade, ftAtt, points) {
 // matchs joués retenus (déjà filtrés par phase(s) en amont) — en ignorant
 // les matchs où elle était marquée absente de la feuille (on_sheet=false),
 // qui ne doivent pas compter comme "un match à 0 sur toute la ligne".
-function aggregatePlayerStats(playerId, statsRows, matchesById) {
+function aggregatePlayerStats(playerId, statsRows, matchesById, context) {
   const rows = statsRows.filter((s) => s.player_id === playerId && s.on_sheet !== false);
   let ftMade = 0,
     ftAtt = 0,
@@ -866,17 +911,24 @@ function aggregatePlayerStats(playerId, statsRows, matchesById) {
       totalSeconds += seconds;
       gamesWithMinutes += 1;
     }
+    const points = (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0);
+    const objective = context.objectiveForMatch(match);
+    const bestPoints = context.bestPointsByMatch.get(s.match_id) ?? 0;
     perMatch.push({
       matchId: s.match_id,
       date: match.match_date,
-      points: (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0),
+      points,
+      objective,
+      // 5 pts quand la meilleure marqueuse en a 13 -> 5/13 = 38 %. Indéfini
+      // (null) si personne n'a marqué ce jour-là.
+      pctVsBest: bestPoints > 0 ? (points / bestPoints) * 100 : null,
       twoMade: s.two_made ?? 0,
       threeMade: s.three_made ?? 0,
       ftMade: s.ft_made ?? 0,
       ftAtt: s.ft_att ?? 0,
       fouls: s.fouls ?? 0,
       seconds,
-      note: matchNote(s.ft_made ?? 0, s.ft_att ?? 0, (s.two_made ?? 0) * 2 + (s.three_made ?? 0) * 3 + (s.ft_made ?? 0)),
+      note: matchNote(s.ft_made ?? 0, s.ft_att ?? 0, points, objective),
     });
   });
 
@@ -893,6 +945,7 @@ function aggregatePlayerStats(playerId, statsRows, matchesById) {
     starts,
     totalSeconds,
     totalPoints: twoMade * 2 + threeMade * 3 + ftMade,
+    avgPctVsBest: avgPctVsBest(perMatch),
     perMatch,
   };
 }
@@ -922,7 +975,7 @@ function PlayerPicker({ players, selectedPlayerId, statsQueryBase }) {
 // note du match et sa comparaison aux points de l'équipe). Le classement
 // entre joueuses (moyenne de la note de match) est dans StatsTab, à côté du
 // bilan d'équipe.
-function IndividualStatsSection({ players, playedMatches, statsRows, selectedPlayerId, statsQueryBase }) {
+function IndividualStatsSection({ players, playedMatches, statsRows, phases, selectedPlayerId, statsQueryBase }) {
   if (players.length === 0) {
     return (
       <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
@@ -932,7 +985,11 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
   }
 
   const matchesById = new Map(playedMatches.map((m) => [m.id, m]));
-  const perPlayer = players.map((p) => ({ player: p, agg: aggregatePlayerStats(p.id, statsRows, matchesById) }));
+  const statsContext = buildStatsContext(statsRows, phases);
+  const perPlayer = players.map((p) => ({
+    player: p,
+    agg: aggregatePlayerStats(p.id, statsRows, matchesById, statsContext),
+  }));
 
   // Total de points de l'équipe, match par match — toutes joueuses
   // confondues (hors absentes de la feuille), pour comparer chaque match de
@@ -944,7 +1001,6 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
     teamPointsByMatch.set(s.match_id, (teamPointsByMatch.get(s.match_id) ?? 0) + pts);
   });
 
-  const teamTotalPoints = perPlayer.reduce((sum, x) => sum + x.agg.totalPoints, 0);
   const teamMaxAvgSeconds = Math.max(
     1,
     ...perPlayer.map((x) => (x.agg.gamesWithMinutes > 0 ? x.agg.totalSeconds / x.agg.gamesWithMinutes : 0))
@@ -978,7 +1034,7 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
     { label: "% LF", value: ftPct ?? 0 },
     { label: "Discipline", value: disciplineScore },
     { label: "Titularisation", value: (agg.starts / agg.gamesWithStats) * 100 },
-    { label: "Part des points équipe", value: teamTotalPoints > 0 ? (agg.totalPoints / teamTotalPoints) * 100 : 0 },
+    { label: "Pts vs meilleure", value: agg.avgPctVsBest ?? 0 },
   ];
 
   const pointsSeries = agg.perMatch.map((m) => ({
@@ -1090,8 +1146,10 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
             sur la saison. <strong>Discipline</strong> : minutes de jeu par faute, rapportées à {FOUL_MINUTES_REFERENCE}{" "}
             min/faute (100 = au moins {FOUL_MINUTES_REFERENCE} min par faute, ou 0 faute) — 4 fautes en 25 min n'est
             pas noté pareil que 4 fautes en 10 min. <strong>Titularisation</strong> : part des matchs joués où elle
-            était dans le cinq de départ. <strong>Part des points équipe</strong> : ses points / total des points de
-            toute l'équipe sur la période.
+            était dans le cinq de départ. <strong>Pts vs meilleure</strong> : ses points rapportés, match par match, à
+            ceux de la meilleure marqueuse de l'équipe ce jour-là (5 pts quand la meilleure en a 13 = 38 %), puis
+            moyenne sur la période — 100 = elle était la meilleure marqueuse à chaque match. Les matchs où personne
+            n'a marqué sont ignorés.
           </ChartInfo>
         </div>
 
@@ -1157,11 +1215,13 @@ function IndividualStatsSection({ players, playedMatches, statsRows, selectedPla
 
         <div className="rounded-card bg-white p-4 shadow-sm sm:col-span-2">
           <p className="mb-2 text-sm font-semibold text-navy">
-            Note du match — objectif {POINTS_WEIGHT_REFERENCE} points
+            Note du match — objectif {objectiveLabelFor(agg.perMatch)} points
           </p>
           <IsoBarChart items={noteSeries} thresholdValue={100} thresholdLabel="Objectif atteint" />
           <ChartInfo>
-            (% de réussite aux lancers francs + points marqués / {POINTS_WEIGHT_REFERENCE}) / 2, match par match.
+            (% de réussite aux lancers francs + points marqués / objectif) / 2, match par match. L'objectif dépend
+            de la division de la phase (libellé de la compétition) : 10 points en Division 3 et plus, 8 en Division
+            2, 6 en Division 1 (12 si la division n'est pas lisible).
             Volontairement pas plafonnée à 100% : un très gros match ressort au-dessus plutôt que d'être lissé au même
             niveau qu'un match pile dans l'objectif. Sans lancer franc tenté ce match-là, la note retombe entièrement
             sur les points marqués. Barre turquoise = au-dessus de l'objectif, bleue = dans une bonne moyenne, corail
@@ -1211,19 +1271,23 @@ function StatsTab({
 }) {
   const stats = computeTeamStats(playedMatches);
 
-  // Note moyenne à domicile vs à l'extérieur, par joueuse — remplace
-  // l'ancien "Classement % LF" (illisible) par quelque chose qui raconte une
-  // vraie histoire plutôt qu'un simple ordre. us_is_team1 = domicile, par la
-  // même convention que le reste de l'appli (équipe 1 = domicile côté FFBB).
+  // % de points vs la meilleure marqueuse, à domicile vs à l'extérieur, par
+  // joueuse. us_is_team1 = domicile, par la même convention que le reste de
+  // l'appli (équipe 1 = domicile côté FFBB).
   const matchesById = new Map(playedMatches.map((m) => [m.id, m]));
+  const statsContext = buildStatsContext(statsRows, phases);
   const noteRanking = statsPlayers
     .map((p) => {
-      const agg = aggregatePlayerStats(p.id, statsRows, matchesById);
+      const agg = aggregatePlayerStats(p.id, statsRows, matchesById, statsContext);
       if (agg.perMatch.length === 0) return null;
       const home = agg.perMatch.filter((m) => matchesById.get(m.matchId)?.us_is_team1 === true);
       const away = agg.perMatch.filter((m) => matchesById.get(m.matchId)?.us_is_team1 === false);
-      const avg = (rows) => (rows.length > 0 ? rows.reduce((sum, m) => sum + m.note, 0) / rows.length : 0);
-      return { label: p.name, left: avg(home), right: avg(away), highlight: p.id === selectedPlayerId };
+      return {
+        label: p.name,
+        left: avgPctVsBest(home) ?? 0,
+        right: avgPctVsBest(away) ?? 0,
+        highlight: p.id === selectedPlayerId,
+      };
     })
     .filter(Boolean)
     .sort((a, b) => b.left + b.right - (a.left + a.right));
@@ -1346,7 +1410,7 @@ function StatsTab({
 
           <div className="rounded-card bg-white p-4 shadow-sm">
             <p className="mb-2 text-sm font-semibold text-navy">
-              Note moyenne domicile vs extérieur — objectif {POINTS_WEIGHT_REFERENCE} pts/match
+              Points vs meilleure marqueuse — domicile vs extérieur
             </p>
             {noteRanking.length === 0 ? (
               <p className="text-xs text-ink/40">Pas encore de statistiques par joueuse.</p>
@@ -1354,9 +1418,10 @@ function StatsTab({
               <PyramidChart items={noteRanking} leftLabel="Domicile" rightLabel="Extérieur" valueSuffix="%" />
             )}
             <ChartInfo>
-              Moyenne, sur tous les matchs joués et saisis, de la note de chaque match (voir son détail de calcul dans
-              "Statistiques individuelles" ci-dessous) — à domicile à gauche, à l'extérieur à droite, pour repérer si
-              une joueuse est plus à l'aise chez elle ou en déplacement plutôt que juste un ordre de classement.
+              Moyenne, sur tous les matchs joués et saisis, des points de la joueuse rapportés à ceux de la meilleure
+              marqueuse de l'équipe ce jour-là (5 pts quand la meilleure en a 13 = 38 %) — à domicile à gauche, à
+              l'extérieur à droite, pour repérer si une joueuse est plus à l'aise chez elle ou en déplacement. 100 % =
+              meilleure marqueuse à chaque match ; les matchs où personne n'a marqué sont ignorés.
             </ChartInfo>
           </div>
         </div>
@@ -1369,6 +1434,7 @@ function StatsTab({
             players={statsPlayers}
             playedMatches={playedMatches}
             statsRows={statsRows}
+            phases={phases}
             selectedPlayerId={selectedPlayerId}
             statsQueryBase={statsQueryBase}
           />
