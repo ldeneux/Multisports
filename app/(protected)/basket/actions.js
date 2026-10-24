@@ -942,17 +942,42 @@ export async function syncPhase(formData) {
     const client = new FFBBClient();
     await client.authenticate();
 
-    const engagement = await client.getEngagement(engagementId, {
-      fields: [
-        "id",
-        "nom",
-        "idPoule.id",
-        "idPoule.nom",
-        "idCompetition.nom",
-        "idCompetition.logo.id",
-        "idCompetition.categorie.logo.id",
-      ],
-    });
+    // Quand une phase se termine, l'API FFBB peut cesser d'exposer
+    // /ffbbserver_engagements/<id> (403) alors que la page publique
+    // .../equipes/<id> reste consultable. Si on a déjà synchronisé cette
+    // phase (poule_id mémorisé), on se rabat sur la poule directement : les
+    // rencontres/classements sont identifiés par l'ID d'engagement, pas
+    // besoin de relire l'engagement lui-même.
+    let engagement;
+    try {
+      engagement = await client.getEngagement(engagementId, {
+        fields: [
+          "id",
+          "nom",
+          "idPoule.id",
+          "idPoule.nom",
+          "idCompetition.nom",
+          "idCompetition.logo.id",
+          "idCompetition.categorie.logo.id",
+        ],
+      });
+    } catch (engagementErr) {
+      if (!phase.poule_id) throw engagementErr;
+      console.warn(
+        "syncPhase: engagement illisible, repli sur la poule mémorisée",
+        phase.poule_id,
+        String(engagementErr?.message || engagementErr)
+      );
+      engagement = {
+        id: engagementId,
+        nom: phase.our_team_name ?? null,
+        idPoule: { id: phase.poule_id, nom: phase.poule_label ?? null },
+        idCompetition: {
+          nom: phase.competition_name ?? null,
+          logo: phase.competition_logo_asset ? { id: phase.competition_logo_asset } : null,
+        },
+      };
+    }
 
     if (!engagement?.idPoule?.id) {
       throw new Error(
@@ -1144,8 +1169,14 @@ export async function syncPhase(formData) {
     // ?poule=... ou ?phase=...) plutôt qu'un vrai souci de jeton d'accès.
     const rawMessage = String(err?.message || err);
     const looksLikeWrongId = rawMessage.includes("403") && rawMessage.includes("engagements");
+    // Si la phase a déjà été synchronisée un jour (poule_id connu), l'ID était
+    // valide : un 403 veut alors dire que l'API ne l'expose plus (phase
+    // terminée) — ce n'est pas une erreur de copie. Les matchs déjà en base
+    // sont conservés tels quels.
     const message = looksLikeWrongId
-      ? "Cet ID FFBB ne correspond à aucun engagement d'équipe (erreur 403). Vérifie que tu as bien copié l'ID depuis l'URL de la page de L'ÉQUIPE (.../equipes/<ID>) et non depuis un lien de compétition ou de poule (paramètres ?poule=... ou ?phase=... dans l'URL)."
+      ? phase.poule_id
+        ? "L'API FFBB ne renvoie plus cet engagement ni sa poule (phase probablement terminée) : les matchs déjà synchronisés sont conservés. Pour la phase suivante, ajoute-la avec son nouvel ID d'équipe."
+        : "Cet ID FFBB ne correspond à aucun engagement d'équipe (erreur 403). Vérifie que tu as bien copié l'ID depuis l'URL de la page de L'ÉQUIPE (.../equipes/<ID>) et non depuis un lien de compétition ou de poule (paramètres ?poule=... ou ?phase=... dans l'URL)."
       : rawMessage.slice(0, 300);
 
     await supabase
