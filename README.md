@@ -182,3 +182,19 @@ premiers modules complets.
 - Graphiques de progression.
 - Rappels/notifications avant un événement ou l'expiration d'un document.
 - Comptes séparés par participant avec accès en lecture seule.
+
+---
+
+## Direct & replays (menu « Direct »)
+
+1. Dans Supabase → **SQL Editor**, exécute `supabase/7-direct-replays.sql` (tables `videos` et `video_moments`, plus l'espace
+   de stockage « videos », limité à 50 Mo par fichier sur le plan gratuit).
+2. Dans l'appli, menu **Direct** :
+   - **Ajouter** un direct ou un replay : titre, participante, sport, date, et un lien YouTube (de préférence en visibilité
+     « non répertoriée ») ou un petit fichier vidéo.
+   - **Direct en cours** : coche « C'est un direct en cours » ; la vidéo s'affiche en haut de la page. À la fin, « Terminer le
+     direct » la range dans les replays (le même lien YouTube sert de replay).
+   - **Replay** : boucle sur toute la vidéo, vitesse de 0,5× à 2×, et **passages** (début → fin) à revoir en boucle d'un clic,
+     par exemple « 50 m nage libre » ou « le panier à 3 points ».
+3. Les icônes de l'appli (onglet du navigateur, écran d'accueil du téléphone, image du menu) sont dans `app/icon.png`,
+   `app/apple-icon.png` et `public/icon-*.png`.
