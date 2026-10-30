@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { computeCurrentSeasonLabel } from "@/lib/utils";
+import { fetchFfbbPoule } from "@/lib/ffbbProxy";
 
 // Supabase-js ne lève pas d'exception sur une erreur de requête : il faut
 // vérifier { error } explicitement, sinon un échec passe inaperçu.
@@ -936,48 +937,25 @@ export async function syncPhase(formData) {
   }
 
   try {
-    // Import dynamique : si le package n'est pas installé ou que l'API a
-    // changé, on tombe proprement dans le catch plutôt que de casser la page.
-    const { FFBBClient } = await import("ffbb-api-client");
-    const client = new FFBBClient();
-    await client.authenticate();
+    // On passe par le pont Python (api/ffbb.py + ffbb_data_client), la
+    // librairie npm ffbb-api-client ne fonctionnant plus. Si la poule est déjà
+    // connue (phase déjà synchronisée), on la demande directement ; sinon le
+    // pont la déduit de l'ID d'engagement.
+    const { engagement: engagementFromApi, poule } = await fetchFfbbPoule({
+      engagementId,
+      pouleId: phase.poule_id,
+    });
 
-    // Quand une phase se termine, l'API FFBB peut cesser d'exposer
-    // /ffbbserver_engagements/<id> (403) alors que la page publique
-    // .../equipes/<id> reste consultable. Si on a déjà synchronisé cette
-    // phase (poule_id mémorisé), on se rabat sur la poule directement : les
-    // rencontres/classements sont identifiés par l'ID d'engagement, pas
-    // besoin de relire l'engagement lui-même.
-    let engagement;
-    try {
-      engagement = await client.getEngagement(engagementId, {
-        fields: [
-          "id",
-          "nom",
-          "idPoule.id",
-          "idPoule.nom",
-          "idCompetition.nom",
-          "idCompetition.logo.id",
-          "idCompetition.categorie.logo.id",
-        ],
-      });
-    } catch (engagementErr) {
-      if (!phase.poule_id) throw engagementErr;
-      console.warn(
-        "syncPhase: engagement illisible, repli sur la poule mémorisée",
-        phase.poule_id,
-        String(engagementErr?.message || engagementErr)
-      );
-      engagement = {
-        id: engagementId,
-        nom: phase.our_team_name ?? null,
-        idPoule: { id: phase.poule_id, nom: phase.poule_label ?? null },
-        idCompetition: {
-          nom: phase.competition_name ?? null,
-          logo: phase.competition_logo_asset ? { id: phase.competition_logo_asset } : null,
-        },
-      };
-    }
+    // Si on n'a pas relu l'engagement, on reconstruit ce qu'on en savait.
+    const engagement = engagementFromApi ?? {
+      id: engagementId,
+      nom: phase.our_team_name ?? null,
+      idPoule: { id: phase.poule_id ?? poule?.id, nom: phase.poule_label ?? poule?.nom ?? null },
+      idCompetition: {
+        nom: phase.competition_name ?? null,
+        logo: phase.competition_logo_asset ? { id: phase.competition_logo_asset } : null,
+      },
+    };
 
     if (!engagement?.idPoule?.id) {
       throw new Error(
@@ -990,40 +968,6 @@ export async function syncPhase(formData) {
     const pouleLabel = engagement.idPoule?.nom || null;
     const competitionLogoAsset =
       engagement.idCompetition?.logo?.id || engagement.idCompetition?.categorie?.logo?.id || null;
-
-    const poule = await client.getPoule(engagement.idPoule.id, {
-      fields: [
-        "id",
-        "rencontres.id",
-        "rencontres.numero",
-        "rencontres.numeroJournee",
-        "rencontres.date_rencontre",
-        "rencontres.joue",
-        "rencontres.resultatEquipe1",
-        "rencontres.resultatEquipe2",
-        "rencontres.nomEquipe1",
-        "rencontres.nomEquipe2",
-        "rencontres.idEngagementEquipe1.id",
-        "rencontres.idEngagementEquipe2.id",
-        "rencontres.idOrganismeEquipe1.id",
-        "rencontres.idOrganismeEquipe1.logo.id",
-        "rencontres.idOrganismeEquipe2.id",
-        "rencontres.idOrganismeEquipe2.logo.id",
-        "rencontres.salle.libelle",
-        "rencontres.salle.commune.libelle",
-        "classements.id",
-        "classements.idEngagement.id",
-        "classements.idEngagement.nom",
-        "classements.matchJoues",
-        "classements.points",
-        "classements.position",
-        "classements.gagnes",
-        "classements.perdus",
-      ],
-      deep: {
-        rencontres: { _limit: 500, _sort: ["date_rencontre"] },
-      },
-    });
 
     // On garde TOUS les matchs de la poule (pas seulement les nôtres) pour
     // pouvoir afficher "Toute la poule" — us_is_team1 reste null pour les

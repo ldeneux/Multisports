@@ -53,6 +53,6 @@ export const config = {
     // /calendrier/* est exclu ici : c'est le flux iCal public (protégé par
     // un jeton secret dans l'URL, pas par une session utilisateur — Google
     // Calendar ne peut évidemment pas se connecter à l'app).
-    "/((?!_next/static|_next/image|favicon.ico|icon.png|manifest.json|calendrier/|.*\\.(?:png|jpg|jpeg|svg|webp|json)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|icon.png|manifest.json|calendrier/|api/ffbb|.*\\.(?:png|jpg|jpeg|svg|webp|json)$).*)",
   ],
 };
