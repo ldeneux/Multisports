@@ -1,18 +1,18 @@
 """
-Petit "pont" Python pour la synchro FFBB.
+Pont Python pour la synchro FFBB (version « recherche »).
 
-Pourquoi : l'app est en JavaScript (Next.js) alors que la librairie qui marche
-encore (ffbb_data_client) est en Python. Vercel sait faire tourner un fichier
-Python placé dans /api à côté de Next.js : l'app l'appelle comme une mini-API
-interne, et ce fichier renvoie la poule + le classement en JSON.
+Pourquoi : l'API détaillée de la FFBB (poules, classements, scores) est
+bloquée par leur pare-feu (BunnyCDN WAF). Seule la RECHERCHE (Meilisearch)
+répond encore, mais elle ne contient qu'une fenêtre glissante d'environ deux
+semaines de matchs, et sans les scores. Ce fichier interroge cette recherche
+avec ffbb_data_client et renvoie les matchs de la poule de l'équipe demandée.
 
-Appel : GET /api/ffbb?engagement_id=123&poule_id=456   (poule_id facultatif)
+Appel : GET /api/ffbb?engagement_id=123&saison=26-27[&poule_id=456]
 Sécurité : l'en-tête x-ffbb-secret doit valoir la variable FFBB_PROXY_SECRET.
 """
 import os
 
-# Sur Vercel, seul /tmp est inscriptible : la librairie met ses réponses en
-# cache (SQLite) -> on lui indique /tmp avant de l'importer.
+# Sur Vercel, seul /tmp est inscriptible (la librairie met des réponses en cache).
 os.environ.setdefault("HOME", "/tmp")
 os.environ.setdefault("XDG_CACHE_HOME", "/tmp")
 
@@ -21,17 +21,57 @@ import json
 import traceback
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo
 
 from ffbb_data_client import FFBBDataClient
 
+PARIS = ZoneInfo("Europe/Paris")
 
-def to_plain(obj):
-    """Transforme un modèle Pydantic en dict JSON (avec les noms d'origine de l'API)."""
-    if obj is None:
-        return None
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump(mode="json", by_alias=True)
+
+def g(obj, *path):
+    """Lit obj.a.b.c sans planter si un maillon manque (None)."""
+    for key in path:
+        if obj is None:
+            return None
+        obj = getattr(obj, key, None)
     return obj
+
+
+def sid(value):
+    return None if value is None else str(value)
+
+
+def normalise(h):
+    """Un match de la recherche -> un dict simple, lu par le code JavaScript."""
+    d = getattr(h, "date_rencontre", None)
+    date_iso = d.replace(tzinfo=PARIS).isoformat() if d is not None else None
+    return {
+        "id": sid(h.id),
+        "date": date_iso,
+        "journee": g(h, "numero_journee"),
+        "equipe1": {
+            "nom": g(h, "nom_equipe1"),
+            "engagement_id": sid(g(h, "id_engagement_equipe1", "id")),
+            "organisme_id": sid(g(h, "id_organisme_equipe1", "id")),
+            "organisme_nom": g(h, "id_organisme_equipe1", "nom"),
+            "logo": sid(g(h, "id_organisme_equipe1", "logo", "id")),
+        },
+        "equipe2": {
+            "nom": g(h, "nom_equipe2"),
+            "engagement_id": sid(g(h, "id_engagement_equipe2", "id")),
+            "organisme_id": sid(g(h, "id_organisme_equipe2", "id")),
+            "organisme_nom": g(h, "id_organisme_equipe2", "nom"),
+            "logo": sid(g(h, "id_organisme_equipe2", "logo", "id")),
+        },
+        "salle": g(h, "salle", "libelle"),
+        "ville": g(h, "salle", "cartographie", "ville"),
+        "poule_id": sid(g(h, "id_poule", "id")),
+        "poule_nom": g(h, "id_poule", "nom"),
+        "competition_nom": g(h, "competition_id", "nom"),
+        "competition_logo": sid(
+            g(h, "competition_id", "type_competition_generique", "logo", "id")
+        ),
+    }
 
 
 class handler(BaseHTTPRequestHandler):
@@ -44,43 +84,46 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        # 1) Contrôle du secret (sinon n'importe qui pourrait appeler l'URL)
         expected = os.environ.get("FFBB_PROXY_SECRET", "")
-        given = self.headers.get("x-ffbb-secret", "")
         if not expected:
             return self._send(500, {"error": "FFBB_PROXY_SECRET non défini côté serveur"})
-        if not hmac.compare_digest(expected, given):
+        if not hmac.compare_digest(expected, self.headers.get("x-ffbb-secret", "")):
             return self._send(401, {"error": "secret invalide"})
 
-        # 2) Lecture des paramètres
         params = parse_qs(urlparse(self.path).query)
         engagement_id = (params.get("engagement_id") or [None])[0]
         poule_id = (params.get("poule_id") or [None])[0]
-        if not engagement_id and not poule_id:
-            return self._send(400, {"error": "engagement_id ou poule_id requis"})
+        saison = (params.get("saison") or [None])[0]  # ex. "26-27"
+        if not engagement_id:
+            return self._send(400, {"error": "engagement_id requis"})
 
         try:
             client = FFBBDataClient.create()
-            engagement = None
+            flt = [f'saison.code = "{saison}"'] if saison else None
+            res = client.search_rencontres("", filter=flt)
+            hits = list(getattr(res, "hits", res) or [])
+            matchs = [normalise(h) for h in hits]
 
-            # 3) Si on ne connaît pas encore la poule, on la déduit de l'engagement
+            # Poule : celle fournie, sinon celle des matchs où joue notre équipe.
             if not poule_id:
-                get_engagement = getattr(client, "get_engagement", None)
-                if get_engagement is None:
-                    return self._send(
-                        422,
-                        {"error": "Cette version de ffbb_data_client n'a pas get_engagement : "
-                                  "renseigne l'ID de poule pour cette phase."},
-                    )
-                engagement = to_plain(get_engagement(int(engagement_id)))
-                poule_id = ((engagement or {}).get("idPoule") or {}).get("id")
-                if not poule_id:
-                    return self._send(404, {"error": "poule introuvable pour cet engagement",
-                                            "engagement": engagement})
+                for m in matchs:
+                    if engagement_id in (m["equipe1"]["engagement_id"], m["equipe2"]["engagement_id"]):
+                        poule_id = m["poule_id"]
+                        break
 
-            # 4) La poule contient les rencontres et le classement
-            poule = to_plain(client.get_poule(int(poule_id)))
-            return self._send(200, {"engagement": engagement, "poule": poule})
-        except Exception as exc:  # on renvoie l'erreur lisible à l'app
+            if not poule_id:
+                return self._send(404, {
+                    "error": "Aucun match de cette équipe dans la fenêtre de la recherche FFBB "
+                             "(environ 1 semaine avant et après aujourd'hui) : poule non déterminable.",
+                    "total_fenetre": len(matchs),
+                })
+
+            de_la_poule = [m for m in matchs if m["poule_id"] == str(poule_id)]
+            return self._send(200, {
+                "poule_id": str(poule_id),
+                "total_fenetre": len(matchs),
+                "rencontres": de_la_poule,
+            })
+        except Exception as exc:
             return self._send(502, {"error": f"{type(exc).__name__}: {exc}",
                                     "trace": traceback.format_exc()[-600:]})

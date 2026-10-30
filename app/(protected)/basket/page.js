@@ -18,6 +18,7 @@ import {
 import {
   addMatch,
   saveMatchSheet,
+  saveFfbbScore,
   resetMatchSheet,
   saveMatchStats,
   togglePlayerOnSheet,
@@ -1695,9 +1696,9 @@ async function MatchSheetPage({ matchId, backHref }) {
 
       {!isManual && (
         <p className="text-xs text-ink/40">
-          Ce match est synchronisé depuis la FFBB : la date, le lieu et le score officiel seront
-          remis à jour à chaque synchro. Seules la feuille de match et les statistiques par joueuse,
-          saisies ici, ne sont jamais écrasées.
+          Ce match est synchronisé depuis la FFBB : la date et le lieu sont remis à jour à chaque
+          synchro. Le score n'est plus récupéré automatiquement : saisis-le ci-dessous, il n'est
+          jamais écrasé. La feuille de match et les statistiques par joueuse non plus.
         </p>
       )}
 
@@ -1728,10 +1729,38 @@ async function MatchSheetPage({ matchId, backHref }) {
         <p className="font-display text-sm uppercase tracking-tight text-navy">Score</p>
 
         {!isManual && (
-          <p className="mt-1 text-xs text-ink/40">
-            Score officiel FFBB — {isPlayed ? `${match.team1_score ?? "–"} - ${match.team2_score ?? "–"}` : "match non joué"}.
-            Les {periodLabel.toLowerCase()}s ci-dessous sont juste indicatifs, ils ne changent pas le score officiel.
-          </p>
+          <>
+            <p className="mt-1 text-xs text-ink/40">
+              Score du match (saisi à la main) — laisse les deux cases vides pour le marquer « à venir ».
+              Les {periodLabel.toLowerCase()}s ci-dessous sont juste indicatifs, ils ne changent pas ce score.
+            </p>
+            <form action={saveFfbbScore} className="mt-3 flex flex-wrap items-center gap-2">
+              <input type="hidden" name="match_id" value={match.id} />
+              <span className={`text-sm ${usIsLeft ? "font-bold" : ""}`}>{leftName}</span>
+              <input
+                type="number"
+                min="0"
+                name="team1_score"
+                defaultValue={match.team1_score ?? ""}
+                className="w-16 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+              />
+              <span className="text-ink/30">-</span>
+              <input
+                type="number"
+                min="0"
+                name="team2_score"
+                defaultValue={match.team2_score ?? ""}
+                className="w-16 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+              />
+              <span className={`text-sm ${usIsRight ? "font-bold" : ""}`}>{rightName}</span>
+              <button
+                type="submit"
+                className="rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
+              >
+                Enregistrer le score
+              </button>
+            </form>
+          </>
         )}
 
         <form action={saveMatchSheet} className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">

@@ -263,6 +263,52 @@ export async function saveMatchSheet(formData) {
   revalidatePath("/basket");
 }
 
+// Score d'un match FFBB, saisi à la main : la FFBB ne fournit plus les scores
+// automatiquement (pare-feu), et la synchro ne touche jamais à ces colonnes.
+// Laisser les deux champs vides efface le score et remet le match "à venir".
+export async function saveFfbbScore(formData) {
+  const supabase = createClient();
+  const matchId = formData.get("match_id");
+
+  const { data: match, error: readError } = await supabase
+    .from("basketball_matches")
+    .select("us_is_team1, source, season")
+    .eq("id", matchId)
+    .single();
+  if (readError || !match || match.source !== "ffbb" || !isCurrentSeason(match.season)) {
+    revalidatePath("/basket");
+    return;
+  }
+
+  const toNum = (v) => (v === null || v === "" ? null : Number(v));
+  const t1 = toNum(formData.get("team1_score"));
+  const t2 = toNum(formData.get("team2_score"));
+
+  // Un seul des deux scores renseigné : saisie incomplète, on ne change rien.
+  if ((t1 === null) !== (t2 === null) || [t1, t2].some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
+    revalidatePath("/basket");
+    return;
+  }
+
+  const hasScore = t1 !== null && t2 !== null;
+  const usScore = match.us_is_team1 === true ? t1 : match.us_is_team1 === false ? t2 : null;
+  const themScore = match.us_is_team1 === true ? t2 : match.us_is_team1 === false ? t1 : null;
+
+  const { error } = await supabase
+    .from("basketball_matches")
+    .update({
+      team1_score: t1,
+      team2_score: t2,
+      team_score_us: hasScore ? usScore : null,
+      team_score_them: hasScore ? themScore : null,
+      status: hasScore ? "joue" : "a_venir",
+    })
+    .eq("id", matchId);
+  assertNoError("Enregistrement du score", error);
+
+  revalidatePath("/basket");
+}
+
 // Effectif de l'équipe — persistant, réutilisable d'un match à l'autre (et
 // d'une saison à l'autre : la liste est rattachée au participant, pas à une
 // phase ou une saison précise). Fiche façon FFBB (e-marque) : les champs
@@ -937,57 +983,67 @@ export async function syncPhase(formData) {
   }
 
   try {
-    // On passe par le pont Python (api/ffbb.py + ffbb_data_client), la
-    // librairie npm ffbb-api-client ne fonctionnant plus. Si la poule est déjà
-    // connue (phase déjà synchronisée), on la demande directement ; sinon le
-    // pont la déduit de l'ID d'engagement.
-    const { engagement: engagementFromApi, poule } = await fetchFfbbPoule({
+    // On passe par le pont Python (api/ffbb.py + ffbb_data_client) : le
+    // pare-feu de la FFBB bloque l'API détaillée, seule la RECHERCHE répond.
+    // Elle ne contient qu'une fenêtre glissante d'environ 2 semaines de
+    // matchs, SANS scores ni classement. La synchro ajoute donc les matchs à
+    // venir ; les scores se saisissent à la main (feuille de match) et ne
+    // sont jamais écrasés ici. Le classement existant n'est pas touché.
+    const [yFrom, yTo] = String(season).split("-");
+    const ffbbSeasonCode = yFrom && yTo ? `${yFrom.slice(-2)}-${yTo.slice(-2)}` : null;
+
+    const result = await fetchFfbbPoule({
       engagementId,
       pouleId: phase.poule_id,
+      saison: ffbbSeasonCode,
     });
+    const rencontres = result.rencontres ?? [];
+    const pouleId = String(result.poule_id);
 
-    // Si on n'a pas relu l'engagement, on reconstruit ce qu'on en savait.
-    const engagement = engagementFromApi ?? {
-      id: engagementId,
-      nom: phase.our_team_name ?? null,
-      idPoule: { id: phase.poule_id ?? poule?.id, nom: phase.poule_label ?? poule?.nom ?? null },
-      idCompetition: {
-        nom: phase.competition_name ?? null,
-        logo: phase.competition_logo_asset ? { id: phase.competition_logo_asset } : null,
-      },
-    };
+    const isOurs = (r) =>
+      String(r.equipe1?.engagement_id) === String(engagementId) ||
+      String(r.equipe2?.engagement_id) === String(engagementId);
+    const ourMatch = rencontres.find(isOurs);
+    const sample = ourMatch ?? rencontres[0] ?? {};
 
-    if (!engagement?.idPoule?.id) {
-      throw new Error(
-        "Poule introuvable pour cet ID FFBB. Vérifie l'ID engagement (visible dans l'URL de l'équipe sur competitions.ffbb.com)."
-      );
-    }
+    // On garde les infos déjà connues de la phase quand la fenêtre n'en
+    // fournit pas (ex. aucun match de la poule cette quinzaine).
+    const competitionName = sample.competition_nom || phase.competition_name || null;
+    const pouleLabel = sample.poule_nom || phase.poule_label || null;
+    const competitionLogoAsset = sample.competition_logo || phase.competition_logo_asset || null;
+    const ourTeamName = ourMatch
+      ? String(ourMatch.equipe1?.engagement_id) === String(engagementId)
+        ? ourMatch.equipe1?.nom
+        : ourMatch.equipe2?.nom
+      : phase.our_team_name || null;
 
-    const pouleId = String(engagement.idPoule.id);
-    const competitionName = engagement.idCompetition?.nom || null;
-    const pouleLabel = engagement.idPoule?.nom || null;
-    const competitionLogoAsset =
-      engagement.idCompetition?.logo?.id || engagement.idCompetition?.categorie?.logo?.id || null;
+    // Adaptation au format attendu par upsertClubsFromRencontres.
+    await upsertClubsFromRencontres(
+      supabase,
+      rencontres.map((r) => ({
+        nomEquipe1: r.equipe1?.nom,
+        nomEquipe2: r.equipe2?.nom,
+        idOrganismeEquipe1: { id: r.equipe1?.organisme_id, logo: r.equipe1?.logo ? { id: r.equipe1.logo } : null },
+        idOrganismeEquipe2: { id: r.equipe2?.organisme_id, logo: r.equipe2?.logo ? { id: r.equipe2.logo } : null },
+        salle: { libelle: r.salle, commune: { libelle: r.ville } },
+      }))
+    );
 
     // On garde TOUS les matchs de la poule (pas seulement les nôtres) pour
     // pouvoir afficher "Toute la poule" — us_is_team1 reste null pour les
     // matchs qui ne nous concernent pas.
-    const rencontres = poule?.rencontres ?? [];
-    await upsertClubsFromRencontres(supabase, rencontres);
-
+    //
+    // IMPORTANT : ni les scores (team1_score, team2_score, team_score_us/them)
+    // ni le statut (status) ne figurent dans cette liste. Sur un upsert, les
+    // colonnes absentes ne sont pas modifiées : un score saisi à la main
+    // survit donc à toutes les synchros. Un nouveau match prend le statut par
+    // défaut de la base ("a_venir").
     const matchPayload = rencontres.map((r) => {
-      const isTeam1 = String(r.idEngagementEquipe1?.id) === String(engagementId);
-      const isTeam2 = String(r.idEngagementEquipe2?.id) === String(engagementId);
+      const isTeam1 = String(r.equipe1?.engagement_id) === String(engagementId);
+      const isTeam2 = String(r.equipe2?.engagement_id) === String(engagementId);
       const usIsTeam1 = isTeam1 ? true : isTeam2 ? false : null;
-      const location = [r.salle?.libelle, r.salle?.commune?.libelle].filter(Boolean).join(", ");
-
-      // Champs "opponent"/"home_away"/"team_score_us/them" conservés pour
-      // compatibilité (saisie manuelle, anciens écrans) mais l'affichage
-      // actuel se base sur team1_*/team2_*/us_is_team1.
-      const opponent =
-        usIsTeam1 === true ? r.nomEquipe2 : usIsTeam1 === false ? r.nomEquipe1 : null;
-      const usScore = usIsTeam1 === true ? r.resultatEquipe1 : usIsTeam1 === false ? r.resultatEquipe2 : null;
-      const themScore = usIsTeam1 === true ? r.resultatEquipe2 : usIsTeam1 === false ? r.resultatEquipe1 : null;
+      const location = [r.salle, r.ville].filter(Boolean).join(", ");
+      const opponent = usIsTeam1 === true ? r.equipe2?.nom : usIsTeam1 === false ? r.equipe1?.nom : null;
 
       return {
         participant_sport_id: participantSportId,
@@ -996,92 +1052,34 @@ export async function syncPhase(formData) {
         poule_id: pouleId,
         season,
         division_label: competitionName,
-        numero_journee: r.numeroJournee != null ? String(r.numeroJournee) : null,
-        match_date: r.date_rencontre,
-        opponent: opponent || (r.nomEquipe1 && r.nomEquipe2 ? `${r.nomEquipe1} vs ${r.nomEquipe2}` : "Adversaire inconnu"),
+        numero_journee: r.journee != null ? String(r.journee) : null,
+        match_date: r.date,
+        opponent:
+          opponent ||
+          (r.equipe1?.nom && r.equipe2?.nom ? `${r.equipe1.nom} vs ${r.equipe2.nom}` : "Adversaire inconnu"),
         home_away: usIsTeam1 === true ? "domicile" : usIsTeam1 === false ? "exterieur" : null,
-        team_score_us: usScore ?? null,
-        team_score_them: themScore ?? null,
         us_is_team1: usIsTeam1,
-        team1_name: r.nomEquipe1 || null,
-        team1_score: r.resultatEquipe1 ?? null,
-        team1_logo_asset: r.idOrganismeEquipe1?.logo?.id || null,
-        team1_engagement_id: r.idEngagementEquipe1?.id ? String(r.idEngagementEquipe1.id) : null,
-        team2_name: r.nomEquipe2 || null,
-        team2_score: r.resultatEquipe2 ?? null,
-        team2_logo_asset: r.idOrganismeEquipe2?.logo?.id || null,
-        team2_engagement_id: r.idEngagementEquipe2?.id ? String(r.idEngagementEquipe2.id) : null,
+        team1_name: r.equipe1?.nom || null,
+        team1_logo_asset: r.equipe1?.logo || null,
+        team1_engagement_id: r.equipe1?.engagement_id ? String(r.equipe1.engagement_id) : null,
+        team2_name: r.equipe2?.nom || null,
+        team2_logo_asset: r.equipe2?.logo || null,
+        team2_engagement_id: r.equipe2?.engagement_id ? String(r.equipe2.engagement_id) : null,
         location: location || null,
-        status: r.joue ? "joue" : "a_venir",
         source: "ffbb",
       };
     });
 
-    // Upsert (pas un remplacement complet) : c'est ce qui garantit qu'une
-    // feuille de match ou des statistiques déjà saisies sur un match FFBB
-    // survivent à une resynchro — un "delete puis insert" recrée de
-    // nouvelles lignes avec de nouveaux id, ce qui supprimerait en cascade
-    // tout ce qui y est rattaché (basketball_match_stats, feuille de match).
+    // Upsert (jamais de "delete puis insert") : les feuilles de match et
+    // statistiques déjà saisies sur un match survivent à la resynchro.
+    // Pas de nettoyage des matchs absents : la fenêtre FFBB ne couvre que
+    // ~2 semaines, un match plus ancien ne doit surtout pas être supprimé.
     if (matchPayload.length > 0) {
       const { error: writeError } = await supabase
         .from("basketball_matches")
         .upsert(matchPayload, { onConflict: "participant_sport_id,ffbb_rencontre_id" });
       if (writeError) {
         throw new Error(`Écriture des matchs impossible (${writeError.message}).`);
-      }
-    }
-
-    // Nettoyage ciblé : seuls les matchs de CETTE phase qui ne font plus
-    // partie de la poule (annulés, ou l'ancien mauvais match d'un ID FFBB
-    // corrigé) sont supprimés — jamais ceux encore présents.
-    const currentRencontreIds = matchPayload.map((m) => m.ffbb_rencontre_id);
-    let staleMatchesQuery = supabase.from("basketball_matches").delete().eq("phase_id", phaseId);
-    if (currentRencontreIds.length > 0) {
-      staleMatchesQuery = staleMatchesQuery.not(
-        "ffbb_rencontre_id",
-        "in",
-        `(${currentRencontreIds.join(",")})`
-      );
-    }
-    const { error: staleError } = await staleMatchesQuery;
-    assertNoError("Nettoyage des matchs obsolètes de cette phase", staleError);
-
-    // Classement de la poule — annule et remplace pour CETTE PHASE
-    // uniquement (une autre phase de la même saison a son propre
-    // classement, à ne pas toucher).
-    const classements = poule?.classements ?? [];
-    const { error: delError } = await supabase
-      .from("basketball_classements")
-      .delete()
-      .eq("phase_id", phaseId);
-    assertNoError("Nettoyage de l'ancien classement", delError);
-
-    if (classements.length > 0) {
-      const standingsPayload = classements
-        .filter((c) => c.idEngagement?.id)
-        .map((c) => ({
-          participant_sport_id: participantSportId,
-          phase_id: phaseId,
-          poule_id: pouleId,
-          season,
-          engagement_id: String(c.idEngagement.id),
-          engagement_nom: c.idEngagement.nom || "Équipe inconnue",
-          position: c.position ?? null,
-          points: c.points ?? null,
-          matches_joues: c.matchJoues ?? null,
-          gagnes: c.gagnes ?? null,
-          perdus: c.perdus ?? null,
-          is_us: String(c.idEngagement.id) === String(engagementId),
-          synced_at: new Date().toISOString(),
-        }));
-
-      if (standingsPayload.length > 0) {
-        const { error: standingsError } = await supabase
-          .from("basketball_classements")
-          .insert(standingsPayload);
-        if (standingsError) {
-          throw new Error(`Écriture du classement impossible (${standingsError.message}).`);
-        }
       }
     }
 
@@ -1095,11 +1093,11 @@ export async function syncPhase(formData) {
         competition_name: competitionName,
         poule_label: pouleLabel,
         competition_logo_asset: competitionLogoAsset,
-        our_team_name: engagement.nom || null,
+        our_team_name: ourTeamName,
         last_sync_at: new Date().toISOString(),
         last_sync_error:
           ourMatchesCount === 0
-            ? "Synchro OK mais aucun match trouvé pour cet ID — vérifie qu'il s'agit bien du bon engagement."
+            ? "Synchro OK, mais aucun match de ton équipe dans la fenêtre FFBB actuelle (environ 1 semaine avant et après aujourd'hui) : rien à ajouter pour l'instant."
             : null,
       })
       .eq("id", phaseId);
