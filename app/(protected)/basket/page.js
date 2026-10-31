@@ -389,17 +389,14 @@ function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
         {rightName}
       </span>
 
-      {/* Bouton « Replay » : pour nos matchs, à partir de 3 h avant le coup d'envoi,
-          sans limite de durée (tout l'historique reste accessible).
-          m.match_date = heure de Paris lue comme UTC, d'où la marge. */}
-      {concernsUs && m.match_date && (() => {
-        const t = new Date(m.match_date).getTime();
-        return Date.now() > t - 3 * 3600 * 1000;
-      })() && (
+      {/* Pastille « Replay » : uniquement quand un replay est rattaché à ce match
+          (m.has_replay, renseigné par la page) ; verte, pour se distinguer du rouge.
+          Pour en ajouter un, passer par la page Replay. */}
+      {concernsUs && m.has_replay && (
         <Link
-          href={`/replays?match=${m.id}`}
-          title="Ajouter ou voir le replay de ce match"
-          className="shrink-0 rounded-full bg-cardinal/10 px-2 py-0.5 text-[10px] font-bold uppercase text-cardinal hover:bg-cardinal/20"
+          href="/replays"
+          title="Voir le replay de ce match"
+          className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-700 hover:bg-emerald-200"
         >
           Replay
         </Link>
@@ -2118,6 +2115,14 @@ export default async function BasketPage({ searchParams }) {
       .eq("phase_id", selectedPhase.id)
       .order("match_date", { ascending: true });
     matches = matchRows ?? [];
+
+    // Matchs ayant au moins un replay (table absente ou vide : aucune pastille, sans erreur).
+    const { data: replayRows } = await supabase
+      .from("replay_groups")
+      .select("match_id")
+      .not("match_id", "is", null);
+    const replayMatchIds = new Set((replayRows ?? []).map((r) => r.match_id));
+    matches = matches.map((m) => ({ ...m, has_replay: replayMatchIds.has(m.id) }));
 
     const { data: classementRows } = await supabase
       .from("basketball_classements")

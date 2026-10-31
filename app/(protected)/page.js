@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
-import { formatDate } from "@/lib/utils";
+import { formatDate, ffbbAssetUrl } from "@/lib/utils";
+import CalendarEvent from "@/components/CalendarEvent";
+import { findHostClub } from "@/lib/ffn-clubs-rhone";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +82,64 @@ function buildContinuationEntries(baseEvent, nbDays, rangeStartStr, rangeEndStr)
   return extra;
 }
 
+
+// ---- Fiches détaillées (double-clic sur un événement) ----------------------
+const stripTeamSuffix = (name) => (name || "").trim().replace(/\s*-\s*\d+\s*$/, "");
+const normalizeLoose = (text) =>
+  String(text ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+function mapsLink(query) {
+  const q = String(query ?? "").trim();
+  return q ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}` : null;
+}
+
+function capitalize(text) {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+// "2026-10-31" -> "Samedi 31/10/2026" (+ " au 01/11/2026" si plusieurs jours)
+function swimDateText(dateStr, nbDays, time) {
+  if (!dateStr) return "";
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  const weekday = capitalize(d.toLocaleDateString("fr-FR", { weekday: "long", timeZone: "UTC" }));
+  const short = d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
+  let text = `${weekday} ${short}`;
+  if (nbDays && nbDays > 1) {
+    const end = new Date(`${addDaysStr(dateStr, nbDays - 1)}T00:00:00Z`);
+    text += ` au ${end.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" })}`;
+  }
+  return time ? `${text} · ${time}` : text;
+}
+
+function journeeLabel(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return value ? String(value) : "";
+  return n === 1 ? "1ère journée" : `${n}e journée`;
+}
+
+function swimDetail({ title, city, poolLength, dateStr, nbDays, time, level, comment, ffnLink }) {
+  const club = findHostClub({ title, location: city });
+  const addressLines = club?.address ? [club.address] : [];
+  return {
+    kind: "swim",
+    title,
+    city: city ? city.toUpperCase() : "",
+    poolLength: poolLength || null,
+    dateText: swimDateText(dateStr, nbDays, time),
+    level: level || "",
+    comment: comment || "",
+    ffnLink: ffnLink || "",
+    clubName: club?.name ?? null,
+    clubLogo: club?.logo ?? null,
+    addressLines,
+    addressNote: club?.address ? "Adresse du club organisateur (annuaire du comité Rhône) : à vérifier avant de partir." : null,
+    mapsUrl: mapsLink(club?.address || [title, city].filter(Boolean).join(" ")),
+  };
+}
+
 export default async function HomePage({ searchParams }) {
   const supabase = createClient();
 
@@ -114,7 +174,7 @@ export default async function HomePage({ searchParams }) {
   // "suivi" côté basket comme pour la natation). ----------------------------
   const { data: bbMatches } = await supabase
     .from("basketball_matches")
-    .select("*, participant_sports(participant_id, participants(first_name))")
+    .select("*, participant_sports(participant_id, category, participants(first_name))")
     .gte("match_date", startIso)
     .lt("match_date", endIso)
     // Depuis qu'on synchronise TOUTE la poule (pas que nos matchs, pour
@@ -126,6 +186,13 @@ export default async function HomePage({ searchParams }) {
     // match de la poule comme si c'était le nôtre.
     .not("us_is_team1", "is", null)
     .order("match_date");
+
+  // Adresses / gymnases des clubs qui reçoivent (équipe 1 = domicile), pour la fiche détaillée.
+  const homeClubKeys = [...new Set((bbMatches ?? []).map((m) => stripTeamSuffix(m.team1_name)).filter(Boolean))];
+  const { data: clubRows } = homeClubKeys.length
+    ? await supabase.from("basketball_clubs").select("club_key, gymnase, adresse").in("club_key", homeClubKeys)
+    : { data: [] };
+  const clubByKey = new Map((clubRows ?? []).map((c) => [c.club_key, c]));
 
   const basketEvents = (bbMatches ?? [])
     .filter((m) => m.match_date)
@@ -146,6 +213,46 @@ export default async function HomePage({ searchParams }) {
         subtitle: `${d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} : ${invertLocation(
           m.location || ""
         )}`,
+        detail: (() => {
+          // m.match_date = heure de Paris lue comme UTC : on l'affiche donc en UTC.
+          const club = clubByKey.get(stripTeamSuffix(m.team1_name));
+          const gym = club?.gymnase || (m.location ? m.location.split(",")[0].trim() : "");
+          const addr = club?.adresse || "";
+          // "Gymnase X, Ville" déjà contenu dans l'adresse : on ne l'affiche qu'une fois.
+          const addressLines = [];
+          if (gym && !(addr && normalizeLoose(addr).startsWith(normalizeLoose(gym)))) addressLines.push(gym);
+          if (addr) addressLines.push(addr);
+          if (addressLines.length === 0 && m.location) addressLines.push(m.location);
+          const hhmm = m.match_date.slice(11, 16);
+          const dayText = d.toLocaleDateString("fr-FR", {
+            weekday: "long",
+            day: "numeric",
+            month: "short",
+            year: "numeric",
+            timeZone: "UTC",
+          });
+          const played = m.status === "joue" && m.team1_score != null && m.team2_score != null;
+          return {
+            kind: "basket",
+            competition: [m.division_label, journeeLabel(m.numero_journee)].filter(Boolean).join(" - "),
+            team1: m.team1_name,
+            team2: m.team2_name,
+            logo1: ffbbAssetUrl(m.team1_logo_asset, { width: 300 }),
+            logo2: ffbbAssetUrl(m.team2_logo_asset, { width: 300 }),
+            usIsTeam1: m.us_is_team1,
+            category: m.participant_sports?.category ?? "",
+            played,
+            score1: played ? m.team1_score : null,
+            score2: played ? m.team2_score : null,
+            dateText: hhmm === "00:00" ? `${dayText} (heure à confirmer)` : `${dayText} à ${hhmm}`,
+            addressLines,
+            addressNote:
+              addr && !normalizeLoose(addr).startsWith(normalizeLoose(gym || "§"))
+                ? "Adresse enregistrée pour le club : la salle peut être ailleurs, vérifie avec l'itinéraire."
+                : null,
+            mapsUrl: mapsLink([gym, addr].filter(Boolean).join(", ") || m.location),
+          };
+        })(),
       };
     });
 
@@ -190,6 +297,14 @@ export default async function HomePage({ searchParams }) {
           participantId: r.swimmers.participant_id,
           title,
           subtitle: (comp?.city || "LIEU INCONNU").toUpperCase(),
+          detail: swimDetail({
+            title,
+            city: comp?.city,
+            poolLength: comp?.pool_length,
+            dateStr: comp?.competition_date,
+            nbDays: 1,
+            time: null,
+          }),
         };
       });
   }
@@ -214,6 +329,17 @@ export default async function HomePage({ searchParams }) {
       participantId: row.participant_sports?.participant_id,
       title: row.title || "Compétition",
       subtitle: row.start_time ? `${row.start_time} : ${location}` : location,
+      detail: swimDetail({
+        title: row.title || "Compétition",
+        city: row.location,
+        poolLength: row.pool_length,
+        dateStr: row.start_date,
+        nbDays: row.nb_days,
+        time: row.start_time,
+        level: row.categories,
+        comment: row.comment,
+        ffnLink: row.ffn_link,
+      }),
     };
     if (base.date >= startDateStr && base.date < endDateStr) {
       plannedEvents.push(base);
@@ -241,6 +367,13 @@ export default async function HomePage({ searchParams }) {
       participantId: row.participant_id,
       title: row.title || row.sports?.name || "Événement",
       subtitle: row.event_time ? `${row.event_time} : ${location}` : location,
+      detail: {
+        kind: "other",
+        title: row.title || row.sports?.name || "Événement",
+        dateText: swimDateText(row.result_date, row.nb_days, row.event_time),
+        addressLines: row.location ? [row.location] : [],
+        mapsUrl: mapsLink(row.location),
+      },
     };
     if (base.date >= startDateStr && base.date < endDateStr) {
       otherSportEvents.push(base);
@@ -397,19 +530,16 @@ export default async function HomePage({ searchParams }) {
                             title="Compétition sur plusieurs jours"
                           />
                         ) : (
-                          <div
+                          <CalendarEvent
                             key={e.key}
-                            className="flex items-center gap-2 rounded-lg px-3 py-2 text-white"
-                            style={{ backgroundColor: colorByParticipant.get(e.participantId) ?? "#607D8B" }}
-                          >
-                            <span className="w-5 shrink-0 text-center text-base" aria-hidden="true">
-                              {iconFor(e.sportSlug)}
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm font-semibold">{e.title}</span>
-                              <span className="block truncate text-xs text-white/75">{e.subtitle}</span>
-                            </span>
-                          </div>
+                            event={{
+                              title: e.title,
+                              subtitle: e.subtitle,
+                              icon: iconFor(e.sportSlug),
+                              color: colorByParticipant.get(e.participantId) ?? "#607D8B",
+                              detail: e.detail ?? null,
+                            }}
+                          />
                         )
                       )}
                     </div>
