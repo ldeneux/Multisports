@@ -387,19 +387,19 @@ function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
         {rightName}
       </span>
 
-      {/* Bouton « Direct » : seulement pour nos matchs, de la veille jusqu'à
-          quelques heures après le coup d'envoi (m.match_date est stocké en
-          heure de Paris lue comme UTC, d'où les marges larges). */}
-      {concernsUs && !isPlayed && m.match_date && (() => {
+      {/* Bouton « Replay » : pour nos matchs, à partir de 3 h avant le coup d'envoi,
+          sans limite de durée (tout l'historique reste accessible).
+          m.match_date = heure de Paris lue comme UTC, d'où la marge. */}
+      {concernsUs && m.match_date && (() => {
         const t = new Date(m.match_date).getTime();
-        return Date.now() > t - 24 * 3600 * 1000 && Date.now() < t + 12 * 3600 * 1000;
+        return Date.now() > t - 3 * 3600 * 1000;
       })() && (
         <Link
-          href="/direct"
-          title="Voir le direct et les replays"
+          href={`/replays?match=${m.id}`}
+          title="Ajouter ou voir le replay de ce match"
           className="shrink-0 rounded-full bg-cardinal/10 px-2 py-0.5 text-[10px] font-bold uppercase text-cardinal hover:bg-cardinal/20"
         >
-          Direct
+          Replay
         </Link>
       )}
 
