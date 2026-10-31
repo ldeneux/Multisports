@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { formatDateTime, ffbbAssetUrl, computeCurrentSeasonLabel } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
+import ComputeClassementButton from "@/components/ComputeClassementButton";
 import SeasonSelect from "@/components/SeasonSelect";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import {
@@ -18,8 +19,6 @@ import {
 import {
   addMatch,
   saveMatchSheet,
-  saveFfbbScore,
-  updateMatchInfo,
   resetMatchSheet,
   saveMatchStats,
   togglePlayerOnSheet,
@@ -389,6 +388,22 @@ function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
         {rightName}
       </span>
 
+      {/* Bouton « Replay » : pour nos matchs, à partir de 3 h avant le coup d'envoi,
+          sans limite de durée (tout l'historique reste accessible).
+          m.match_date = heure de Paris lue comme UTC, d'où la marge. */}
+      {concernsUs && m.match_date && (() => {
+        const t = new Date(m.match_date).getTime();
+        return Date.now() > t - 3 * 3600 * 1000;
+      })() && (
+        <Link
+          href={`/replays?match=${m.id}`}
+          title="Ajouter ou voir le replay de ce match"
+          className="shrink-0 rounded-full bg-cardinal/10 px-2 py-0.5 text-[10px] font-bold uppercase text-cardinal hover:bg-cardinal/20"
+        >
+          Replay
+        </Link>
+      )}
+
       {/* Un match issu d'une synchro FFBB n'est jamais supprimable — seuls
           les matchs ajoutés à la main le sont (voir aussi le garde-fou
           côté serveur dans deleteMatch). */}
@@ -576,7 +591,7 @@ function ClassementTab({ classement, matches }) {
   if (classement.length === 0) {
     return (
       <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
-        Pas de classement synchronisé pour cette saison — lance une synchro FFBB ci-dessus.
+        Pas de classement pour cette phase — lance une synchro FFBB, ou calcule-le avec le bouton ci-dessus à partir des résultats saisis.
       </div>
     );
   }
@@ -1584,13 +1599,7 @@ function PlayerFormFields({ defaultClub, participantFirstName, player }) {
   );
 }
 
-const MATCH_INFO_ERRORS = {
-  date: "Date ou heure invalide : rien n'a été enregistré.",
-  id: "ID FFBB invalide : colle le numéro du match (6 chiffres ou plus) ou le lien complet de sa page FFBB.",
-  "id-utilise": "Cet ID FFBB est déjà utilisé par un autre match de cette équipe : rien n'a été enregistré.",
-};
-
-async function MatchSheetPage({ matchId, backHref, erreur }) {
+async function MatchSheetPage({ matchId, backHref }) {
   const supabase = createClient();
 
   const { data: match } = await supabase
@@ -1703,9 +1712,9 @@ async function MatchSheetPage({ matchId, backHref, erreur }) {
 
       {!isManual && (
         <p className="text-xs text-ink/40">
-          Ce match est synchronisé depuis la FFBB : la date et le lieu sont remis à jour à chaque
-          synchro. Le score n'est plus récupéré automatiquement : saisis-le ci-dessous, il n'est
-          jamais écrasé. La feuille de match et les statistiques par joueuse non plus.
+          Ce match est synchronisé depuis la FFBB : la date, le lieu et le score officiel seront
+          remis à jour à chaque synchro. Seules la feuille de match et les statistiques par joueuse,
+          saisies ici, ne sont jamais écrasées.
         </p>
       )}
 
@@ -1730,101 +1739,16 @@ async function MatchSheetPage({ matchId, backHref, erreur }) {
         <p className="mt-1 text-sm text-ink/50">
           {match.match_date ? formatDateTime(match.match_date) : "Date à confirmer"}
         </p>
-
-        <details className="mt-3" open={Boolean(erreur)}>
-          <summary className="inline-block cursor-pointer list-none text-xs font-semibold text-navy hover:text-cardinal">
-            ✏️ Modifier la date, l&apos;heure ou l&apos;ID FFBB
-          </summary>
-          {erreur && MATCH_INFO_ERRORS[erreur] && (
-            <p className="mt-2 rounded-lg bg-cardinal/10 px-3 py-2 text-sm font-semibold text-cardinal">
-              {MATCH_INFO_ERRORS[erreur]}
-            </p>
-          )}
-          <form action={updateMatchInfo} className="mt-2 space-y-3 rounded-lg bg-sand p-3">
-            <input type="hidden" name="match_id" value={match.id} />
-            <input
-              type="hidden"
-              name="return_to"
-              value={`${backHref}${backHref.includes("?") ? "&" : "?"}feuille=${match.id}`}
-            />
-            <label className="block text-xs font-semibold text-ink/60">
-              Date et heure (heure de Paris)
-              <input
-                type="datetime-local"
-                name="match_date"
-                defaultValue={match.match_date ? match.match_date.slice(0, 16) : ""}
-                className="mt-1 block rounded-lg border border-ink/15 bg-white px-2 py-1 text-sm"
-              />
-            </label>
-            {match.ffbb_rencontre_id ? (
-              <p className="text-xs text-ink/50">ID FFBB : {match.ffbb_rencontre_id}</p>
-            ) : (
-              <label className="block text-xs font-semibold text-ink/60">
-                ID FFBB du match (facultatif)
-                <input
-                  type="text"
-                  name="ffbb_rencontre_id"
-                  placeholder="Numéro ou lien de la page du match sur competitions.ffbb.com"
-                  className="mt-1 block w-full rounded-lg border border-ink/15 bg-white px-2 py-1 text-sm"
-                />
-                <span className="mt-1 block font-normal text-ink/40">
-                  Avec cet ID, la synchro reconnaît ce match et le complète au lieu d&apos;en créer un second.
-                  Le score déjà saisi est conservé.
-                </span>
-              </label>
-            )}
-            {!isManual && (
-              <p className="text-xs text-ink/40">
-                Match synchronisé : si la FFBB indique une autre date à la prochaine synchro, c&apos;est la
-                date FFBB qui est conservée.
-              </p>
-            )}
-            <button
-              type="submit"
-              className="rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
-            >
-              Enregistrer
-            </button>
-          </form>
-        </details>
       </div>
 
       <div className="rounded-card bg-white p-5 shadow-sm">
         <p className="font-display text-sm uppercase tracking-tight text-navy">Score</p>
 
         {!isManual && (
-          <>
-            <p className="mt-1 text-xs text-ink/40">
-              Score du match (saisi à la main) — laisse les deux cases vides pour le marquer « à venir ».
-              Les {periodLabel.toLowerCase()}s ci-dessous sont juste indicatifs, ils ne changent pas ce score.
-            </p>
-            <form action={saveFfbbScore} className="mt-3 flex flex-wrap items-center gap-2">
-              <input type="hidden" name="match_id" value={match.id} />
-              <span className={`text-sm ${usIsLeft ? "font-bold" : ""}`}>{leftName}</span>
-              <input
-                type="number"
-                min="0"
-                name="team1_score"
-                defaultValue={match.team1_score ?? ""}
-                className="w-16 rounded-lg border border-ink/15 px-2 py-1 text-sm"
-              />
-              <span className="text-ink/30">-</span>
-              <input
-                type="number"
-                min="0"
-                name="team2_score"
-                defaultValue={match.team2_score ?? ""}
-                className="w-16 rounded-lg border border-ink/15 px-2 py-1 text-sm"
-              />
-              <span className={`text-sm ${usIsRight ? "font-bold" : ""}`}>{rightName}</span>
-              <button
-                type="submit"
-                className="rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
-              >
-                Enregistrer le score
-              </button>
-            </form>
-          </>
+          <p className="mt-1 text-xs text-ink/40">
+            Score officiel FFBB — {isPlayed ? `${match.team1_score ?? "–"} - ${match.team2_score ?? "–"}` : "match non joué"}.
+            Les {periodLabel.toLowerCase()}s ci-dessous sont juste indicatifs, ils ne changent pas le score officiel.
+          </p>
         )}
 
         <form action={saveMatchSheet} className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -2091,15 +2015,9 @@ export default async function BasketPage({ searchParams }) {
   if (searchParams?.feuille) {
     const backParams = new URLSearchParams();
     Object.entries(searchParams).forEach(([key, value]) => {
-      if (key !== "feuille" && key !== "erreur" && typeof value === "string") backParams.set(key, value);
+      if (key !== "feuille" && typeof value === "string") backParams.set(key, value);
     });
-    return (
-      <MatchSheetPage
-        matchId={searchParams.feuille}
-        backHref={`/basket?${backParams.toString()}`}
-        erreur={typeof searchParams.erreur === "string" ? searchParams.erreur : null}
-      />
-    );
+    return <MatchSheetPage matchId={searchParams.feuille} backHref={`/basket?${backParams.toString()}`} />;
   }
 
   const currentSeason = computeCurrentSeasonLabel();
@@ -2498,7 +2416,16 @@ export default async function BasketPage({ searchParams }) {
               clubLogos={clubLogos}
             />
           )}
-          {tab === "classement" && <ClassementTab classement={classement} matches={matches} />}
+          {tab === "classement" && (
+            <div className="space-y-3">
+              {selectedPhase && selectedPhase.phase_type !== "amical" && (
+                <div className="flex justify-end">
+                  <ComputeClassementButton phaseId={selectedPhase.id} />
+                </div>
+              )}
+              <ClassementTab classement={classement} matches={matches} />
+            </div>
+          )}
           {tab === "stats" && (
             <StatsTab
               playedMatches={playedMatches}
