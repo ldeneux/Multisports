@@ -1,0 +1,6 @@
+Si tu as déjà copié la version LiveKit dans ton projet, supprime ces éléments :
+  - components/LiveRoom.jsx
+  - app/api/live/            (dossier entier)
+  - app/(protected)/direct/[matchId]/   (dossier entier)
+et retire de package.json : livekit-client et livekit-server-sdk
+(le package.json de ce zip est déjà à jour).
