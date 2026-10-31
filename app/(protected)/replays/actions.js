@@ -17,7 +17,7 @@ const clean = (v) => {
 };
 
 // Crée un replay (match ou compétition) avec ses chapitres.
-// input = { title, sport, recorded_on, season, team, division, match_id, chapters: [{ label, url }] }
+// input = { title, sport, recorded_on, season, team, division, match_id, chapters: [{ label, subtitle, url }] }
 export async function addReplayGroup(input) {
   const supabase = createClient();
   if (!(await currentUser(supabase))) return { error: "Non connecté." };
@@ -39,6 +39,7 @@ export async function addReplayGroup(input) {
     }
     chapters.push({
       label,
+      subtitle: clean(c?.subtitle),
       url,
       provider: parsed.provider,
       video_ref: parsed.ref,
@@ -95,6 +96,7 @@ export async function addChapter(groupId, input) {
   const { error } = await supabase.from("replay_chapters").insert({
     group_id: groupId,
     label: clean(input?.label) ?? `Chapitre ${position + 1}`,
+    subtitle: clean(input?.subtitle),
     url,
     provider: parsed.provider,
     video_ref: parsed.ref,
@@ -121,6 +123,38 @@ export async function deleteGroup(id) {
   if (!(await currentUser(supabase))) return { error: "Non connecté." };
   const { error } = await supabase.from("replay_groups").delete().eq("id", id);
   if (error) return { error: error.message };
+  revalidatePath("/replays");
+  return { ok: true };
+}
+
+// Monte ou descend un chapitre : change l'ordre d'affichage et de lecture de « Tout lire ».
+export async function moveChapter(id, direction) {
+  const supabase = createClient();
+  if (!(await currentUser(supabase))) return { error: "Non connecté." };
+
+  const { data: current } = await supabase.from("replay_chapters").select("id, group_id").eq("id", id).maybeSingle();
+  if (!current) return { error: "Chapitre introuvable." };
+
+  const { data: siblings, error } = await supabase
+    .from("replay_chapters")
+    .select("id, position")
+    .eq("group_id", current.group_id)
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) return { error: error.message };
+
+  const i = siblings.findIndex((s) => s.id === id);
+  const j = direction === "up" ? i - 1 : i + 1;
+  if (i < 0 || j < 0 || j >= siblings.length) return { ok: true };
+
+  const reordered = [...siblings];
+  [reordered[i], reordered[j]] = [reordered[j], reordered[i]];
+  for (const [index, row] of reordered.entries()) {
+    if (row.position === index) continue;
+    const { error: updateError } = await supabase.from("replay_chapters").update({ position: index }).eq("id", row.id);
+    if (updateError) return { error: updateError.message };
+  }
+
   revalidatePath("/replays");
   return { ok: true };
 }

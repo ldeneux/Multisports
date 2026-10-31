@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { addChapter, addReplayGroup, deleteChapter, deleteGroup } from "@/app/(protected)/replays/actions";
+import { addChapter, addReplayGroup, deleteChapter, deleteGroup, moveChapter } from "@/app/(protected)/replays/actions";
 
 const SPORTS = [
   { value: "basket", label: "Basket" },
@@ -10,13 +10,16 @@ const SPORTS = [
   { value: "autre", label: "Autre" },
 ];
 
+// Mêmes pictogrammes que le calendrier.
+const SPORT_EMOJI = { basket: "🏀", natation: "🏊", autre: "🏅" };
+
 const BASKET_CHAPTERS = ["1er quart-temps", "2e quart-temps", "3e quart-temps", "4e quart-temps"];
 
 let rowCounter = 0;
 const nextKey = () => `row-${++rowCounter}`;
 
 const defaultRows = (sport) =>
-  (sport === "basket" ? BASKET_CHAPTERS : [""]).map((label) => ({ key: nextKey(), label, url: "" }));
+  (sport === "basket" ? BASKET_CHAPTERS : [""]).map((label) => ({ key: nextKey(), label, subtitle: "", url: "" }));
 
 // Saison sportive : de septembre à août (ex. 15/04/2026 → 2025-2026).
 function seasonFromDate(iso) {
@@ -239,7 +242,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
 
   const updateRow = (key, patch) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const removeRow = (key) => setRows((rs) => rs.filter((r) => r.key !== key));
-  const addRow = () => setRows((rs) => [...rs, { key: nextKey(), label: "", url: "" }]);
+  const addRow = () => setRows((rs) => [...rs, { key: nextKey(), label: "", subtitle: "", url: "" }]);
 
   function reset() {
     setSport("basket");
@@ -266,7 +269,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
         team,
         division,
         match_id: matchId,
-        chapters: rows.map(({ label, url }) => ({ label, url })),
+        chapters: rows.map(({ label, subtitle, url }) => ({ label, subtitle, url })),
       });
       if (res?.error) {
         setError(res.error);
@@ -332,27 +335,35 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
         <div className="space-y-2">
           <p className="text-xs font-semibold text-ink/60">Chapitres (une vidéo chacun, les lignes vides sont ignorées)</p>
           {rows.map((r, i) => (
-            <div key={r.key} className="flex gap-2">
+            <div key={r.key} className="space-y-1">
+              <div className="flex gap-2">
+                <input
+                  value={r.label}
+                  onChange={(e) => updateRow(r.key, { label: e.target.value })}
+                  placeholder={sport === "natation" ? "50 m NL" : `Chapitre ${i + 1}`}
+                  className={`${inputClass} w-2/5`}
+                />
+                <input
+                  value={r.url}
+                  onChange={(e) => updateRow(r.key, { url: e.target.value })}
+                  placeholder="Lien YouTube ou Drive"
+                  className={inputClass}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeRow(r.key)}
+                  aria-label="Retirer ce chapitre"
+                  className="px-1 text-ink/40 hover:text-cardinal"
+                >
+                  ✕
+                </button>
+              </div>
               <input
-                value={r.label}
-                onChange={(e) => updateRow(r.key, { label: e.target.value })}
-                placeholder={sport === "natation" ? "50 m NL" : `Chapitre ${i + 1}`}
-                className={`${inputClass} w-2/5`}
+                value={r.subtitle}
+                onChange={(e) => updateRow(r.key, { subtitle: e.target.value })}
+                placeholder="Sous-titre (facultatif)"
+                className="w-full rounded-md border border-ink/10 bg-white px-3 py-1 text-xs"
               />
-              <input
-                value={r.url}
-                onChange={(e) => updateRow(r.key, { url: e.target.value })}
-                placeholder="Lien YouTube ou Drive"
-                className={inputClass}
-              />
-              <button
-                type="button"
-                onClick={() => removeRow(r.key)}
-                aria-label="Retirer ce chapitre"
-                className="px-1 text-ink/40 hover:text-cardinal"
-              >
-                ✕
-              </button>
             </div>
           ))}
           <button type="button" onClick={addRow} className="text-sm font-semibold text-lagoon hover:underline">
@@ -379,11 +390,17 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
 // ---------------------------------------------------------------------------
 export function ReplayList({ groups }) {
   const [filter, setFilter] = useState("tous");
-  const shown = groups.filter((g) => filter === "tous" || g.sport === filter);
+  const [seasonFilter, setSeasonFilter] = useState("toutes");
+
+  const seasons = unique(groups.map((g) => g.season).filter(Boolean)).sort().reverse();
+  const effSeason = seasonFilter === "toutes" || seasons.includes(seasonFilter) ? seasonFilter : "toutes";
+  const shown = groups.filter(
+    (g) => (filter === "tous" || g.sport === filter) && (effSeason === "toutes" || g.season === effSeason)
+  );
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {[["tous", "Tous"], ...SPORTS.map((s) => [s.value, s.label])].map(([value, label]) => (
           <button
             key={value}
@@ -396,6 +413,19 @@ export function ReplayList({ groups }) {
             {label}
           </button>
         ))}
+        <select
+          value={effSeason}
+          onChange={(e) => setSeasonFilter(e.target.value)}
+          aria-label="Filtrer par saison"
+          className="ml-auto rounded-full border-0 bg-white px-3 py-1 text-xs font-bold text-ink/70 shadow-sm"
+        >
+          <option value="toutes">Toutes les saisons</option>
+          {seasons.map((s) => (
+            <option key={s} value={s}>
+              Saison {s}
+            </option>
+          ))}
+        </select>
       </div>
       {shown.length === 0 && (
         <p className="rounded-card bg-white p-4 text-sm text-ink/60 shadow-sm">Aucun replay pour l'instant.</p>
@@ -422,10 +452,12 @@ function Frame({ src, title }) {
 
 function GroupCard({ g }) {
   const router = useRouter();
+  const [expanded, setExpanded] = useState(false);
   // null | { mode: "one", id } | { mode: "all", index }
   const [player, setPlayer] = useState(null);
   const [adding, setAdding] = useState(false);
   const [newLabel, setNewLabel] = useState("");
+  const [newSubtitle, setNewSubtitle] = useState("");
   const [newUrl, setNewUrl] = useState("");
   const [error, setError] = useState("");
   const [pending, startTransition] = useTransition();
@@ -499,120 +531,173 @@ function GroupCard({ g }) {
   }
 
   return (
-    <div className="space-y-3 rounded-card bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="font-display text-base font-bold text-navy">{g.title}</h2>
-          {info && <p className="text-xs text-ink/50">{info}</p>}
-        </div>
-        {playable.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setPlayer(player?.mode === "all" ? null : { mode: "all", index: 0 })}
-            className="shrink-0 rounded-full bg-cardinal px-4 py-1.5 text-xs font-bold text-white hover:bg-cardinal-dark"
-          >
-            {player?.mode === "all" ? "Fermer" : "▶ Tout lire"}
-          </button>
-        )}
-      </div>
+    <div className="rounded-card bg-white shadow-sm">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-3 p-4 text-left"
+      >
+        <span className="text-xl" aria-hidden="true">
+          {SPORT_EMOJI[g.sport] ?? "🏅"}
+        </span>
+        <span className="min-w-0 flex-1 font-display text-base font-bold text-navy">{g.title}</span>
+        <span
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sand text-lg font-bold text-navy"
+          aria-hidden="true"
+        >
+          {expanded ? "−" : "+"}
+        </span>
+      </button>
 
-      {renderPlayer()}
+      {expanded && (
+        <div className="space-y-3 px-4 pb-4">
+          <div className="flex items-start justify-between gap-3">
+            <p className="min-w-0 text-xs text-ink/50">{info || "Aucune information générale."}</p>
+            {playable.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setPlayer(player?.mode === "all" ? null : { mode: "all", index: 0 })}
+                className="shrink-0 rounded-full bg-cardinal px-4 py-1.5 text-xs font-bold text-white hover:bg-cardinal-dark"
+              >
+                {player?.mode === "all" ? "Fermer" : "▶ Tout lire"}
+              </button>
+            )}
+          </div>
 
-      {g.chapters.length === 0 ? (
-        <p className="text-sm text-ink/60">Aucun chapitre pour l'instant.</p>
-      ) : (
-        <ul className="divide-y divide-ink/5">
-          {g.chapters.map((c) => (
-            <li key={c.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
-              <span className="min-w-0 flex-1 text-sm font-semibold text-navy">{c.label}</span>
-              {c.embed && (
+          {renderPlayer()}
+
+          {g.chapters.length === 0 ? (
+            <p className="text-sm text-ink/60">Aucun chapitre pour l'instant.</p>
+          ) : (
+            <ul className="divide-y divide-ink/5">
+              {g.chapters.map((c, idx) => (
+                <li key={c.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-navy">{c.label}</span>
+                    {c.subtitle && <span className="block text-xs text-ink/50">{c.subtitle}</span>}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={pending || idx === 0}
+                      onClick={() => run(() => moveChapter(c.id, "up"))}
+                      aria-label="Monter ce chapitre"
+                      className="h-6 w-6 rounded-full bg-sand text-xs font-bold text-navy disabled:opacity-30"
+                    >
+                      ▲
+                    </button>
+                    <button
+                      type="button"
+                      disabled={pending || idx === g.chapters.length - 1}
+                      onClick={() => run(() => moveChapter(c.id, "down"))}
+                      aria-label="Descendre ce chapitre"
+                      className="h-6 w-6 rounded-full bg-sand text-xs font-bold text-navy disabled:opacity-30"
+                    >
+                      ▼
+                    </button>
+                  </span>
+                  {c.embed && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPlayer(player?.mode === "one" && player.id === c.id ? null : { mode: "one", id: c.id })
+                      }
+                      className="text-sm font-semibold text-lagoon hover:underline"
+                    >
+                      {player?.mode === "one" && player.id === c.id ? "Fermer" : "Regarder"}
+                    </button>
+                  )}
+                  <a
+                    href={c.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-semibold text-lagoon hover:underline"
+                  >
+                    Ouvrir
+                  </a>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => {
+                      if (window.confirm(`Retirer le chapitre « ${c.label} » ? (la vidéo reste sur YouTube / Drive)`)) {
+                        run(() => deleteChapter(c.id));
+                      }
+                    }}
+                    className="text-xs font-semibold text-ink/40 hover:text-cardinal"
+                  >
+                    Retirer
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {adding ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                <input
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                  placeholder="Nom du chapitre"
+                  className={`${inputClass} w-full sm:w-1/3`}
+                />
+                <input
+                  value={newUrl}
+                  onChange={(e) => setNewUrl(e.target.value)}
+                  placeholder="Lien YouTube ou Drive"
+                  className={`${inputClass} min-w-0 flex-1`}
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <input
+                  value={newSubtitle}
+                  onChange={(e) => setNewSubtitle(e.target.value)}
+                  placeholder="Sous-titre (facultatif)"
+                  className="min-w-0 flex-1 rounded-md border border-ink/10 bg-white px-3 py-1 text-xs"
+                />
                 <button
                   type="button"
+                  disabled={pending || !newUrl.trim()}
                   onClick={() =>
-                    setPlayer(player?.mode === "one" && player.id === c.id ? null : { mode: "one", id: c.id })
+                    run(
+                      () => addChapter(g.id, { label: newLabel, subtitle: newSubtitle, url: newUrl }),
+                      () => {
+                        setNewLabel("");
+                        setNewSubtitle("");
+                        setNewUrl("");
+                        setAdding(false);
+                      }
+                    )
                   }
-                  className="text-sm font-semibold text-lagoon hover:underline"
+                  className="rounded-full bg-navy px-4 py-2 text-xs font-bold text-white hover:bg-navy-light disabled:opacity-50"
                 >
-                  {player?.mode === "one" && player.id === c.id ? "Fermer" : "Regarder"}
+                  Ajouter
                 </button>
-              )}
-              <a
-                href={c.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm font-semibold text-lagoon hover:underline"
-              >
-                Ouvrir
-              </a>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <button type="button" onClick={() => setAdding(true)} className="text-sm font-semibold text-lagoon hover:underline">
+                + Ajouter un chapitre
+              </button>
               <button
                 type="button"
                 disabled={pending}
                 onClick={() => {
-                  if (window.confirm(`Retirer le chapitre « ${c.label} » ? (la vidéo reste sur YouTube / Drive)`)) {
-                    run(() => deleteChapter(c.id));
+                  if (window.confirm(`Supprimer « ${g.title} » et tous ses chapitres ? (les vidéos restent sur YouTube / Drive)`)) {
+                    run(() => deleteGroup(g.id));
                   }
                 }}
                 className="text-xs font-semibold text-ink/40 hover:text-cardinal"
               >
-                Retirer
+                Supprimer ce replay
               </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {adding ? (
-        <div className="flex flex-wrap gap-2">
-          <input
-            value={newLabel}
-            onChange={(e) => setNewLabel(e.target.value)}
-            placeholder="Nom du chapitre"
-            className={`${inputClass} w-full sm:w-1/3`}
-          />
-          <input
-            value={newUrl}
-            onChange={(e) => setNewUrl(e.target.value)}
-            placeholder="Lien YouTube ou Drive"
-            className={`${inputClass} min-w-0 flex-1`}
-          />
-          <button
-            type="button"
-            disabled={pending || !newUrl.trim()}
-            onClick={() =>
-              run(
-                () => addChapter(g.id, { label: newLabel, url: newUrl }),
-                () => {
-                  setNewLabel("");
-                  setNewUrl("");
-                  setAdding(false);
-                }
-              )
-            }
-            className="rounded-full bg-navy px-4 py-2 text-xs font-bold text-white hover:bg-navy-light disabled:opacity-50"
-          >
-            Ajouter
-          </button>
-        </div>
-      ) : (
-        <div className="flex items-center justify-between">
-          <button type="button" onClick={() => setAdding(true)} className="text-sm font-semibold text-lagoon hover:underline">
-            + Ajouter un chapitre
-          </button>
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => {
-              if (window.confirm(`Supprimer « ${g.title} » et tous ses chapitres ? (les vidéos restent sur YouTube / Drive)`)) {
-                run(() => deleteGroup(g.id));
-              }
-            }}
-            className="text-xs font-semibold text-ink/40 hover:text-cardinal"
-          >
-            Supprimer ce replay
-          </button>
+            </div>
+          )}
+          {error && <p className="text-sm text-cardinal-dark">{error}</p>}
         </div>
       )}
-      {error && <p className="text-sm text-cardinal-dark">{error}</p>}
     </div>
   );
 }

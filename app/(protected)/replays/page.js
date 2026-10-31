@@ -21,7 +21,7 @@ export default async function ReplaysPage({ searchParams }) {
     supabase
       .from("replay_groups")
       .select(
-        "id, title, sport, recorded_on, season, team, division, match_id, created_at, replay_chapters(id, label, url, provider, video_ref, position)"
+        "id, title, sport, recorded_on, season, team, division, match_id, created_at, replay_chapters(id, label, subtitle, url, provider, video_ref, position)"
       ),
     supabase
       .from("basketball_matches")
@@ -78,6 +78,7 @@ export default async function ReplaysPage({ searchParams }) {
       .map((c) => ({
         id: c.id,
         label: c.label,
+        subtitle: c.subtitle ?? "",
         url: c.url,
         provider: c.provider,
         embed: embedUrl(c.provider, c.video_ref),

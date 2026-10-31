@@ -26,12 +26,16 @@ create table if not exists multisports.replay_chapters (
   id uuid primary key default gen_random_uuid(),
   group_id uuid not null references multisports.replay_groups(id) on delete cascade,
   label text not null,               -- ex. 1er quart-temps, 50 m NL
+  subtitle text,                     -- petit texte sous le nom du chapitre (facultatif)
   url text not null,
   provider text not null check (provider in ('youtube', 'drive', 'autre')),
   video_ref text,                    -- identifiant YouTube / Drive extrait du lien
   position int not null default 0,
   created_at timestamptz not null default now()
 );
+
+-- Pour une base où les tables existent déjà (version précédente) :
+alter table multisports.replay_chapters add column if not exists subtitle text;
 
 create index if not exists replay_groups_recorded_on_idx on multisports.replay_groups (recorded_on desc);
 create index if not exists replay_chapters_group_idx on multisports.replay_chapters (group_id, position);
