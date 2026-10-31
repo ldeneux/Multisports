@@ -21,11 +21,8 @@ import json
 import traceback
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
-from zoneinfo import ZoneInfo
 
 from ffbb_data_client import FFBBDataClient
-
-PARIS = ZoneInfo("Europe/Paris")
 
 
 def g(obj, *path):
@@ -44,7 +41,10 @@ def sid(value):
 def normalise(h):
     """Un match de la recherche -> un dict simple, lu par le code JavaScript."""
     d = getattr(h, "date_rencontre", None)
-    date_iso = d.replace(tzinfo=PARIS).isoformat() if d is not None else None
+    # Convention de l'appli : l'heure de Paris est enregistrée telle quelle
+    # (16:30 reste 16:30), étiquetée UTC. L'affichage et le flux agenda (.ics)
+    # s'appuient là-dessus : ne PAS convertir vers un vrai fuseau.
+    date_iso = d.strftime("%Y-%m-%dT%H:%M:%S") + "Z" if d is not None else None
     return {
         "id": sid(h.id),
         "date": date_iso,

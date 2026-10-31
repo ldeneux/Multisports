@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { computeCurrentSeasonLabel } from "@/lib/utils";
 import { fetchFfbbPoule } from "@/lib/ffbbProxy";
@@ -307,6 +308,72 @@ export async function saveFfbbScore(formData) {
   assertNoError("Enregistrement du score", error);
 
   revalidatePath("/basket");
+}
+
+// Date/heure et ID FFBB d'un match (manuel OU synchronisé), saisis dans la
+// feuille de match. Deux usages :
+//  - corriger la date/l'heure quand le match est déplacé ;
+//  - rattacher un match saisi à la main à son ID FFBB : la prochaine synchro
+//    le reconnaît alors et le complète (équipes, lieu, écussons) au lieu d'en
+//    créer un second. Un score déjà saisi n'est jamais touché.
+// L'heure est enregistrée comme partout dans l'appli : l'heure de Paris telle
+// quelle (16:30 reste 16:30), étiquetée UTC. Pour un match synchronisé, la
+// date FFBB reprend le dessus à la synchro suivante si elle est différente.
+// L'ID d'un match qui en a déjà un n'est jamais modifiable ici.
+export async function updateMatchInfo(formData) {
+  const supabase = createClient();
+  const matchId = formData.get("match_id");
+
+  // Retour à la feuille de match ouverte (chemin interne uniquement).
+  const rawReturn = String(formData.get("return_to") || "");
+  const returnTo = rawReturn.startsWith("/basket") ? rawReturn : "/basket";
+  const withError = (code) =>
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}erreur=${code}`);
+
+  const { data: match } = await supabase
+    .from("basketball_matches")
+    .select("participant_sport_id, season, ffbb_rencontre_id")
+    .eq("id", matchId)
+    .maybeSingle();
+  if (!match || !isCurrentSeason(match.season)) {
+    revalidatePath("/basket");
+    return;
+  }
+
+  const update = {};
+
+  const rawDate = String(formData.get("match_date") || "").trim();
+  if (rawDate) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(rawDate)) withError("date");
+    update.match_date = `${rawDate}:00+00:00`;
+  }
+
+  if (!match.ffbb_rencontre_id) {
+    // Accepte le numéro seul ou le lien complet .../match/200000014737757
+    const rawId = String(formData.get("ffbb_rencontre_id") || "").trim();
+    if (rawId) {
+      const found = rawId.match(/match\/(\d{6,})/) || rawId.match(/^(\d{6,})$/);
+      if (!found) withError("id");
+      const newId = found[1];
+      const { data: clash } = await supabase
+        .from("basketball_matches")
+        .select("id")
+        .eq("participant_sport_id", match.participant_sport_id)
+        .eq("ffbb_rencontre_id", newId)
+        .neq("id", matchId)
+        .limit(1);
+      if (clash && clash.length > 0) withError("id-utilise");
+      update.ffbb_rencontre_id = newId;
+    }
+  }
+
+  if (Object.keys(update).length > 0) {
+    const { error } = await supabase.from("basketball_matches").update(update).eq("id", matchId);
+    assertNoError("Modification du match", error);
+  }
+
+  revalidatePath("/basket");
+  redirect(returnTo);
 }
 
 // Effectif de l'équipe — persistant, réutilisable d'un match à l'autre (et
