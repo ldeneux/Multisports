@@ -4,14 +4,14 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { CalendarDays, CircleDot, Waves, Trophy, Radio, FolderOpen, Settings, LogOut } from "lucide-react";
+import { CalendarDays, CircleDot, Waves, Trophy, Video, FolderOpen, Settings, LogOut } from "lucide-react";
 
 const LINKS = [
   { href: "/", label: "Calendrier", icon: CalendarDays },
   { href: "/basket", label: "Basket", icon: CircleDot },
   { href: "/natation", label: "Natation", icon: Waves },
   { href: "/autres-sports", label: "Autres sports", icon: Trophy },
-  { href: "/direct", label: "Direct", icon: Radio },
+  { href: "/replays", label: "Replay", icon: Video },
   { href: "/documents", label: "Documents", icon: FolderOpen },
   { href: "/parametres", label: "Paramètres", icon: Settings },
 ];
@@ -41,7 +41,7 @@ export default function NavBar() {
         <nav className="space-y-1 flex-1">
           {LINKS.map((link) => {
             const Icon = link.icon;
-            const active = link.href === "/" ? pathname === "/" : pathname.startsWith(link.href);
+            const active = pathname === link.href;
             return (
               <Link
                 key={link.href}
@@ -69,7 +69,7 @@ export default function NavBar() {
       <div className="sm:hidden fixed bottom-0 inset-x-0 bg-white border-t border-ink/10 flex z-10">
         {LINKS.map((link) => {
           const Icon = link.icon;
-          const active = link.href === "/" ? pathname === "/" : pathname.startsWith(link.href);
+          const active = pathname === link.href;
           return (
             <Link
               key={link.href}

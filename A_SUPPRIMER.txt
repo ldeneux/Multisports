@@ -8,3 +8,8 @@ Si tu as déjà copié la version LiveKit ou la version Mux dans ton projet, sup
 et retire de package.json : livekit-client, livekit-server-sdk, @mux/mux-player-react
 (le package.json de ce zip est déjà à jour).
 Les variables Vercel MUX_* et LIVEKIT_* ne servent plus : tu peux les supprimer.
+
+components/NavBar.jsx de ce zip remplace l'entrée « Direct » du menu par « Replay » (/replays).
+Si ton NavBar contient d'autres modifications, reprends seulement ces deux changements :
+  1. ajouter Video à l'import de lucide-react
+  2. { href: "/replays", label: "Replay", icon: Video }  à la place de l'entrée Direct
