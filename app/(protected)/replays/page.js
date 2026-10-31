@@ -6,13 +6,18 @@ export const dynamic = "force-dynamic";
 
 // m.match_date est stocké en « heure de Paris lue comme UTC » : on l'affiche donc en UTC.
 function shortDate(value) {
-  return new Date(value).toLocaleDateString("fr-FR", { timeZone: "UTC", day: "2-digit", month: "2-digit" });
+  return new Date(value).toLocaleDateString("fr-FR", { timeZone: "UTC", day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 export default async function ReplaysPage({ searchParams }) {
   const supabase = createClient();
 
-  const [{ data: groupRows, error: groupError }, { data: matchRows }] = await Promise.all([
+  const [
+    { data: groupRows, error: groupError },
+    { data: matchRows },
+    { data: phaseRows },
+    { data: psRows },
+  ] = await Promise.all([
     supabase
       .from("replay_groups")
       .select(
@@ -20,20 +25,39 @@ export default async function ReplaysPage({ searchParams }) {
       ),
     supabase
       .from("basketball_matches")
-      .select("id, team1_name, team2_name, match_date, season, division_label")
+      .select(
+        "id, team1_name, team2_name, match_date, season, division_label, us_is_team1, phase_id, participant_sport_id"
+      )
       .not("us_is_team1", "is", null)
-      .order("match_date", { ascending: false }),
+      .order("match_date", { ascending: true }),
+    supabase.from("basketball_phases").select("id, phase_name, position"),
+    supabase.from("participant_sports").select("id, category, participants(first_name)"),
   ]);
 
-  // Pour préremplir le formulaire quand on choisit un match.
-  const matches = (matchRows ?? []).map((m) => ({
-    id: m.id,
-    label: `${shortDate(m.match_date)} · ${m.team1_name} – ${m.team2_name}`,
-    title: `${m.team1_name} – ${m.team2_name}`,
-    date: new Date(m.match_date).toISOString().slice(0, 10),
-    season: m.season ?? "",
-    division: m.division_label ?? "",
-  }));
+  const phaseById = new Map((phaseRows ?? []).map((ph) => [ph.id, ph]));
+  const psById = new Map((psRows ?? []).map((ps) => [ps.id, ps]));
+
+  // Pour le sélecteur de match (Saison → Équipe → Phase → Match, ou recherche par adversaire)
+  const matches = (matchRows ?? []).map((m) => {
+    const ps = psById.get(m.participant_sport_id);
+    const phase = phaseById.get(m.phase_id);
+    return {
+      id: m.id,
+      title: `${m.team1_name} – ${m.team2_name}`,
+      date: new Date(m.match_date).toISOString().slice(0, 10),
+      shortDate: shortDate(m.match_date),
+      season: m.season ?? "",
+      division: m.division_label ?? "",
+      opponent: (m.us_is_team1 ? m.team2_name : m.team1_name) ?? "",
+      home: m.us_is_team1 === true,
+      psId: m.participant_sport_id ?? "",
+      who: ps?.participants?.first_name ?? "",
+      team: ps?.category ?? "",
+      phaseId: m.phase_id ?? "",
+      phaseName: phase?.phase_name ?? "Sans phase",
+      phasePos: phase?.position ?? 0,
+    };
+  });
 
   // Plus récents d'abord : date du match / de la compétition si connue, sinon date d'ajout.
   const sortKey = (g) => g.recorded_on ?? String(g.created_at).slice(0, 10);

@@ -48,6 +48,152 @@ function Field({ label, children }) {
 }
 
 // ---------------------------------------------------------------------------
+// Sélecteur de match : Saison → Équipe → Phase → Match, ou recherche par adversaire
+// ---------------------------------------------------------------------------
+const normalize = (text) =>
+  String(text ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+const unique = (values) => [...new Set(values)];
+
+function MatchPicker({ matches, value, onPick }) {
+  const selected = matches.find((m) => m.id === value);
+  const [query, setQuery] = useState("");
+  const [season, setSeason] = useState(selected?.season ?? "");
+  const [psId, setPsId] = useState(selected?.psId ?? "");
+  const [phaseId, setPhaseId] = useState(selected?.phaseId ?? "");
+
+  // Chaque niveau retombe sur son premier choix si la sélection n'existe plus au niveau du dessus.
+  const seasons = unique(matches.map((m) => m.season)).sort().reverse();
+  const effSeason = seasons.includes(season) ? season : seasons[0] ?? "";
+  const inSeason = matches.filter((m) => m.season === effSeason);
+
+  const teams = unique(inSeason.map((m) => m.psId)).map((id) => {
+    const m = inSeason.find((x) => x.psId === id);
+    return { id, name: [m.who, m.team].filter(Boolean).join(" · ") || "Équipe" };
+  });
+  const effPs = teams.some((t) => t.id === psId) ? psId : teams[0]?.id ?? "";
+  const inTeam = inSeason.filter((m) => m.psId === effPs);
+
+  const phases = unique(inTeam.map((m) => m.phaseId))
+    .map((id) => inTeam.find((x) => x.phaseId === id))
+    .sort((a, b) => a.phasePos - b.phasePos)
+    .map((m) => ({ id: m.phaseId, name: m.phaseName }));
+  const effPhase = phases.some((ph) => ph.id === phaseId) ? phaseId : phases[0]?.id ?? "";
+  const inPhase = inTeam.filter((m) => m.phaseId === effPhase);
+
+  const q = normalize(query).trim();
+  const results =
+    q.length >= 2
+      ? matches
+          .filter((m) => normalize(m.opponent).includes(q))
+          .sort((a, b) => b.date.localeCompare(a.date))
+          .slice(0, 30)
+      : [];
+
+  const describe = (m) => [m.who, m.team, m.season && `saison ${m.season}`, m.phaseName].filter(Boolean).join(" · ");
+
+  return (
+    <div className="space-y-2 rounded-md border border-ink/10 p-3">
+      <p className="text-xs font-semibold text-ink/60">Match du calendrier (remplit les infos ci-dessous)</p>
+
+      {selected && (
+        <div className="flex items-start justify-between gap-2 rounded-md bg-sand px-3 py-2 text-sm">
+          <span>
+            <span className="font-semibold text-navy">{selected.title}</span>
+            <span className="block text-xs text-ink/50">
+              {selected.shortDate} · {describe(selected)}
+            </span>
+          </span>
+          <button type="button" onClick={() => onPick("")} className="text-xs font-semibold text-ink/40 hover:text-cardinal">
+            Retirer
+          </button>
+        </div>
+      )}
+
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Rechercher un adversaire (ex. Lyon, Rillieux…)"
+        className={inputClass}
+      />
+
+      {q.length >= 2 ? (
+        <ul className="max-h-60 divide-y divide-ink/5 overflow-y-auto rounded-md border border-ink/10">
+          {results.length === 0 && <li className="px-3 py-2 text-sm text-ink/50">Aucun adversaire trouvé.</li>}
+          {results.map((m) => (
+            <li key={m.id}>
+              <button
+                type="button"
+                onClick={() => {
+                  onPick(m.id);
+                  setQuery("");
+                  setSeason(m.season);
+                  setPsId(m.psId);
+                  setPhaseId(m.phaseId);
+                }}
+                className="block w-full px-3 py-2 text-left hover:bg-sand"
+              >
+                <span className="text-sm font-semibold text-navy">
+                  {m.shortDate} · {m.opponent} ({m.home ? "dom." : "ext."})
+                </span>
+                <span className="block text-xs text-ink/50">{describe(m)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Saison">
+            <select value={effSeason} onChange={(e) => setSeason(e.target.value)} className={inputClass}>
+              {seasons.map((s) => (
+                <option key={s || "none"} value={s}>
+                  {s || "Sans saison"}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Équipe">
+            <select value={effPs} onChange={(e) => setPsId(e.target.value)} className={inputClass}>
+              {teams.map((t) => (
+                <option key={t.id || "none"} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Phase">
+            <select value={effPhase} onChange={(e) => setPhaseId(e.target.value)} className={inputClass}>
+              {phases.map((ph) => (
+                <option key={ph.id || "none"} value={ph.id}>
+                  {ph.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Match">
+            <select
+              value={inPhase.some((m) => m.id === value) ? value : ""}
+              onChange={(e) => onPick(e.target.value)}
+              className={inputClass}
+            >
+              <option value="">— choisir —</option>
+              {inPhase.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.shortDate.slice(0, 5)} · {m.opponent} ({m.home ? "dom." : "ext."})
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Formulaire : un match / une compétition + ses chapitres
 // ---------------------------------------------------------------------------
 export function ReplayForm({ matches, defaultMatchId, startOpen }) {
@@ -59,7 +205,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
   const [recordedOn, setRecordedOn] = useState(initial?.date ?? "");
   const [season, setSeason] = useState(initial?.season || seasonFromDate(initial?.date ?? ""));
   const [seasonAuto, setSeasonAuto] = useState(!initial?.season);
-  const [team, setTeam] = useState("");
+  const [team, setTeam] = useState(initial?.team ?? "");
   const [division, setDivision] = useState(initial?.division ?? "");
   const [matchId, setMatchId] = useState(initial?.id ?? "");
   const [rows, setRows] = useState(() => defaultRows("basket"));
@@ -76,6 +222,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
     setSeason(m.season || seasonFromDate(m.date));
     setSeasonAuto(!m.season);
     setDivision(m.division);
+    if (m.team) setTeam(m.team);
   }
 
   function changeDate(value) {
@@ -150,18 +297,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
           </Field>
         </div>
 
-        {sport === "basket" && (
-          <Field label="Match du calendrier (remplit les infos ci-dessous)">
-            <select value={matchId} onChange={(e) => pickMatch(e.target.value)} className={inputClass}>
-              <option value="">— aucun —</option>
-              {matches.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
+        {sport === "basket" && <MatchPicker matches={matches} value={matchId} onPick={pickMatch} />}
 
         <Field label="Titre">
           <input
