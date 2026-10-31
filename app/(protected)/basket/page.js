@@ -19,6 +19,7 @@ import {
 import {
   addMatch,
   saveMatchSheet,
+  updateMatchDate,
   resetMatchSheet,
   saveMatchStats,
   togglePlayerOnSheet,
@@ -1739,6 +1740,31 @@ async function MatchSheetPage({ matchId, backHref }) {
         <p className="mt-1 text-sm text-ink/50">
           {match.match_date ? formatDateTime(match.match_date) : "Date à confirmer"}
         </p>
+        {!isPlayed && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs font-semibold text-lagoon">Modifier la date et l'heure</summary>
+            <form action={updateMatchDate} className="mt-2 flex flex-wrap items-center gap-2">
+              <input type="hidden" name="match_id" value={match.id} />
+              <input
+                type="datetime-local"
+                name="match_date"
+                required
+                defaultValue={match.match_date ? new Date(match.match_date).toISOString().slice(0, 16) : ""}
+                className="rounded-lg border border-ink/15 px-2 py-1 text-sm"
+              />
+              <SyncButton
+                pendingLabel="Enregistrement..."
+                className="rounded-full bg-lagoon px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+              >
+                Enregistrer
+              </SyncButton>
+            </form>
+            <p className="mt-1 text-xs text-ink/40">
+              Heure de Paris. {isManual ? "" : "Une synchro FFBB réussie remettra la date officielle de ce match. "}
+              Mets 00:00 si l'heure n'est pas encore connue.
+            </p>
+          </details>
+        )}
       </div>
 
       <div className="rounded-card bg-white p-5 shadow-sm">

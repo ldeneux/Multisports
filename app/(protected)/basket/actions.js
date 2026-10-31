@@ -262,6 +262,35 @@ export async function saveMatchSheet(formData) {
   revalidatePath("/basket");
 }
 
+// Modification MANUELLE de la date et de l'heure d'un match à venir (utile quand la
+// synchro FFBB est indisponible, ou pour renseigner une heure encore à « 0:00 »).
+// match_date est stocké comme l'horloge de Paris lue en UTC (convention de l'appli) :
+// on enregistre donc la valeur saisie telle quelle, en UTC. Une synchro FFBB réussie
+// remettra, pour un match synchronisé, la date officielle.
+export async function updateMatchDate(formData) {
+  const supabase = createClient();
+  const matchId = formData.get("match_id");
+  const raw = String(formData.get("match_date") ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(raw)) {
+    revalidatePath("/basket");
+    return;
+  }
+  const { data: match } = await supabase
+    .from("basketball_matches")
+    .select("status")
+    .eq("id", matchId)
+    .maybeSingle();
+  if (!match || match.status === "joue") {
+    revalidatePath("/basket");
+    return;
+  }
+  const value = raw.length === 16 ? `${raw}:00+00:00` : `${raw}+00:00`;
+  const { error } = await supabase.from("basketball_matches").update({ match_date: value }).eq("id", matchId);
+  assertNoError("Modification de la date du match", error);
+
+  revalidatePath("/basket");
+}
+
 // Effectif de l'équipe — persistant, réutilisable d'un match à l'autre (et
 // d'une saison à l'autre : la liste est rattachée au participant, pas à une
 // phase ou une saison précise). Fiche façon FFBB (e-marque) : les champs
