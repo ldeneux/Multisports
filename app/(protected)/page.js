@@ -188,9 +188,15 @@ export default async function HomePage({ searchParams }) {
     .order("match_date");
 
   // Adresses / gymnases des clubs qui reçoivent (équipe 1 = domicile), pour la fiche détaillée.
-  const homeClubKeys = [...new Set((bbMatches ?? []).map((m) => stripTeamSuffix(m.team1_name)).filter(Boolean))];
+  const homeClubKeys = [
+    ...new Set(
+      (bbMatches ?? [])
+        .flatMap((m) => [stripTeamSuffix(m.team1_name), stripTeamSuffix(m.team2_name)])
+        .filter(Boolean)
+    ),
+  ];
   const { data: clubRows } = homeClubKeys.length
-    ? await supabase.from("basketball_clubs").select("club_key, gymnase, adresse").in("club_key", homeClubKeys)
+    ? await supabase.from("basketball_clubs").select("club_key, gymnase, adresse, logo_asset").in("club_key", homeClubKeys)
     : { data: [] };
   const clubByKey = new Map((clubRows ?? []).map((c) => [c.club_key, c]));
 
@@ -216,6 +222,7 @@ export default async function HomePage({ searchParams }) {
         detail: (() => {
           // m.match_date = heure de Paris lue comme UTC : on l'affiche donc en UTC.
           const club = clubByKey.get(stripTeamSuffix(m.team1_name));
+          const club2 = clubByKey.get(stripTeamSuffix(m.team2_name));
           const gym = club?.gymnase || (m.location ? m.location.split(",")[0].trim() : "");
           const addr = club?.adresse || "";
           // "Gymnase X, Ville" déjà contenu dans l'adresse : on ne l'affiche qu'une fois.
@@ -237,8 +244,9 @@ export default async function HomePage({ searchParams }) {
             competition: [m.division_label, journeeLabel(m.numero_journee)].filter(Boolean).join(" - "),
             team1: m.team1_name,
             team2: m.team2_name,
-            logo1: ffbbAssetUrl(m.team1_logo_asset, { width: 300 }),
-            logo2: ffbbAssetUrl(m.team2_logo_asset, { width: 300 }),
+            // Écusson du match, sinon celui enregistré pour le club (table des clubs).
+            logo1: ffbbAssetUrl(m.team1_logo_asset || club?.logo_asset, { width: 300 }),
+            logo2: ffbbAssetUrl(m.team2_logo_asset || club2?.logo_asset, { width: 300 }),
             usIsTeam1: m.us_is_team1,
             category: m.participant_sports?.category ?? "",
             played,
