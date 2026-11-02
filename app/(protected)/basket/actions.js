@@ -1428,8 +1428,8 @@ export async function importMatchStatsFromTeamStats(matchId) {
 // ---------------------------------------------------------------------------
 // Classement CALCULÉ par l'appli, à partir des matchs enregistrés dans la phase.
 // Sert quand la synchro FFBB est indisponible (saisie manuelle des résultats).
-// Barème au choix : « 21 » = victoire 2 pts, défaite 1 pt ; « 321 » = victoire 3, nul 2, défaite 1
-// (cas des U11, vérifié sur le classement officiel d'une poule U11). Départage des égalités
+// Barème automatique : compétition U11 = victoire 3, nul 2, défaite 1 (vérifié sur le classement
+// officiel d'une poule U11) ; toute autre catégorie = victoire 2, défaite 1. Départage des égalités
 // (approximation du règlement) : confrontations directes (points, puis différence), puis différence
 // générale, puis points marqués. Les forfaits (0 pt) et pénalités ne sont pas connus : à comparer au site.
 // Une prochaine synchro FFBB réussie remplace ce classement par le classement officiel.
@@ -1448,8 +1448,7 @@ const CLASSEMENT_SCORING = {
   "321": { win: 3, draw: 2, loss: 1 },
 };
 
-export async function computeClassement(phaseId, scoring = "21") {
-  const rule = CLASSEMENT_SCORING[scoring] ?? CLASSEMENT_SCORING["21"];
+export async function computeClassement(phaseId) {
   const supabase = createClient();
   const {
     data: { user },
@@ -1466,10 +1465,19 @@ export async function computeClassement(phaseId, scoring = "21") {
   const { data: matches, error: matchError } = await supabase
     .from("basketball_matches")
     .select(
-      "id, team1_name, team2_name, team1_engagement_id, team2_engagement_id, team1_score, team2_score, status, us_is_team1, poule_id"
+      "id, team1_name, team2_name, team1_engagement_id, team2_engagement_id, team1_score, team2_score, status, us_is_team1, poule_id, division_label"
     )
     .eq("phase_id", phaseId);
   if (matchError) return { error: matchError.message };
+
+  // Barème : U11 (catégorie de l'équipe ou nom de la compétition) = 3-2-1, sinon 2-1.
+  const { data: sportRow } = await supabase
+    .from("participant_sports")
+    .select("category")
+    .eq("id", phase.participant_sport_id)
+    .maybeSingle();
+  const scoringText = [sportRow?.category, ...(matches ?? []).map((m) => m.division_label)].filter(Boolean).join(" ");
+  const rule = CLASSEMENT_SCORING[/\bU\s?11\b/i.test(scoringText) ? "321" : "21"];
 
   // 1. Les équipes de la poule (une entrée par nom d'équipe).
   const teams = new Map();

@@ -2456,16 +2456,7 @@ export default async function BasketPage({ searchParams }) {
             <div className="space-y-3">
               {selectedPhase && selectedPhase.phase_type !== "amical" && (
                 <div className="flex justify-end">
-                  <ComputeClassementButton
-                    phaseId={selectedPhase.id}
-                    defaultScoring={
-                      // Nuls présents ou catégorie U7/U9/U11 : barème 3-2-1 ; sinon 2-1.
-                      matches.some((m) => m.status === "joue" && m.team1_score != null && m.team1_score === m.team2_score) ||
-                      /\bU\s?(7|9|11)\b/i.test(matches.find((m) => m.division_label)?.division_label ?? "")
-                        ? "321"
-                        : "21"
-                    }
-                  />
+                  <ComputeClassementButton phaseId={selectedPhase.id} />
                 </div>
               )}
               <ClassementTab classement={classement} matches={matches} />
