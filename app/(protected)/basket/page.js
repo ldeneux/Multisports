@@ -618,7 +618,7 @@ function ClassementTab({ classement, matches }) {
         const scoreAgainst = isTeam1 ? m.team2_score : m.team1_score;
         bp += scoreFor;
         bc += scoreAgainst;
-        forme.push(scoreFor > scoreAgainst ? "V" : "D");
+        forme.push(scoreFor > scoreAgainst ? "V" : scoreFor < scoreAgainst ? "D" : "N");
       });
 
       // Logo : celui de cette équipe sur n'importe lequel de ses matchs déjà
@@ -643,6 +643,9 @@ function ClassementTab({ classement, matches }) {
       };
     });
 
+  // Colonne « G-N-P » dès qu'un match nul existe dans le classement (cas des U11).
+  const hasDraws = classement.some((c) => (c.matches_joues ?? 0) - (c.gagnes ?? 0) - (c.perdus ?? 0) > 0);
+
   return (
     <div className="overflow-x-auto rounded-card bg-white shadow-sm">
       <table className="w-full min-w-[680px] text-sm">
@@ -652,7 +655,7 @@ function ClassementTab({ classement, matches }) {
             <th className="px-4 py-2">Équipe</th>
             <th className="px-3 py-2 text-right">Pts</th>
             <th className="px-3 py-2 text-right">J</th>
-            <th className="px-3 py-2 text-right">G-P</th>
+            <th className="px-3 py-2 text-right">{hasDraws ? "G-N-P" : "G-P"}</th>
             <th className="px-3 py-2 text-right">BP</th>
             <th className="px-3 py-2 text-right">BC</th>
             <th className="px-3 py-2 text-right">Diff</th>
@@ -686,7 +689,9 @@ function ClassementTab({ classement, matches }) {
                       : "text-ink/60"
                 }`}
               >
-                {c.gagnes ?? "—"}-{c.perdus ?? "—"}
+                {hasDraws
+                  ? `${c.gagnes ?? "—"}-${(c.matches_joues ?? 0) - (c.gagnes ?? 0) - (c.perdus ?? 0)}-${c.perdus ?? "—"}`
+                  : `${c.gagnes ?? "—"}-${c.perdus ?? "—"}`}
               </td>
               <td className="px-3 py-2 text-right text-ink/60">{bp || "—"}</td>
               <td className="px-3 py-2 text-right text-ink/60">{bc || "—"}</td>
@@ -708,7 +713,7 @@ function ClassementTab({ classement, matches }) {
                       <span
                         key={i}
                         className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white ${
-                          r === "V" ? "bg-lagoon" : "bg-cardinal"
+                          r === "V" ? "bg-lagoon" : r === "N" ? "bg-ink/40" : "bg-cardinal"
                         }`}
                       >
                         {r}
@@ -2451,7 +2456,16 @@ export default async function BasketPage({ searchParams }) {
             <div className="space-y-3">
               {selectedPhase && selectedPhase.phase_type !== "amical" && (
                 <div className="flex justify-end">
-                  <ComputeClassementButton phaseId={selectedPhase.id} />
+                  <ComputeClassementButton
+                    phaseId={selectedPhase.id}
+                    defaultScoring={
+                      // Nuls présents ou catégorie U7/U9/U11 : barème 3-2-1 ; sinon 2-1.
+                      matches.some((m) => m.status === "joue" && m.team1_score != null && m.team1_score === m.team2_score) ||
+                      /\bU\s?(7|9|11)\b/i.test(matches.find((m) => m.division_label)?.division_label ?? "")
+                        ? "321"
+                        : "21"
+                    }
+                  />
                 </div>
               )}
               <ClassementTab classement={classement} matches={matches} />

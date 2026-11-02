@@ -1428,9 +1428,10 @@ export async function importMatchStatsFromTeamStats(matchId) {
 // ---------------------------------------------------------------------------
 // Classement CALCULÉ par l'appli, à partir des matchs enregistrés dans la phase.
 // Sert quand la synchro FFBB est indisponible (saisie manuelle des résultats).
-// Barème FFBB : victoire 2 pts, défaite 1 pt. Départage des égalités (approximation du
-// règlement) : confrontations directes (points, puis différence), puis différence générale,
-// puis points marqués. Les forfaits (0 pt) et pénalités ne sont pas connus : à comparer au site.
+// Barème au choix : « 21 » = victoire 2 pts, défaite 1 pt ; « 321 » = victoire 3, nul 2, défaite 1
+// (cas des U11, vérifié sur le classement officiel d'une poule U11). Départage des égalités
+// (approximation du règlement) : confrontations directes (points, puis différence), puis différence
+// générale, puis points marqués. Les forfaits (0 pt) et pénalités ne sont pas connus : à comparer au site.
 // Une prochaine synchro FFBB réussie remplace ce classement par le classement officiel.
 // ---------------------------------------------------------------------------
 function teamKey(name) {
@@ -1442,7 +1443,13 @@ function teamKey(name) {
     .trim();
 }
 
-export async function computeClassement(phaseId) {
+const CLASSEMENT_SCORING = {
+  "21": { win: 2, draw: 1, loss: 1 },
+  "321": { win: 3, draw: 2, loss: 1 },
+};
+
+export async function computeClassement(phaseId, scoring = "21") {
+  const rule = CLASSEMENT_SCORING[scoring] ?? CLASSEMENT_SCORING["21"];
   const supabase = createClient();
   const {
     data: { user },
@@ -1507,7 +1514,7 @@ export async function computeClassement(phaseId) {
   );
   if (played.length === 0) return { error: "Aucun match joué avec un score dans cette phase." };
 
-  const stats = new Map([...teams.values()].map((t) => [t.key, { ...t, j: 0, g: 0, p: 0, pts: 0, bp: 0, bc: 0 }]));
+  const stats = new Map([...teams.values()].map((t) => [t.key, { ...t, j: 0, g: 0, p: 0, n: 0, pts: 0, bp: 0, bc: 0 }]));
   for (const m of played) {
     const a = stats.get(teamKey(m.team1_name));
     const b = stats.get(teamKey(m.team2_name));
@@ -1519,11 +1526,11 @@ export async function computeClassement(phaseId) {
     b.bp += m.team2_score;
     b.bc += m.team1_score;
     if (m.team1_score > m.team2_score) {
-      a.g += 1; a.pts += 2; b.p += 1; b.pts += 1;
+      a.g += 1; a.pts += rule.win; b.p += 1; b.pts += rule.loss;
     } else if (m.team1_score < m.team2_score) {
-      b.g += 1; b.pts += 2; a.p += 1; a.pts += 1;
+      b.g += 1; b.pts += rule.win; a.p += 1; a.pts += rule.loss;
     } else {
-      a.pts += 1; b.pts += 1; // égalité (ne devrait pas arriver en basket)
+      a.n += 1; b.n += 1; a.pts += rule.draw; b.pts += rule.draw; // match nul (possible en U11)
     }
   }
 
@@ -1546,8 +1553,8 @@ export async function computeClassement(phaseId) {
         const d = m.team1_score - m.team2_score;
         h2h.get(k1).diff += d;
         h2h.get(k2).diff -= d;
-        h2h.get(k1).pts += d > 0 ? 2 : 1;
-        h2h.get(k2).pts += d < 0 ? 2 : 1;
+        h2h.get(k1).pts += d > 0 ? rule.win : d < 0 ? rule.loss : rule.draw;
+        h2h.get(k2).pts += d < 0 ? rule.win : d > 0 ? rule.loss : rule.draw;
       }
       group.sort(
         (a, b) =>
@@ -1594,5 +1601,8 @@ export async function computeClassement(phaseId) {
   }
 
   revalidatePath("/basket");
-  return { ok: true, message: `Classement calculé : ${ranked.length} équipes, ${played.length} matchs joués.` };
+  return {
+    ok: true,
+    message: `Classement calculé (victoire ${rule.win}, nul ${rule.draw}, défaite ${rule.loss}) : ${ranked.length} équipes, ${played.length} matchs joués.`,
+  };
 }
