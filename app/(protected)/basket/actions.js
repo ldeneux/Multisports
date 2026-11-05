@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { computeCurrentSeasonLabel } from "@/lib/utils";
-import { fetchPouleFromPage } from "@/lib/ffbbPage";
+import { fetchPouleFromPage, parseCompetitionUrl } from "@/lib/ffbbPage";
 
 // Supabase-js ne lève pas d'exception sur une erreur de requête : il faut
 // vérifier { error } explicitement, sinon un échec passe inaperçu.
@@ -973,10 +973,40 @@ export async function syncPhase(formData) {
     // Lecture de la page de la poule sur competitions.ffbb.com. Si le site
     // refuse la requête (anti-robot) ou si la structure change, l'erreur est
     // enregistrée dans last_sync_error et les matchs déjà en base sont conservés.
-    const poule = await fetchPouleFromPage({
-      competitionUrl: phase.competition_url,
-      storedPouleId: phase.poule_id,
-    });
+    // Le site bloque souvent les serveurs Vercel (HTTP 403) mais pas ton PC :
+    // `node scripts/push-ffbb.mjs` y dépose la poule dans ffbb_poule_cache, et on
+    // s'en sert quand la lecture directe échoue.
+    let poule;
+    let cacheNote = null;
+    try {
+      poule = await fetchPouleFromPage({
+        competitionUrl: phase.competition_url,
+        storedPouleId: phase.poule_id,
+      });
+    } catch (liveErr) {
+      const pouleHint = parseCompetitionUrl(phase.competition_url)?.pouleId || phase.poule_id;
+      const { data: cached } = pouleHint
+        ? await supabase
+            .from("ffbb_poule_cache")
+            .select("data, fetched_at")
+            .eq("poule_id", String(pouleHint))
+            .maybeSingle()
+        : { data: null };
+      if (!cached?.data?.rencontres?.length) {
+        throw new Error(
+          `${liveErr?.message || liveErr} Astuce : lance « node scripts/push-ffbb.mjs » depuis ton PC, puis resynchronise.`
+        );
+      }
+      poule = cached.data;
+      const when = new Date(cached.fetched_at).toLocaleString("fr-FR", {
+        timeZone: "Europe/Paris",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      cacheNote = `Données lues depuis le PC le ${when} (le site FFBB bloque le serveur).`;
+    }
 
     const pouleId = poule.pouleId;
     const competitionName = poule.competitionName || phase.competition_name || null;
@@ -1127,7 +1157,7 @@ export async function syncPhase(formData) {
         last_sync_error:
           ourMatchesCount === 0
             ? "Synchro OK mais aucun match trouvé pour cet ID — vérifie qu'il s'agit bien du bon engagement."
-            : null,
+            : cacheNote,
       })
       .eq("id", phaseId);
     assertNoError("Mise à jour du statut de synchro", okError);
@@ -1136,7 +1166,7 @@ export async function syncPhase(formData) {
     // bloqué, aucun match trouvé...) : on l'affiche tel quel sous la phase.
     // Les matchs déjà synchronisés restent en base (rien n'est supprimé avant
     // d'avoir reçu des matchs).
-    const message = String(err?.message || err).slice(0, 300);
+    const message = String(err?.message || err).slice(0, 400);
     console.error("syncPhase: erreur", engagementId, message);
 
     await supabase

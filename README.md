@@ -129,6 +129,20 @@ Pour chaque phase (onglet Basket → **Gérer les phases**) :
 Le code se trouve dans `lib/ffbbPage.js` (extraction) et `syncPhase` (`app/(protected)/basket/actions.js`).
 Le pont Python `api/ffbb.py` (recherche) n'est plus utilisé par la synchro des phases.
 
+### Si le site FFBB bloque le serveur (HTTP 403)
+
+Le site competitions.ffbb.com refuse parfois les requêtes venant de Vercel, mais accepte celles de
+ton PC. Dans ce cas, la synchro passe par ton PC :
+
+1. Une seule fois : exécute `supabase/8-ffbb-poule-cache.sql` dans Supabase → SQL Editor.
+2. Dans `.env.local` (jamais dans Vercel), ajoute le compte familial de l'appli :
+   `SYNC_EMAIL=...` et `SYNC_PASSWORD=...`
+3. À chaque mise à jour : `node scripts/push-ffbb.mjs` (à la racine du projet, après `npm install`).
+   Il lit les poules de la saison en cours et les dépose dans Supabase.
+4. Dans l'appli, clique sur **Synchroniser FFBB** : elle utilise les données déposées si la lecture
+   directe est bloquée (un message indique la date de dépôt).
+
+
 ## 7. Synchronisation FFN (Natation) — expérimentale
 
 Même principe que pour le basket, mais côté natation : l'onglet Natation va
