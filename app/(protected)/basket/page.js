@@ -68,6 +68,15 @@ function Crest({ assetId, logoUrl, name }) {
   return <img src={url} alt={name} className="h-8 w-8 shrink-0 rounded-full object-contain" />;
 }
 
+// Pastille neutre pour l'équipe qui se repose (« EXEMPT »).
+function ExemptCrest() {
+  return (
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sand text-sm text-ink/30" aria-hidden="true">
+      –
+    </span>
+  );
+}
+
 // "NEUVILLE BASKET - 2" -> "NEUVILLE BASKET" — même normalisation que côté
 // serveur (actions.js), pour retrouver la fiche club correspondante quel
 // que soit le suffixe d'équipe.
@@ -281,6 +290,12 @@ function defaultJournee(matches, journeeOptions) {
   return journeeOptions[0];
 }
 
+// Poule impaire : l'équipe qui se repose apparaît sans nom (ou « EXEMPT ») dans les données FFBB.
+// On affiche alors « EXEMPT », sans score ni heure, plutôt que « Équipe inconnue ».
+function isExemptName(name) {
+  return !name || String(name).trim().toLowerCase() === "exempt";
+}
+
 function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
   const isPlayed = m.status === "joue";
   const usIsLeft = m.us_is_team1 === true;
@@ -294,10 +309,13 @@ function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
   // d'être maquillé en "Sathonay Camp"), et de consulter ponctuellement le
   // calendrier d'une autre poule sans que l'app ne le déguise en "nous".
   // Convention FFBB : "équipe 1" = domicile -> toujours affichée à gauche.
-  const leftName = m.team1_name || "Équipe inconnue";
-  const rightName = m.team2_name || "Équipe inconnue";
-  const leftScore = m.team1_score;
-  const rightScore = m.team2_score;
+  const leftExempt = isExemptName(m.team1_name);
+  const rightExempt = isExemptName(m.team2_name);
+  const isBye = leftExempt || rightExempt;
+  const leftName = leftExempt ? "EXEMPT" : m.team1_name;
+  const rightName = rightExempt ? "EXEMPT" : m.team2_name;
+  const leftScore = isBye ? null : m.team1_score;
+  const rightScore = isBye ? null : m.team2_score;
 
   // Priorité à la fiche club (partagée entre tous les matchs, alimentée par
   // la synchro et éditable à la main pour un logo que la FFBB n'a pas, ex.
@@ -343,12 +361,16 @@ function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
       <span
         title={leftName}
         className={`min-w-0 flex-1 truncate text-right text-sm ${
-          usIsLeft ? "font-bold text-navy" : "text-ink/70"
+          leftExempt ? "font-semibold uppercase tracking-wide text-ink/40" : usIsLeft ? "font-bold text-navy" : "text-ink/70"
         }`}
       >
         {leftName}
       </span>
-      <Crest assetId={leftClub?.logo_asset ?? m.team1_logo_asset} logoUrl={leftClub?.logo_url} name={leftName} />
+      {leftExempt ? (
+        <ExemptCrest />
+      ) : (
+        <Crest assetId={leftClub?.logo_asset ?? m.team1_logo_asset} logoUrl={leftClub?.logo_url} name={leftName} />
+      )}
 
       {/* Cliquer sur la date (match à venir) ou le score (match joué) ouvre
           la feuille de match complète — plus aucune saisie sur la ligne.
@@ -357,33 +379,49 @@ function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
           soit la longueur du lieu (retiré d'ici — visible dans la feuille
           de match au clic). whitespace-nowrap sur le score : un score à 3
           chiffres de chaque côté ne doit jamais retomber sur deux lignes. */}
-      <Link
-        href={`${sheetBaseHref}&feuille=${m.id}`}
-        scroll={false}
-        className="flex w-20 shrink-0 flex-col items-center rounded-lg px-1 py-0.5 hover:bg-sand"
-        title="Ouvrir la feuille de match"
-      >
-        {isPlayed ? (
-          <span className="whitespace-nowrap font-display text-lg font-bold">
-            <span className={leftColor}>{leftScore ?? "–"}</span>
-            <span className="text-navy"> - </span>
-            <span className={rightColor}>{rightScore ?? "–"}</span>
-          </span>
-        ) : (
-          <span className="flex flex-col items-center leading-tight">
-            {shortDate && (
-              <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
-            )}
-            <span className="font-display text-sm text-ink/60">{shortTime ?? "?"}</span>
-          </span>
-        )}
-      </Link>
+      {isBye ? (
+        <span className="flex w-20 shrink-0 flex-col items-center px-1 py-0.5 leading-tight">
+          {shortDate && <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>}
+          <span className="font-display text-sm text-ink/30">–</span>
+        </span>
+      ) : (
+        <Link
+          href={`${sheetBaseHref}&feuille=${m.id}`}
+          scroll={false}
+          className="flex w-20 shrink-0 flex-col items-center rounded-lg px-1 py-0.5 hover:bg-sand"
+          title="Ouvrir la feuille de match"
+        >
+          {isPlayed ? (
+            <span className="flex flex-col items-center leading-tight">
+              {shortDate && (
+                <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
+              )}
+              <span className="whitespace-nowrap font-display text-lg font-bold">
+                <span className={leftColor}>{leftScore ?? "–"}</span>
+                <span className="text-navy"> - </span>
+                <span className={rightColor}>{rightScore ?? "–"}</span>
+              </span>
+            </span>
+          ) : (
+            <span className="flex flex-col items-center leading-tight">
+              {shortDate && (
+                <span className="text-[10px] uppercase tracking-wide text-ink/40">{shortDate}</span>
+              )}
+              <span className="font-display text-sm text-ink/60">{shortTime ?? "?"}</span>
+            </span>
+          )}
+        </Link>
+      )}
 
-      <Crest assetId={rightClub?.logo_asset ?? m.team2_logo_asset} logoUrl={rightClub?.logo_url} name={rightName} />
+      {rightExempt ? (
+        <ExemptCrest />
+      ) : (
+        <Crest assetId={rightClub?.logo_asset ?? m.team2_logo_asset} logoUrl={rightClub?.logo_url} name={rightName} />
+      )}
       <span
         title={rightName}
         className={`min-w-0 flex-1 truncate text-sm ${
-          usIsRight ? "font-bold text-navy" : "text-ink/70"
+          rightExempt ? "font-semibold uppercase tracking-wide text-ink/40" : usIsRight ? "font-bold text-navy" : "text-ink/70"
         }`}
       >
         {rightName}
@@ -1329,11 +1367,11 @@ function StatsTab({
           <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
             <p className="font-display text-base uppercase tracking-tight text-navy">
               <span className={statsMatchFocus.us_is_team1 === true ? "font-bold" : ""}>
-                {statsMatchFocus.team1_name || "Équipe inconnue"}
+                {statsMatchFocus.team1_name || "EXEMPT"}
               </span>
               <span className="mx-2 text-ink/30">vs</span>
               <span className={statsMatchFocus.us_is_team1 === false ? "font-bold" : ""}>
-                {statsMatchFocus.team2_name || "Équipe inconnue"}
+                {statsMatchFocus.team2_name || "EXEMPT"}
               </span>
               {statsMatchFocus.status === "joue" && (
                 <span className="ml-2 text-ink/50">
@@ -1677,8 +1715,8 @@ async function MatchSheetPage({ matchId, backHref }) {
   const isPlayed = match.status === "joue";
   const usIsLeft = match.us_is_team1 === true;
   const usIsRight = match.us_is_team1 === false;
-  const leftName = match.team1_name || "Équipe inconnue";
-  const rightName = match.team2_name || "Équipe inconnue";
+  const leftName = match.team1_name || "EXEMPT";
+  const rightName = match.team2_name || "EXEMPT";
   const report = match.match_report;
   const isManual = match.source === "manuel";
   const { count: periodCount, prefix: periodPrefix } = periodsForCategory(phase?.competition_name);

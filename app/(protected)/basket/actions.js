@@ -1172,6 +1172,21 @@ export async function syncPhase(formData) {
       })
       .eq("id", phaseId);
     assertNoError("Mise à jour du statut de synchro", okError);
+
+    // Fin de synchro : le classement est recalculé à partir des matchs qui viennent d'être
+    // enregistrés, sauf si la page FFBB en a fourni un officiel (déjà écrit plus haut).
+    if (standingsPayload.length === 0) {
+      const recalcul = await computeClassementCore(supabase, phaseId);
+      if (recalcul?.error) {
+        console.error("syncPhase: recalcul du classement impossible", recalcul.error);
+        await supabase
+          .from("basketball_phases")
+          .update({
+            last_sync_error: [cacheNote, `Classement non recalculé : ${recalcul.error}`].filter(Boolean).join(" "),
+          })
+          .eq("id", phaseId);
+      }
+    }
   } catch (err) {
     // Le message vient de lib/ffbbPage.js (lien manquant, site injoignable ou
     // bloqué, aucun match trouvé...) : on l'affiche tel quel sous la phase.
@@ -1425,7 +1440,12 @@ export async function computeClassement(phaseId) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { error: "Non connecté." };
+  return computeClassementCore(supabase, phaseId);
+}
 
+// Cœur du calcul, aussi appelé à la fin d'une synchro FFBB (syncPhase).
+// Les équipes « EXEMPT » (poule impaire : une équipe se repose) ne figurent pas au classement.
+async function computeClassementCore(supabase, phaseId) {
   const { data: phase, error: phaseError } = await supabase
     .from("basketball_phases")
     .select("id, participant_sport_id, season, poule_id")
@@ -1454,7 +1474,7 @@ export async function computeClassement(phaseId) {
   const teams = new Map();
   const addTeam = (name, id) => {
     const key = teamKey(name);
-    if (!key) return;
+    if (!key || key === "exempt") return;
     const known = teams.get(key);
     if (!known) teams.set(key, { key, name: String(name).trim(), id: id ? String(id) : null });
     else if (!known.id && id) known.id = String(id);

@@ -208,7 +208,7 @@ export default async function HomePage({ searchParams }) {
       // L'adversaire, pas l'équipe qui reçoit — à domicile, l'équipe qui
       // reçoit est presque toujours la nôtre, ce serait redondant/inutile
       // de l'afficher (ex. systématiquement "OLYMPIC SATHONAY").
-      const opponentName = (m.us_is_team1 ? m.team2_name : m.team1_name) || "Adversaire inconnu";
+      const opponentName = (m.us_is_team1 ? m.team2_name : m.team1_name) || "EXEMPT";
       return {
         key: `bb-${m.id}`,
         date: m.match_date.slice(0, 10),
