@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { computeCurrentSeasonLabel } from "@/lib/utils";
-import { fetchPouleFromPage, parseCompetitionUrl } from "@/lib/ffbbPage";
+import { fetchPouleFromPage, parseCompetitionUrl, pouleFromPages } from "@/lib/ffbbPage";
 
 // Supabase-js ne lève pas d'exception sur une erreur de requête : il faut
 // vérifier { error } explicitement, sinon un échec passe inaperçu.
@@ -992,12 +992,23 @@ export async function syncPhase(formData) {
             .eq("poule_id", String(pouleHint))
             .maybeSingle()
         : { data: null };
-      if (!cached?.data?.rencontres?.length) {
+      // Le cache peut avoir deux formes :
+      //  - { rencontres, classements... } : poule déjà analysée (scripts/push-ffbb.mjs) ;
+      //  - { pages: [html...] } : pages brutes déposées par push_ffbb.py, qu'on
+      //    analyse ici avec le même code que la lecture directe.
+      let cachedPoule = null;
+      if (cached?.data?.rencontres?.length) {
+        cachedPoule = cached.data;
+      } else if (Array.isArray(cached?.data?.pages) && cached.data.pages.length > 0) {
+        const fromPages = pouleFromPages(cached.data.pages, pouleHint);
+        if (fromPages.rencontres.length > 0) cachedPoule = fromPages;
+      }
+      if (!cachedPoule) {
         throw new Error(
-          `${liveErr?.message || liveErr} Astuce : lance « node scripts/push-ffbb.mjs » depuis ton PC, puis resynchronise.`
+          `${liveErr?.message || liveErr} Astuce : lance « python push_ffbb.py » depuis ton PC, puis resynchronise.`
         );
       }
-      poule = cached.data;
+      poule = cachedPoule;
       const when = new Date(cached.fetched_at).toLocaleString("fr-FR", {
         timeZone: "Europe/Paris",
         day: "numeric",
