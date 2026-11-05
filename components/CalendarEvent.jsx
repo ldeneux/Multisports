@@ -32,7 +32,7 @@ export default function CalendarEvent({ event }) {
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-semibold">{event.title}</span>
-          <span className="block truncate text-xs text-white/75">{event.subtitle}</span>
+          {event.subtitle && <span className="block truncate text-xs text-white/75">{event.subtitle}</span>}
         </span>
         {detail && (
           <button
@@ -175,7 +175,22 @@ function SwimDetail({ d }) {
           )}
         </div>
         <div className="min-w-0 flex-1 text-center">
-          <h2 className="text-xl font-extrabold leading-tight drop-shadow sm:text-3xl">{d.title}</h2>
+          <h2 className="text-xl font-extrabold leading-tight drop-shadow sm:text-3xl">
+            {/^https?:\/\//i.test(d.ffnLink || "") ? (
+              // Lien « FFN » renseigné dans le calendrier des compétitions : le titre y mène.
+              <a
+                href={d.ffnLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Voir sur le site FFN"
+                className="underline decoration-white/60 underline-offset-4 hover:decoration-white"
+              >
+                {d.title}
+              </a>
+            ) : (
+              d.title
+            )}
+          </h2>
           {d.poolLength && <p className="mt-1 text-base italic text-white/90">Bassin de {d.poolLength}m</p>}
           {d.city && <p className="mt-1 text-2xl font-extrabold uppercase tracking-wide drop-shadow">{d.city}</p>}
         </div>

@@ -208,18 +208,26 @@ export default async function HomePage({ searchParams }) {
       // L'adversaire, pas l'équipe qui reçoit — à domicile, l'équipe qui
       // reçoit est presque toujours la nôtre, ce serait redondant/inutile
       // de l'afficher (ex. systématiquement "OLYMPIC SATHONAY").
-      const opponentName = (m.us_is_team1 ? m.team2_name : m.team1_name) || "EXEMPT";
+      const opponentName = m.us_is_team1 ? m.team2_name : m.team1_name;
+      // Pas d'adversaire = on est EXEMPTE ce week-end (poule impaire) : on l'écrit en
+      // clair, avec la catégorie de la joueuse, sans sous-titre ni fiche détaillée.
+      const isExempt = !opponentName;
+      const category = m.participant_sports?.category;
       return {
         key: `bb-${m.id}`,
         date: m.match_date.slice(0, 10),
         time: d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
         sportSlug: "basket",
         participantId,
-        title: opponentName,
-        subtitle: `${d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} : ${invertLocation(
-          m.location || ""
-        )}`,
-        detail: (() => {
+        title: isExempt
+          ? `Pas de match ce week-end${category ? ` en ${category}` : ""}`
+          : opponentName,
+        subtitle: isExempt
+          ? ""
+          : `${d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} : ${invertLocation(
+              m.location || ""
+            )}`,
+        detail: isExempt ? null : (() => {
           // m.match_date = heure de Paris lue comme UTC : on l'affiche donc en UTC.
           const club = clubByKey.get(stripTeamSuffix(m.team1_name));
           const club2 = clubByKey.get(stripTeamSuffix(m.team2_name));
