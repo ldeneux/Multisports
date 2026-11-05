@@ -2298,6 +2298,17 @@ export default async function BasketPage({ searchParams }) {
         dans « Gérer les phases » l'ID FFBB de l'équipe (engagement) et le lien de la poule
         (celui qui contient ?poule=…&phase=…). Si le site refuse la requête, le message d'erreur sous
         chaque participant t'indique quoi faire — les matchs déjà synchronisés sont conservés.
+        {" "}
+        Si le site bloque le serveur (HTTP 403), télécharge le script ci-dessous, lance-le depuis ton
+        PC (<code>python push_ffbb.py</code>) puis clique sur « Synchroniser FFBB ».
+        {" "}
+        <a
+          href="/api/telecharger-script-ffbb"
+          download="push_ffbb.py"
+          className="font-semibold underline"
+        >
+          Télécharger le script de mise à jour
+        </a>
       </p>
 
       {(!assignments || assignments.length === 0) ? (
