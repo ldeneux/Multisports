@@ -183,7 +183,7 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
                       <input
                         name="competition_url"
                         defaultValue={p.competition_url ?? ""}
-                        placeholder="Lien competitions.ffbb.com (optionnel)"
+                        placeholder="Lien de la poule competitions.ffbb.com (…?poule=…&phase=…)"
                         className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
                       />
                     </>
@@ -226,7 +226,7 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
               />
               <input
                 name="competition_url"
-                placeholder="Lien competitions.ffbb.com (optionnel)"
+                placeholder="Lien de la poule competitions.ffbb.com (…?poule=…&phase=…)"
                 className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
               />
               <button
@@ -2256,9 +2256,10 @@ export default async function BasketPage({ searchParams }) {
       </div>
 
       <p className="rounded-card bg-lagoon-light p-3 text-xs text-navy">
-        La synchronisation FFBB utilise une API non officielle (reverse engineering). Elle peut échouer
-        ou nécessiter de renseigner l'ID FFBB à la main — le message d'erreur sous chaque participant
-        t'indique quoi faire dans ce cas.
+        La synchronisation FFBB lit la page publique de la poule sur competitions.ffbb.com : renseigne
+        dans « Gérer les phases » l'ID FFBB de l'équipe (engagement) et le lien de la poule
+        (celui qui contient ?poule=…&phase=…). Si le site refuse la requête, le message d'erreur sous
+        chaque participant t'indique quoi faire — les matchs déjà synchronisés sont conservés.
       </p>
 
       {(!assignments || assignments.length === 0) ? (

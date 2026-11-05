@@ -106,27 +106,28 @@ vercel --prod
 
 ---
 
-## 6. Synchronisation FFBB (Basket) — expérimentale
+## 6. Synchronisation FFBB (Basket)
 
-L'onglet Basket peut aller chercher automatiquement les matchs d'une équipe
-sur competitions.ffbb.com, via une librairie communautaire
-(`ffbb-api-client`) qui s'appuie sur l'API interne de la FFBB — **ce n'est
-pas une API officielle**, elle peut casser sans préavis si la FFBB change
-son système.
+L'onglet Basket récupère matchs, horaires, scores, salles/adresses, logos des clubs et classement
+en **lisant le code source de la page publique de la poule** sur competitions.ffbb.com (la page
+embarque toutes les données de la poule en JSON). Ce n'est pas une API officielle : si la FFBB change
+son site ou protège davantage ses pages, la synchro peut échouer — la saisie manuelle des matchs
+reste toujours possible, et les matchs déjà synchronisés ne sont jamais supprimés en cas d'échec.
 
-Pour que ça fonctionne pour une affectation (ex. "Candice — Basket") :
+Pour chaque phase (onglet Basket → **Gérer les phases**) :
 
-1. Ouvre l'onglet **Basket**.
-2. Dans le champ **ID FFBB (engagement)**, colle l'identifiant numérique
-   présent à la fin de l'URL de l'équipe sur competitions.ffbb.com
-   (ex. `.../equipes/200000005251991` → `200000005251991`). L'appli essaie
-   aussi de le déduire automatiquement du lien renseigné dans Paramètres,
-   mais ce n'est pas garanti.
+1. **ID FFBB (engagement)** : le nombre à la fin de l'URL de l'équipe sur competitions.ffbb.com
+   (ex. `.../equipes/200000005251991` → `200000005251991`). Il sert à repérer NOTRE équipe parmi
+   les matchs de la poule.
+2. **Lien competitions.ffbb.com** : le lien de la POULE, avec `poule=` et `phase=` — affiche le
+   calendrier de la poule sur competitions.ffbb.com et copie l'adresse du navigateur, ex.
+   `https://competitions.ffbb.com/ligues/ara/comites/0069/competitions/dfu15?poule=200000003056614&phase=200000002898259`.
+   Attention : la poule ET la phase ont un identifiant différent à chaque phase (Phase 1, Phase 2...),
+   il faut donc un lien par phase.
 3. Clique **Synchroniser FFBB**.
 
-Si ça échoue, un message d'erreur s'affiche sous le participant concerné
-(ID incorrect, poule introuvable, etc.) — dans ce cas, la saisie manuelle
-des matchs (bouton "Ajouter un match manuellement") reste toujours possible.
+Le code se trouve dans `lib/ffbbPage.js` (extraction) et `syncPhase` (`app/(protected)/basket/actions.js`).
+Le pont Python `api/ffbb.py` (recherche) n'est plus utilisé par la synchro des phases.
 
 ## 7. Synchronisation FFN (Natation) — expérimentale
 
