@@ -1297,6 +1297,31 @@ function SuiviTab({
 // ---------------------------------------------------------------------------
 const MPA_TOP_N = 5;
 
+// Catégories officielles FFN pour la MPA (âge sportif = année de fin de
+// saison − année de naissance). Séniors : 19 ans et plus, sans plafond.
+const MPA_CATEGORIES = [
+  { key: "avenir", label: "Avenirs (U11)", minAge: 0, maxAge: 11 },
+  { key: "benjamin", label: "Benjamins (U13)", minAge: 12, maxAge: 13 },
+  { key: "junior", label: "Juniors (U18)", minAge: 14, maxAge: 18 },
+  { key: "senior", label: "Séniors", minAge: 19, maxAge: Infinity },
+];
+
+function mpaCategoryFromBirthYear(birthYear) {
+  if (!birthYear) return null;
+  const age = computeCurrentSeasonYear() - birthYear;
+  return MPA_CATEGORIES.find((c) => age >= c.minAge && age <= c.maxAge)?.key ?? null;
+}
+
+// "12-13 ans · nées 2013-2014" pour l'infobulle des pastilles.
+function mpaCategoryHint(c) {
+  const season = computeCurrentSeasonYear();
+  const ages = c.maxAge === Infinity ? `${c.minAge} ans et +` : c.minAge === 0 ? `${c.maxAge} ans et −` : `${c.minAge}-${c.maxAge} ans`;
+  const youngest = season - c.minAge;
+  const oldest = c.maxAge === Infinity ? null : season - c.maxAge;
+  const years = oldest == null ? `nées en ${youngest} et avant` : c.minAge === 0 ? `nées en ${oldest} et après` : `nées ${oldest}-${youngest}`;
+  return `${ages} · ${years}`;
+}
+
 // Supabase plafonne chaque requête à ~1000 lignes : on pagine jusqu'à
 // épuisement plutôt que de tronquer silencieusement les résultats.
 async function fetchAllRows(buildQuery, pageSize = 1000) {
@@ -1314,8 +1339,10 @@ async function fetchAllRows(buildQuery, pageSize = 1000) {
   return { rows, error: null };
 }
 
-async function buildMpaData(supabase, selectedBirthYears) {
-  const yearAllowed = (y) => !selectedBirthYears || (y != null && selectedBirthYears.includes(y));
+async function buildMpaData(supabase, selectedCats) {
+  // Sans filtre (null) tout passe, y compris une année de naissance inconnue ;
+  // avec un filtre, l'année doit exister et tomber dans une catégorie choisie.
+  const yearAllowed = (y) => !selectedCats || selectedCats.includes(mpaCategoryFromBirthYear(y));
 
   const [indiv, relays] = await Promise.all([
     fetchAllRows(() =>
@@ -1338,15 +1365,10 @@ async function buildMpaData(supabase, selectedBirthYears) {
     ),
   ]);
 
-  // Années de naissance disponibles pour le filtre (calculées AVANT filtrage).
-  const availableYears = new Set();
-
   // --- Individuel : meilleur temps de chaque nageuse par épreuve + bassin
   const bestBySwimmerEvent = new Map();
   for (const r of indiv.rows) {
     const pool = r.swim_competitions?.pool_length ?? r.pool_length ?? "?";
-    const by = r.swimmers?.birth_year ?? null;
-    if (by != null) availableYears.add(by);
     const key = `${pool}|${r.distance_m}|${r.stroke}|${r.swimmer_id}`;
     const cur = bestBySwimmerEvent.get(key);
     if (
@@ -1380,9 +1402,6 @@ async function buildMpaData(supabase, selectedBirthYears) {
   const bestByLineup = new Map();
   for (const t of relays.rows) {
     const legs = [...(t.swim_relay_legs ?? [])].sort((a, b) => a.position - b.position);
-    legs.forEach((l) => {
-      if (l.swimmers?.birth_year != null) availableYears.add(l.swimmers.birth_year);
-    });
     const pool = t.swim_competitions?.pool_length ?? "?";
     const lineup = legs.map((l) => l.swimmer_id).sort().join(",") || t.id;
     const key = `${pool}|${t.event_name}|${t.gender}|${lineup}`;
@@ -1396,7 +1415,7 @@ async function buildMpaData(supabase, selectedBirthYears) {
   for (const t of bestByLineup.values()) {
     // Avec un filtre actif, toutes les relayeuses doivent être dans les
     // années choisies (une année inconnue ne peut pas correspondre).
-    if (selectedBirthYears && !t.legs.every((l) => yearAllowed(l.swimmers?.birth_year ?? null))) continue;
+    if (selectedCats && !t.legs.every((l) => yearAllowed(l.swimmers?.birth_year ?? null))) continue;
     const eventKey = `${t.event_name}|${t.gender}`;
     ((relayByPool[t.pool] ??= {})[eventKey] ??= []).push({
       id: t.id,
@@ -1438,48 +1457,48 @@ async function buildMpaData(supabase, selectedBirthYears) {
 
   return {
     sections,
-    availableYears: [...availableYears].sort((a, b) => a - b),
     error: indiv.error?.message ?? relays.error?.message ?? null,
   };
 }
 
-function mpaHref(swimmerId, years) {
-  const birth = years && years.length > 0 ? `&birth=${years.join(",")}` : "";
-  return `/natation?tab=performances&view=mpa&swimmer=${swimmerId ?? ""}${birth}`;
+function mpaHref(swimmerId, cats) {
+  const cat = cats && cats.length > 0 ? `&cat=${cats.join(",")}` : "";
+  return `/natation?tab=performances&view=mpa&swimmer=${swimmerId ?? ""}${cat}`;
 }
 
-// Filtre par année de naissance. Par défaut (aucun paramètre) tout est
-// sélectionné ; un clic sur une année quand tout est sélectionné ne garde
-// que cette année, les clics suivants ajoutent/retirent. Si on désélectionne
-// la dernière, on revient à "Toutes".
-function MpaBirthFilter({ swimmerId, availableYears, selectedYears }) {
-  const toggle = (y) => {
-    if (!selectedYears) return [y];
-    const next = selectedYears.includes(y) ? selectedYears.filter((v) => v !== y) : [...selectedYears, y];
-    return next.sort((a, b) => a - b);
+// Filtre par catégorie officielle. Par défaut (aucun paramètre) tout est
+// sélectionné ; un clic sur une catégorie quand tout est sélectionné ne
+// garde que celle-ci, les clics suivants ajoutent/retirent. Si on
+// désélectionne la dernière, on revient à "Toutes".
+function MpaCategoryFilter({ swimmerId, selectedCats }) {
+  const toggle = (key) => {
+    if (!selectedCats) return [key];
+    const next = selectedCats.includes(key) ? selectedCats.filter((k) => k !== key) : [...selectedCats, key];
+    return MPA_CATEGORIES.map((c) => c.key).filter((k) => next.includes(k));
   };
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-card bg-white p-3 shadow-sm">
-      <span className="text-xs font-semibold text-ink/50">Année de naissance</span>
+      <span className="text-xs font-semibold text-ink/50">Catégorie</span>
       <Link
         href={mpaHref(swimmerId, null)}
         className={`rounded-full px-3 py-1 text-xs font-semibold ${
-          !selectedYears ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
+          !selectedCats ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
         }`}
       >
         Toutes
       </Link>
-      {availableYears.map((y) => {
-        const active = !!selectedYears && selectedYears.includes(y);
+      {MPA_CATEGORIES.map((c) => {
+        const active = !!selectedCats && selectedCats.includes(c.key);
         return (
           <Link
-            key={y}
-            href={mpaHref(swimmerId, toggle(y))}
+            key={c.key}
+            href={mpaHref(swimmerId, toggle(c.key))}
+            title={mpaCategoryHint(c)}
             className={`rounded-full px-3 py-1 text-xs font-semibold ${
               active ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
             }`}
           >
-            {y}
+            {c.label}
           </Link>
         );
       })}
@@ -1489,14 +1508,14 @@ function MpaBirthFilter({ swimmerId, availableYears, selectedYears }) {
 
 function MpaToggle({ count }) {
   return (
-    <span className="ml-auto shrink-0 select-none rounded-full bg-lagoon-light px-2 py-0.5 text-xs font-semibold text-lagoon">
+    <span className="select-none rounded-full bg-lagoon-light px-2 py-0.5 text-xs font-semibold text-lagoon">
       <span className="group-open:hidden">+ {count}</span>
       <span className="hidden group-open:inline">− {count}</span>
     </span>
   );
 }
 
-function MpaIndividualRow({ e, record }) {
+function MpaIndividualRow({ e, record, trailing }) {
   return (
     <>
       <span className={`w-24 shrink-0 text-right font-display text-lg ${record ? "text-cardinal" : "text-navy"}`}>
@@ -1506,11 +1525,12 @@ function MpaIndividualRow({ e, record }) {
       <span className="w-12 shrink-0 text-xs text-ink/50">{e.birthYear ?? "—"}</span>
       <span className="hidden w-40 shrink-0 truncate text-xs text-ink/50 sm:block">{e.club}</span>
       <span className="w-12 shrink-0 text-right text-xs italic text-lagoon">{e.points ? `${e.points}p` : ""}</span>
+      {trailing}
     </>
   );
 }
 
-function MpaRelayRow({ e, record }) {
+function MpaRelayRow({ e, record, trailing }) {
   return (
     <>
       <span className={`w-24 shrink-0 text-right font-display text-lg ${record ? "text-cardinal" : "text-navy"}`}>
@@ -1518,6 +1538,7 @@ function MpaRelayRow({ e, record }) {
       </span>
       <span className={`min-w-0 flex-1 truncate ${record ? "font-semibold text-ink" : "text-ink/80"}`}>{e.club || "—"}</span>
       <span className="w-12 shrink-0 text-right text-xs italic text-lagoon">{e.points ? `${e.points}p` : ""}</span>
+      {trailing}
       <span className="w-full pl-24 text-xs text-ink/50">
         {e.members.map((m, i) => (
           <span key={i}>
@@ -1536,22 +1557,24 @@ function MpaRelayRow({ e, record }) {
 function MpaEventGroup({ title, rows, Row }) {
   const [first, ...rest] = rows;
   const rowClass = "flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm";
+  // Colonne de fin de largeur fixe sur TOUTES les lignes (le bouton +/− n'est
+  // que sur le record) : sinon les colonnes année/club se décalent au dépliage.
+  const slot = (content) => <span className="flex w-14 shrink-0 justify-end">{content}</span>;
   return (
     <div>
       <p className="bg-sand px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink/60">{title}</p>
       {rest.length === 0 ? (
         <div className={`${rowClass} bg-lagoon-light/40`}>
-          <Row e={first} record />
+          <Row e={first} record trailing={slot(null)} />
         </div>
       ) : (
         <details className="group bg-white">
           <summary className={`${rowClass} cursor-pointer list-none bg-lagoon-light/40 [&::-webkit-details-marker]:hidden`}>
-            <Row e={first} record />
-            <MpaToggle count={rest.length} />
+            <Row e={first} record trailing={slot(<MpaToggle count={rest.length} />)} />
           </summary>
           {rest.map((e, i) => (
             <div key={e.id} className={`${rowClass} ${i % 2 === 0 ? "bg-white" : "bg-lagoon-light/20"}`}>
-              <Row e={e} />
+              <Row e={e} trailing={slot(null)} />
             </div>
           ))}
         </details>
@@ -1671,22 +1694,15 @@ export default async function NatationPage({ searchParams }) {
     const meetRowsByKey = {};
     const relayFieldByKey = {};
 
-    // Années de naissance sélectionnées pour la MPA (absent = toutes).
-    const birthParam = Array.isArray(searchParams?.birth) ? searchParams.birth.join(",") : searchParams?.birth;
-    const parsedBirthYears = (birthParam ?? "")
-      .split(",")
-      .map((v) => parseInt(v, 10))
-      .filter((v) => Number.isInteger(v));
-    const selectedBirthYears = parsedBirthYears.length > 0 ? [...new Set(parsedBirthYears)].sort((a, b) => a - b) : null;
+    // Catégories sélectionnées pour la MPA (absent = toutes).
+    const catParam = Array.isArray(searchParams?.cat) ? searchParams.cat.join(",") : searchParams?.cat;
+    const parsedCats = (catParam ?? "").split(",").filter((k) => MPA_CATEGORIES.some((c) => c.key === k));
+    const selectedCats = parsedCats.length > 0 ? [...new Set(parsedCats)] : null;
 
     if (view === "mpa") {
-      const { sections, availableYears, error } = await buildMpaData(supabase, selectedBirthYears);
+      const { sections, error } = await buildMpaData(supabase, selectedCats);
       mpaFilter = (
-        <MpaBirthFilter
-          swimmerId={selectedSwimmerId}
-          availableYears={availableYears}
-          selectedYears={selectedBirthYears}
-        />
+        <MpaCategoryFilter swimmerId={selectedSwimmerId} selectedCats={selectedCats} />
       );
       performancesContent = <MpaTab sections={sections} error={error} />;
     } else if (selectedSwimmerId) {
