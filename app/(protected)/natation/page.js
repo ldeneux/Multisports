@@ -1286,6 +1286,317 @@ function SuiviTab({
   );
 }
 
+// ---------------------------------------------------------------------------
+// MPA — Meilleures Performances Actuelles
+// Les meilleurs temps (records) de TOUTES les nageuses présentes dans notre
+// base (swim_results / swim_relay_teams), par épreuve et par bassin — donc
+// uniquement des nageuses encore actives dans les saisons synchronisées,
+// pas les records historiques. Individuel : filles uniquement. Relais :
+// Dames ou Mixtes uniquement. Par défaut on n'affiche que le record de
+// chaque épreuve ; +/− déplie les 4 suivants.
+// ---------------------------------------------------------------------------
+const MPA_TOP_N = 5;
+
+// Supabase plafonne chaque requête à ~1000 lignes : on pagine jusqu'à
+// épuisement plutôt que de tronquer silencieusement les résultats.
+async function fetchAllRows(buildQuery, pageSize = 1000) {
+  const rows = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await buildQuery()
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) return { rows, error };
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    from += data.length;
+  }
+  return { rows, error: null };
+}
+
+async function buildMpaData(supabase, selectedBirthYears) {
+  const yearAllowed = (y) => !selectedBirthYears || (y != null && selectedBirthYears.includes(y));
+
+  const [indiv, relays] = await Promise.all([
+    fetchAllRows(() =>
+      supabase
+        .from("swim_results")
+        .select(
+          "id, swimmer_id, event_name, stroke, distance_m, pool_length, time_ms, points, swim_competitions(pool_length), swimmers(full_name, club, birth_year)"
+        )
+        .eq("gender", "F")
+        .not("time_ms", "is", null)
+    ),
+    fetchAllRows(() =>
+      supabase
+        .from("swim_relay_teams")
+        .select(
+          "id, event_name, gender, club, team_time_ms, points, swim_competitions(pool_length), swim_relay_legs(position, swimmer_id, swimmers(full_name, birth_year))"
+        )
+        .in("gender", ["F", "X"])
+        .not("team_time_ms", "is", null)
+    ),
+  ]);
+
+  // Années de naissance disponibles pour le filtre (calculées AVANT filtrage).
+  const availableYears = new Set();
+
+  // --- Individuel : meilleur temps de chaque nageuse par épreuve + bassin
+  const bestBySwimmerEvent = new Map();
+  for (const r of indiv.rows) {
+    const pool = r.swim_competitions?.pool_length ?? r.pool_length ?? "?";
+    const by = r.swimmers?.birth_year ?? null;
+    if (by != null) availableYears.add(by);
+    const key = `${pool}|${r.distance_m}|${r.stroke}|${r.swimmer_id}`;
+    const cur = bestBySwimmerEvent.get(key);
+    if (
+      !cur ||
+      r.time_ms < cur.time_ms ||
+      (r.time_ms === cur.time_ms && cur.points == null && r.points != null)
+    ) {
+      bestBySwimmerEvent.set(key, { ...r, pool });
+    }
+  }
+
+  const individualByPool = {};
+  for (const r of bestBySwimmerEvent.values()) {
+    if (!yearAllowed(r.swimmers?.birth_year ?? null)) continue;
+    const eventKey = `${r.distance_m}|${r.stroke}|${r.event_name}`;
+    ((individualByPool[r.pool] ??= {})[eventKey] ??= []).push({
+      id: r.id,
+      eventName: r.event_name,
+      distance: r.distance_m ?? 0,
+      stroke: r.stroke ?? "",
+      timeMs: r.time_ms,
+      points: r.points,
+      name: r.swimmers?.full_name ?? "—",
+      birthYear: r.swimmers?.birth_year ?? null,
+      club: r.swimmers?.club ?? "",
+    });
+  }
+
+  // --- Relais : une équipe = un temps ; on écarte les doublons (mêmes
+  // relayeuses, ex. séries + finales) en gardant le meilleur temps.
+  const bestByLineup = new Map();
+  for (const t of relays.rows) {
+    const legs = [...(t.swim_relay_legs ?? [])].sort((a, b) => a.position - b.position);
+    legs.forEach((l) => {
+      if (l.swimmers?.birth_year != null) availableYears.add(l.swimmers.birth_year);
+    });
+    const pool = t.swim_competitions?.pool_length ?? "?";
+    const lineup = legs.map((l) => l.swimmer_id).sort().join(",") || t.id;
+    const key = `${pool}|${t.event_name}|${t.gender}|${lineup}`;
+    const cur = bestByLineup.get(key);
+    if (!cur || t.team_time_ms < cur.team_time_ms) {
+      bestByLineup.set(key, { ...t, pool, legs });
+    }
+  }
+
+  const relayByPool = {};
+  for (const t of bestByLineup.values()) {
+    // Avec un filtre actif, toutes les relayeuses doivent être dans les
+    // années choisies (une année inconnue ne peut pas correspondre).
+    if (selectedBirthYears && !t.legs.every((l) => yearAllowed(l.swimmers?.birth_year ?? null))) continue;
+    const eventKey = `${t.event_name}|${t.gender}`;
+    ((relayByPool[t.pool] ??= {})[eventKey] ??= []).push({
+      id: t.id,
+      eventName: t.event_name,
+      gender: t.gender,
+      timeMs: t.team_time_ms,
+      points: t.points,
+      club: t.club ?? "",
+      members: t.legs.map((l) => ({
+        name: l.swimmers?.full_name ?? "—",
+        birthYear: l.swimmers?.birth_year ?? null,
+      })),
+    });
+  }
+
+  const sortTop = (list) =>
+    list.sort((a, b) => a.timeMs - b.timeMs).slice(0, MPA_TOP_N);
+
+  const pools = [...new Set([...Object.keys(individualByPool), ...Object.keys(relayByPool)])].sort(
+    (a, b) => Number(a) - Number(b)
+  );
+
+  const sections = pools.map((pool) => {
+    const individual = Object.values(individualByPool[pool] ?? {})
+      .map((rows) => ({ title: rows[0].eventName, distance: rows[0].distance, stroke: rows[0].stroke, rows: sortTop(rows) }))
+      .sort((a, b) => a.distance - b.distance || a.stroke.localeCompare(b.stroke));
+
+    const relay = Object.values(relayByPool[pool] ?? {})
+      .map((rows) => ({
+        title: `${rows[0].eventName} ${GENDER_LABELS[rows[0].gender] ?? ""}`.trim(),
+        total: relayEventTotalDistance(rows[0].eventName),
+        gender: rows[0].gender,
+        rows: sortTop(rows),
+      }))
+      .sort((a, b) => a.total - b.total || a.title.localeCompare(b.title) || a.gender.localeCompare(b.gender));
+
+    return { pool, individual, relay };
+  });
+
+  return {
+    sections,
+    availableYears: [...availableYears].sort((a, b) => a - b),
+    error: indiv.error?.message ?? relays.error?.message ?? null,
+  };
+}
+
+function mpaHref(swimmerId, years) {
+  const birth = years && years.length > 0 ? `&birth=${years.join(",")}` : "";
+  return `/natation?tab=performances&view=mpa&swimmer=${swimmerId ?? ""}${birth}`;
+}
+
+// Filtre par année de naissance. Par défaut (aucun paramètre) tout est
+// sélectionné ; un clic sur une année quand tout est sélectionné ne garde
+// que cette année, les clics suivants ajoutent/retirent. Si on désélectionne
+// la dernière, on revient à "Toutes".
+function MpaBirthFilter({ swimmerId, availableYears, selectedYears }) {
+  const toggle = (y) => {
+    if (!selectedYears) return [y];
+    const next = selectedYears.includes(y) ? selectedYears.filter((v) => v !== y) : [...selectedYears, y];
+    return next.sort((a, b) => a - b);
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-card bg-white p-3 shadow-sm">
+      <span className="text-xs font-semibold text-ink/50">Année de naissance</span>
+      <Link
+        href={mpaHref(swimmerId, null)}
+        className={`rounded-full px-3 py-1 text-xs font-semibold ${
+          !selectedYears ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
+        }`}
+      >
+        Toutes
+      </Link>
+      {availableYears.map((y) => {
+        const active = !!selectedYears && selectedYears.includes(y);
+        return (
+          <Link
+            key={y}
+            href={mpaHref(swimmerId, toggle(y))}
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              active ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
+            }`}
+          >
+            {y}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+function MpaToggle({ count }) {
+  return (
+    <span className="ml-auto shrink-0 select-none rounded-full bg-lagoon-light px-2 py-0.5 text-xs font-semibold text-lagoon">
+      <span className="group-open:hidden">+ {count}</span>
+      <span className="hidden group-open:inline">− {count}</span>
+    </span>
+  );
+}
+
+function MpaIndividualRow({ e, record }) {
+  return (
+    <>
+      <span className={`w-24 shrink-0 text-right font-display text-lg ${record ? "text-cardinal" : "text-navy"}`}>
+        {msToSwimTime(e.timeMs)}
+      </span>
+      <span className={`min-w-0 flex-1 truncate ${record ? "font-semibold text-ink" : "text-ink/80"}`}>{e.name}</span>
+      <span className="w-12 shrink-0 text-xs text-ink/50">{e.birthYear ?? "—"}</span>
+      <span className="hidden w-40 shrink-0 truncate text-xs text-ink/50 sm:block">{e.club}</span>
+      <span className="w-12 shrink-0 text-right text-xs italic text-lagoon">{e.points ? `${e.points}p` : ""}</span>
+    </>
+  );
+}
+
+function MpaRelayRow({ e, record }) {
+  return (
+    <>
+      <span className={`w-24 shrink-0 text-right font-display text-lg ${record ? "text-cardinal" : "text-navy"}`}>
+        {msToSwimTime(e.timeMs)}
+      </span>
+      <span className={`min-w-0 flex-1 truncate ${record ? "font-semibold text-ink" : "text-ink/80"}`}>{e.club || "—"}</span>
+      <span className="w-12 shrink-0 text-right text-xs italic text-lagoon">{e.points ? `${e.points}p` : ""}</span>
+      <span className="w-full pl-24 text-xs text-ink/50">
+        {e.members.map((m, i) => (
+          <span key={i}>
+            {i > 0 ? " · " : ""}
+            {m.name}
+            {m.birthYear ? ` (${m.birthYear})` : ""}
+          </span>
+        ))}
+      </span>
+    </>
+  );
+}
+
+// Un groupe = une épreuve : bandeau titre, puis le record (ligne visible) ;
+// si d'autres temps existent, +/− déplie les suivants (jusqu'à 4).
+function MpaEventGroup({ title, rows, Row }) {
+  const [first, ...rest] = rows;
+  const rowClass = "flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm";
+  return (
+    <div>
+      <p className="bg-sand px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink/60">{title}</p>
+      {rest.length === 0 ? (
+        <div className={`${rowClass} bg-lagoon-light/40`}>
+          <Row e={first} record />
+        </div>
+      ) : (
+        <details className="group bg-white">
+          <summary className={`${rowClass} cursor-pointer list-none bg-lagoon-light/40 [&::-webkit-details-marker]:hidden`}>
+            <Row e={first} record />
+            <MpaToggle count={rest.length} />
+          </summary>
+          {rest.map((e, i) => (
+            <div key={e.id} className={`${rowClass} ${i % 2 === 0 ? "bg-white" : "bg-lagoon-light/20"}`}>
+              <Row e={e} />
+            </div>
+          ))}
+        </details>
+      )}
+    </div>
+  );
+}
+
+function MpaTab({ sections, error }) {
+  const hasData = sections.some((s) => s.individual.length > 0 || s.relay.length > 0);
+  return (
+    <div className="space-y-4">
+      {error && (
+        <p className="rounded-card bg-cardinal-light p-3 text-xs text-cardinal-dark">
+          Lecture partielle des données ({error}).
+        </p>
+      )}
+      {!hasData && (
+        <p className="rounded-card bg-white p-6 text-sm text-ink/50 shadow-sm">
+          Aucune performance pour cette sélection.
+        </p>
+      )}
+      {sections.map(({ pool, individual, relay }) => (
+        <div key={pool} className="overflow-hidden rounded-card shadow-sm">
+          <div className="bg-navy px-4 py-2 text-white">
+            <p className="font-display text-sm uppercase tracking-tight">Meilleures Performances Actuelles (MPA)</p>
+            <p className="text-xs opacity-70">Bassin : {pool} mètres</p>
+          </div>
+          <div>
+            {individual.map((g) => (
+              <MpaEventGroup key={`i-${g.title}`} title={g.title} rows={g.rows} Row={MpaIndividualRow} />
+            ))}
+            {relay.length > 0 && (
+              <p className="bg-navy/90 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-white">Relais</p>
+            )}
+            {relay.map((g) => (
+              <MpaEventGroup key={`r-${g.title}`} title={g.title} rows={g.rows} Row={MpaRelayRow} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default async function NatationPage({ searchParams }) {
   const supabase = createClient();
 
@@ -1296,6 +1607,8 @@ export default async function NatationPage({ searchParams }) {
       ? "all"
       : searchParams?.view === "relay"
       ? "relay"
+      : searchParams?.view === "mpa"
+      ? "mpa"
       : searchParams?.view === "graph"
       ? "graph"
       : "mpp";
@@ -1318,6 +1631,7 @@ export default async function NatationPage({ searchParams }) {
   let suiviContent = null;
   let swimmerOptions = [];
   let selectedSwimmerId = null;
+  let mpaFilter = null;
 
   if (tab === "performances") {
     const defaultPs = (assignments ?? []).find((a) => a.participant_id);
@@ -1357,7 +1671,25 @@ export default async function NatationPage({ searchParams }) {
     const meetRowsByKey = {};
     const relayFieldByKey = {};
 
-    if (selectedSwimmerId) {
+    // Années de naissance sélectionnées pour la MPA (absent = toutes).
+    const birthParam = Array.isArray(searchParams?.birth) ? searchParams.birth.join(",") : searchParams?.birth;
+    const parsedBirthYears = (birthParam ?? "")
+      .split(",")
+      .map((v) => parseInt(v, 10))
+      .filter((v) => Number.isInteger(v));
+    const selectedBirthYears = parsedBirthYears.length > 0 ? [...new Set(parsedBirthYears)].sort((a, b) => a - b) : null;
+
+    if (view === "mpa") {
+      const { sections, availableYears, error } = await buildMpaData(supabase, selectedBirthYears);
+      mpaFilter = (
+        <MpaBirthFilter
+          swimmerId={selectedSwimmerId}
+          availableYears={availableYears}
+          selectedYears={selectedBirthYears}
+        />
+      );
+      performancesContent = <MpaTab sections={sections} error={error} />;
+    } else if (selectedSwimmerId) {
       const { data: resultRows } = await supabase
         .from("swim_results")
         .select("*, swim_competitions(name, city, competition_date, pool_length)")
@@ -1730,7 +2062,7 @@ export default async function NatationPage({ searchParams }) {
 
       {tab === "performances" && (
         <>
-          {swimmerOptions.length > 0 && (
+          {view !== "mpa" && swimmerOptions.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {swimmerOptions.map((opt) => (
                 <Link
@@ -1774,6 +2106,14 @@ export default async function NatationPage({ searchParams }) {
               Relais
             </Link>
             <Link
+              href={`/natation?tab=performances&view=mpa&swimmer=${selectedSwimmerId ?? ""}`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                view === "mpa" ? "bg-lagoon text-white" : "bg-white text-ink/50"
+              }`}
+            >
+              MPA
+            </Link>
+            <Link
               href={`/natation?tab=performances&view=graph&swimmer=${selectedSwimmerId ?? ""}`}
               className={`rounded-full px-3 py-1 text-xs font-semibold ${
                 view === "graph" ? "bg-lagoon text-white" : "bg-white text-ink/50"
@@ -1782,6 +2122,7 @@ export default async function NatationPage({ searchParams }) {
               Graphique
             </Link>
           </div>
+          {view === "mpa" && mpaFilter}
         </>
       )}
 
