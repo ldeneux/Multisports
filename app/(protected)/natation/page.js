@@ -612,7 +612,8 @@ function RelayTab({ swimmerId, relayLegs, relayFieldByTeamId }) {
 function MppTable({ rows, meetRowsByKey, relayFieldByKey, swimmerId }) {
   const byPool = {};
   rows.forEach((r) => {
-    const pool = r.swim_competitions?.pool_length ?? r.pool_length ?? "?";
+    const pool = poolByComp.get(r.competition_id) ?? r.pool_length ?? "?";
+    r.swimmers = swimmerById.get(r.swimmer_id) ?? null;
     if (!byPool[pool]) byPool[pool] = [];
     byPool[pool].push(r);
   });
@@ -1322,21 +1323,36 @@ function mpaCategoryHint(c) {
   return `${ages} · ${years}`;
 }
 
-// Supabase plafonne chaque requête à ~1000 lignes : on pagine jusqu'à
-// épuisement plutôt que de tronquer silencieusement les résultats.
-async function fetchAllRows(buildQuery, pageSize = 1000) {
+// Supabase plafonne chaque requête à 1000 lignes. Plutôt que de paginer l'une
+// après l'autre (un aller-retour réseau par page = lent), on compte d'abord
+// les lignes puis on lance toutes les pages EN PARALLÈLE.
+const MPA_PAGE_SIZE = 1000;
+async function fetchAllRows(supabase, table, columns, applyFilters = (q) => q, orderBy = ["id"]) {
+  const { count, error: countError } = await applyFilters(
+    supabase.from(table).select(orderBy[0], { count: "exact", head: true })
+  );
+  if (countError) return { rows: [], error: countError };
+  const pageCount = Math.ceil((count ?? 0) / MPA_PAGE_SIZE);
+  const pages = await Promise.all(
+    Array.from({ length: pageCount }, (_, i) => {
+      let q = applyFilters(supabase.from(table).select(columns));
+      orderBy.forEach((col) => (q = q.order(col, { ascending: true })));
+      return q.range(i * MPA_PAGE_SIZE, (i + 1) * MPA_PAGE_SIZE - 1);
+    })
+  );
   const rows = [];
-  let from = 0;
-  for (;;) {
-    const { data, error } = await buildQuery()
-      .order("id", { ascending: true })
-      .range(from, from + pageSize - 1);
-    if (error) return { rows, error };
-    if (!data || data.length === 0) break;
-    rows.push(...data);
-    from += data.length;
-  }
-  return { rows, error: null };
+  let error = null;
+  pages.forEach((res, i) => {
+    if (res.error) error = error ?? res.error;
+    else {
+      rows.push(...(res.data ?? []));
+      // Page non-finale incomplète : la limite de lignes du projet est < 1000.
+      if (i < pageCount - 1 && (res.data?.length ?? 0) < MPA_PAGE_SIZE) {
+        error = error ?? { message: "limite de lignes Supabase inférieure à 1000" };
+      }
+    }
+  });
+  return { rows, error };
 }
 
 async function buildMpaData(supabase, selectedCats) {
@@ -1344,26 +1360,37 @@ async function buildMpaData(supabase, selectedCats) {
   // avec un filtre, l'année doit exister et tomber dans une catégorie choisie.
   const yearAllowed = (y) => !selectedCats || selectedCats.includes(mpaCategoryFromBirthYear(y));
 
-  const [indiv, relays] = await Promise.all([
-    fetchAllRows(() =>
-      supabase
-        .from("swim_results")
-        .select(
-          "id, swimmer_id, event_name, stroke, distance_m, pool_length, time_ms, points, swim_competitions(pool_length), swimmers(full_name, club, birth_year)"
-        )
-        .eq("gender", "F")
-        .not("time_ms", "is", null)
+  // Colonnes minimales, SANS jointures imbriquées PostgREST (lentes sur des
+  // milliers de lignes) : nageuses, compétitions et relayeuses sont chargées
+  // à part (petites tables) et rattachées en mémoire.
+  const [indiv, relays, legsRes, swimmersRes, compsRes] = await Promise.all([
+    fetchAllRows(
+      supabase,
+      "swim_results",
+      "id, swimmer_id, competition_id, event_name, stroke, distance_m, pool_length, time_ms, points",
+      (q) => q.eq("gender", "F").not("time_ms", "is", null)
     ),
-    fetchAllRows(() =>
-      supabase
-        .from("swim_relay_teams")
-        .select(
-          "id, event_name, gender, club, team_time_ms, points, swim_competitions(pool_length), swim_relay_legs(position, swimmer_id, swimmers(full_name, birth_year))"
-        )
-        .in("gender", ["F", "X"])
-        .not("team_time_ms", "is", null)
+    fetchAllRows(
+      supabase,
+      "swim_relay_teams",
+      "id, competition_id, event_name, gender, club, team_time_ms, points",
+      (q) => q.in("gender", ["F", "X"]).not("team_time_ms", "is", null)
     ),
+    fetchAllRows(supabase, "swim_relay_legs", "relay_team_id, position, swimmer_id", (q) => q, [
+      "relay_team_id",
+      "position",
+    ]),
+    fetchAllRows(supabase, "swimmers", "id, full_name, club, birth_year"),
+    fetchAllRows(supabase, "swim_competitions", "id, pool_length"),
   ]);
+
+  const swimmerById = new Map(swimmersRes.rows.map((w) => [w.id, w]));
+  const poolByComp = new Map(compsRes.rows.map((c) => [c.id, c.pool_length]));
+  const legsByTeam = new Map();
+  for (const l of legsRes.rows) {
+    if (!legsByTeam.has(l.relay_team_id)) legsByTeam.set(l.relay_team_id, []);
+    legsByTeam.get(l.relay_team_id).push({ ...l, swimmers: swimmerById.get(l.swimmer_id) ?? null });
+  }
 
   // --- Individuel : meilleur temps de chaque nageuse par épreuve + bassin
   const bestBySwimmerEvent = new Map();
@@ -1401,8 +1428,8 @@ async function buildMpaData(supabase, selectedCats) {
   // relayeuses, ex. séries + finales) en gardant le meilleur temps.
   const bestByLineup = new Map();
   for (const t of relays.rows) {
-    const legs = [...(t.swim_relay_legs ?? [])].sort((a, b) => a.position - b.position);
-    const pool = t.swim_competitions?.pool_length ?? "?";
+    const legs = legsByTeam.get(t.id) ?? [];
+    const pool = poolByComp.get(t.competition_id) ?? "?";
     const lineup = legs.map((l) => l.swimmer_id).sort().join(",") || t.id;
     const key = `${pool}|${t.event_name}|${t.gender}|${lineup}`;
     const cur = bestByLineup.get(key);
@@ -1457,7 +1484,8 @@ async function buildMpaData(supabase, selectedCats) {
 
   return {
     sections,
-    error: indiv.error?.message ?? relays.error?.message ?? null,
+    error:
+      [indiv, relays, legsRes, swimmersRes, compsRes].map((r) => r.error?.message).find(Boolean) ?? null,
   };
 }
 
