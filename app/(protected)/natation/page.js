@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
+import PlannedYearSelect from "@/components/PlannedYearSelect";
 import { SwimRadarChart, SwimPercentileTrendChart, SwimScatterChart, SwimTimeTrendChart } from "@/components/SwimCharts";
 import {
   syncClubCompetitions,
@@ -252,12 +253,59 @@ function NewPlannedCompetitionRow({ ps }) {
   );
 }
 
-function PlannedCompetitionsCard({ ps, plannedCompetitions }) {
+// Compétition passée issue de la FFN (swim_results / relais) : lecture seule,
+// mêmes colonnes que le calendrier saisi à la main pour que tout s'aligne.
+function PastCompetitionRow({ comp }) {
+  const link = comp.ffn_competition_id
+    ? `https://ffn.extranat.fr/webffn/resultats.php?idact=nat&go=res&idcpt=${encodeURIComponent(comp.ffn_competition_id)}`
+    : null;
   return (
-    <details className="rounded-card bg-white shadow-sm">
+    <tr className="border-b border-ink/5 bg-sand/40 text-ink/70 last:border-0">
+      <td className="whitespace-nowrap px-2 py-1.5">{formatDate(comp.competition_date)}</td>
+      <td className="px-2 py-1.5 text-ink/30">—</td>
+      <td className="px-2 py-1.5 text-ink/30">—</td>
+      <td className="px-2 py-1.5">{comp.city ?? ""}</td>
+      <td className="px-2 py-1.5"></td>
+      <td className="whitespace-nowrap px-2 py-1.5">{comp.pool_length ? `${comp.pool_length}m` : ""}</td>
+      <td className="px-2 py-1.5">
+        <span className="font-semibold text-ink/80">{comp.name}</span>{" "}
+        <span className="rounded-full bg-lagoon-light px-1.5 py-0.5 text-[10px] font-semibold text-lagoon">FFN</span>
+      </td>
+      <td className="px-2 py-1.5">{comp.level ?? ""}</td>
+      <td className="px-2 py-1.5">
+        {link && (
+          <a href={link} target="_blank" rel="noopener noreferrer" className="font-semibold text-lagoon hover:underline">
+            Résultats
+          </a>
+        )}
+      </td>
+      <td className="px-2 py-1.5"></td>
+    </tr>
+  );
+}
+
+function PlannedCompetitionsCard({ ps, plannedCompetitions, pastCompetitions, planYear, yearBasePath }) {
+  // Lignes saisies à la main + compétitions passées de la nageuse, triées par date.
+  const entries = [
+    ...plannedCompetitions.map((row) => ({ kind: "planned", date: row.start_date ?? "", row })),
+    ...pastCompetitions.map((comp) => ({ kind: "past", date: comp.competition_date ?? "", comp })),
+  ].sort((a, b) => a.date.localeCompare(b.date));
+
+  const years = [...new Set(entries.map((e) => e.date.slice(0, 4)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
+  const selectedYear = years.includes(planYear) ? planYear : "all";
+  const visible = selectedYear === "all" ? entries : entries.filter((e) => e.date.startsWith(selectedYear));
+
+  return (
+    // Ouvert quand un filtre d'année est demandé (la sélection recharge la page).
+    <details open={planYear != null} className="rounded-card bg-white shadow-sm">
       <summary className="cursor-pointer p-4 text-sm font-semibold text-navy">
-        Calendrier prévisionnel — {ps.participants?.first_name ?? "Natation"} ({plannedCompetitions.length})
+        Calendrier prévisionnel — {ps.participants?.first_name ?? "Natation"} ({visible.length})
       </summary>
+
+      <div className="flex items-center gap-2 border-t border-ink/5 px-4 py-3">
+        <span className="text-xs font-semibold text-ink/50">Année</span>
+        <PlannedYearSelect years={years} value={selectedYear} basePath={yearBasePath} />
+      </div>
 
       <div className="overflow-x-auto border-t border-ink/5">
         <table className="w-full min-w-[1020px] border-collapse text-xs">
@@ -276,9 +324,13 @@ function PlannedCompetitionsCard({ ps, plannedCompetitions }) {
             </tr>
           </thead>
           <tbody>
-            {plannedCompetitions.map((row) => (
-              <PlannedCompetitionRow key={row.id} row={row} />
-            ))}
+            {visible.map((e) =>
+              e.kind === "planned" ? (
+                <PlannedCompetitionRow key={`p-${e.row.id}`} row={e.row} />
+              ) : (
+                <PastCompetitionRow key={`f-${e.comp.id}`} comp={e.comp} />
+              )
+            )}
             <NewPlannedCompetitionRow ps={ps} />
           </tbody>
         </table>
@@ -2052,6 +2104,56 @@ export default async function NatationPage({ searchParams }) {
     plannedByPs[row.participant_sport_id].push(row);
   });
 
+  // Compétitions passées de chaque nageuse suivie (toutes celles où elle a un
+  // résultat individuel OU a nagé un relais), rattachées via ffn_swimmer_id.
+  const COMP_COLS = "id, ffn_competition_id, name, city, level, pool_length, competition_date, season_year";
+  const ffnIds = (assignments ?? []).map((a) => a.ffn_swimmer_id).filter(Boolean);
+  const pastByPs = {};
+  if (ffnIds.length > 0) {
+    const { data: swimmerRows } = await supabase.from("swimmers").select("id, ffn_swimmer_id").in("ffn_swimmer_id", ffnIds);
+    const swimmerUuids = (swimmerRows ?? []).map((w) => w.id);
+    if (swimmerUuids.length > 0) {
+      const [resRes, legRes] = await Promise.all([
+        fetchAllRows(
+          supabase,
+          "swim_results",
+          `swimmer_id, swim_competitions(${COMP_COLS})`,
+          (q) => q.in("swimmer_id", swimmerUuids)
+        ),
+        fetchAllRows(
+          supabase,
+          "swim_relay_legs",
+          `swimmer_id, swim_relay_teams(swim_competitions(${COMP_COLS}))`,
+          (q) => q.in("swimmer_id", swimmerUuids),
+          ["relay_team_id", "position"]
+        ),
+      ]);
+      const compsBySwimmer = new Map(); // swimmer uuid -> Map(competition id -> competition)
+      const add = (swimmerId, comp) => {
+        if (!comp) return;
+        if (!compsBySwimmer.has(swimmerId)) compsBySwimmer.set(swimmerId, new Map());
+        compsBySwimmer.get(swimmerId).set(comp.id, comp);
+      };
+      resRes.rows.forEach((r) => add(r.swimmer_id, r.swim_competitions));
+      legRes.rows.forEach((l) => add(l.swimmer_id, l.swim_relay_teams?.swim_competitions));
+      const uuidByFfn = new Map((swimmerRows ?? []).map((w) => [w.ffn_swimmer_id, w.id]));
+      (assignments ?? []).forEach((ps) => {
+        const comps = compsBySwimmer.get(uuidByFfn.get(ps.ffn_swimmer_id));
+        pastByPs[ps.id] = comps ? [...comps.values()] : [];
+      });
+    }
+  }
+
+  // Filtre d'année du calendrier prévisionnel (?planyear=2025 ou "all"),
+  // en conservant les autres paramètres de la page dans l'URL du select.
+  const planYear = typeof searchParams?.planyear === "string" ? searchParams.planyear : null;
+  const keptParams = new URLSearchParams();
+  Object.entries(searchParams ?? {}).forEach(([k, v]) => {
+    if (k === "planyear") return;
+    (Array.isArray(v) ? v : [v]).forEach((x) => keptParams.append(k, x));
+  });
+  const yearBasePath = keptParams.toString() ? `/natation?${keptParams.toString()}&` : "/natation?";
+
   return (
     <div className="space-y-6">
       <div>
@@ -2072,7 +2174,13 @@ export default async function NatationPage({ searchParams }) {
         {(assignments ?? []).map((ps) => (
           <div key={ps.id} className="space-y-3">
             <SyncCard ps={ps} />
-            <PlannedCompetitionsCard ps={ps} plannedCompetitions={plannedByPs[ps.id] ?? []} />
+            <PlannedCompetitionsCard
+              ps={ps}
+              plannedCompetitions={plannedByPs[ps.id] ?? []}
+              pastCompetitions={pastByPs[ps.id] ?? []}
+              planYear={planYear}
+              yearBasePath={yearBasePath}
+            />
           </div>
         ))}
       </div>
