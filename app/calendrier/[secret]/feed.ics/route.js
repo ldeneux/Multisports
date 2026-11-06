@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { buildIcsCalendar, buildIcsEvent } from "@/lib/ics";
-import { ffnCompetitionResultsUrl } from "@/lib/utils";
+import { ffnCompetitionResultsUrl, ffnLiveUrl } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -121,7 +121,9 @@ export async function GET(request, { params }) {
           uid: `sw-${competitionId}-${participantId}@sport-famille`,
           summary: `🏊 ${participantName ? `${participantName} — ` : ""}${comp?.name || "Compétition"}`,
           location: comp?.city || "",
-          description: comp?.ffn_competition_id ? `Résultats FFN : ${ffnCompetitionResultsUrl(comp.ffn_competition_id)}` : "",
+          description: comp?.ffn_competition_id
+            ? `Live FFN : ${ffnLiveUrl(comp.ffn_competition_id)}\nSite FFN : ${ffnCompetitionResultsUrl(comp.ffn_competition_id)}`
+            : "",
           allDay: true,
           date: comp?.competition_date,
         })

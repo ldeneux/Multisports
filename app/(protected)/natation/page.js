@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear, ffnCompetitionResultsUrl } from "@/lib/utils";
+import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear, ffnLiveUrl } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import PlannedYearSelect from "@/components/PlannedYearSelect";
@@ -256,7 +256,7 @@ function NewPlannedCompetitionRow({ ps }) {
 // Compétition passée issue de la FFN (swim_results / relais) : lecture seule,
 // mêmes colonnes que le calendrier saisi à la main pour que tout s'aligne.
 function PastCompetitionRow({ comp }) {
-  const link = ffnCompetitionResultsUrl(comp.ffn_competition_id) || null;
+  const link = ffnLiveUrl(comp.ffn_competition_id) || null;
   return (
     <tr className="border-b border-ink/5 bg-sand/40 text-ink/70 last:border-0">
       <td className="whitespace-nowrap px-2 py-1.5">{formatDate(comp.competition_date)}</td>
@@ -273,7 +273,7 @@ function PastCompetitionRow({ comp }) {
       <td className="px-2 py-1.5">
         {link && (
           <a href={link} target="_blank" rel="noopener noreferrer" className="font-semibold text-lagoon hover:underline">
-            Résultats
+            Live
           </a>
         )}
       </td>

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
-import { formatDate, ffbbAssetUrl, ffnCompetitionResultsUrl } from "@/lib/utils";
+import { formatDate, ffbbAssetUrl, ffnCompetitionResultsUrl, ffnLiveUrl, ffnCompetitionIdFromLink } from "@/lib/utils";
 import CalendarEvent from "@/components/CalendarEvent";
 import { findHostClub } from "@/lib/ffn-clubs-rhone";
 
@@ -122,7 +122,7 @@ function journeeLabel(value) {
   return n === 1 ? "1ère journée" : `${n}e journée`;
 }
 
-function swimDetail({ title, city, poolLength, dateStr, nbDays, time, level, comment, ffnLink }) {
+function swimDetail({ title, city, poolLength, dateStr, nbDays, time, level, comment, ffnLink, liveLink }) {
   const club = findHostClub({ title, location: city });
   const addressLines = club?.address ? [club.address] : [];
   return {
@@ -134,6 +134,7 @@ function swimDetail({ title, city, poolLength, dateStr, nbDays, time, level, com
     level: level || "",
     comment: comment || "",
     ffnLink: ffnLink || "",
+    liveLink: liveLink || "",
     clubName: club?.name ?? null,
     clubLogo: club?.logo ?? null,
     addressLines,
@@ -352,6 +353,7 @@ export default async function HomePage({ searchParams }) {
             nbDays: 1,
             time: null,
             ffnLink: ffnCompetitionResultsUrl(comp.ffn_competition_id),
+            liveLink: ffnLiveUrl(comp.ffn_competition_id),
           }),
         };
       })
@@ -379,6 +381,8 @@ export default async function HomePage({ searchParams }) {
         level: row.categories,
         comment: row.comment,
         ffnLink: row.ffn_link,
+        // Si le lien saisi contient l'identifiant FFN, on en déduit le live.
+        liveLink: ffnLiveUrl(ffnCompetitionIdFromLink(row.ffn_link)),
       }),
     };
     if (base.date >= startDateStr && base.date < endDateStr) {
