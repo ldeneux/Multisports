@@ -612,8 +612,7 @@ function RelayTab({ swimmerId, relayLegs, relayFieldByTeamId }) {
 function MppTable({ rows, meetRowsByKey, relayFieldByKey, swimmerId }) {
   const byPool = {};
   rows.forEach((r) => {
-    const pool = poolByComp.get(r.competition_id) ?? r.pool_length ?? "?";
-    r.swimmers = swimmerById.get(r.swimmer_id) ?? null;
+    const pool = r.swim_competitions?.pool_length ?? r.pool_length ?? "?";
     if (!byPool[pool]) byPool[pool] = [];
     byPool[pool].push(r);
   });
@@ -1395,7 +1394,8 @@ async function buildMpaData(supabase, selectedCats) {
   // --- Individuel : meilleur temps de chaque nageuse par épreuve + bassin
   const bestBySwimmerEvent = new Map();
   for (const r of indiv.rows) {
-    const pool = r.swim_competitions?.pool_length ?? r.pool_length ?? "?";
+    const pool = poolByComp.get(r.competition_id) ?? r.pool_length ?? "?";
+    r.swimmers = swimmerById.get(r.swimmer_id) ?? null;
     const key = `${pool}|${r.distance_m}|${r.stroke}|${r.swimmer_id}`;
     const cur = bestBySwimmerEvent.get(key);
     if (
