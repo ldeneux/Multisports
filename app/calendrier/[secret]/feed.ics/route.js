@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { buildIcsCalendar, buildIcsEvent } from "@/lib/ics";
+import { ffnCompetitionResultsUrl } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -83,34 +84,49 @@ export async function GET(request, { params }) {
     .gte("competition_date", fromStr);
 
   if (competitions && competitions.length > 0) {
-    const { data: swimRows } = await supabase
-      .from("swim_results")
-      .select("competition_id, swimmer_id, swimmers(participant_id)")
-      .in(
-        "competition_id",
-        competitions.map((c) => c.id)
+    const compIds = competitions.map((c) => c.id);
+    // Même logique que le calendrier de l'app : on part de NOS nageuses (une
+    // compétition entière dépasse la limite de 1000 lignes par requête) et on
+    // inclut les relais.
+    const { data: ourSwimmers } = await supabase
+      .from("swimmers")
+      .select("id, participant_id")
+      .not("participant_id", "is", null);
+    const participantBySwimmer = new Map((ourSwimmers ?? []).map((w) => [w.id, w.participant_id]));
+    const ourIds = [...participantBySwimmer.keys()];
+
+    const pairs = new Map();
+    if (ourIds.length > 0) {
+      const [{ data: swimRows }, { data: legRows }] = await Promise.all([
+        supabase.from("swim_results").select("competition_id, swimmer_id").in("swimmer_id", ourIds).in("competition_id", compIds),
+        supabase
+          .from("swim_relay_legs")
+          .select("swimmer_id, swim_relay_teams!inner(competition_id)")
+          .in("swimmer_id", ourIds)
+          .in("swim_relay_teams.competition_id", compIds),
+      ]);
+      const addPair = (competitionId, swimmerId) => {
+        const participantId = participantBySwimmer.get(swimmerId);
+        if (competitionId && participantId) pairs.set(`${competitionId}|${participantId}`, { competitionId, participantId });
+      };
+      (swimRows ?? []).forEach((r) => addPair(r.competition_id, r.swimmer_id));
+      (legRows ?? []).forEach((l) => addPair(l.swim_relay_teams?.competition_id, l.swimmer_id));
+    }
+
+    pairs.forEach(({ competitionId, participantId }) => {
+      const comp = competitions.find((c) => c.id === competitionId);
+      const participantName = nameById.get(participantId) || "";
+      events.push(
+        buildIcsEvent({
+          uid: `sw-${competitionId}-${participantId}@sport-famille`,
+          summary: `🏊 ${participantName ? `${participantName} — ` : ""}${comp?.name || "Compétition"}`,
+          location: comp?.city || "",
+          description: comp?.ffn_competition_id ? `Résultats FFN : ${ffnCompetitionResultsUrl(comp.ffn_competition_id)}` : "",
+          allDay: true,
+          date: comp?.competition_date,
+        })
       );
-
-    const seen = new Set();
-    (swimRows ?? [])
-      .filter((r) => r.swimmers?.participant_id)
-      .forEach((r) => {
-        const dedupeKey = `${r.competition_id}-${r.swimmers.participant_id}`;
-        if (seen.has(dedupeKey)) return;
-        seen.add(dedupeKey);
-
-        const comp = competitions.find((c) => c.id === r.competition_id);
-        const participantName = nameById.get(r.swimmers.participant_id) || "";
-        events.push(
-          buildIcsEvent({
-            uid: `sw-${r.competition_id}-${r.swimmers.participant_id}@sport-famille`,
-            summary: `🏊 ${participantName ? `${participantName} — ` : ""}${comp?.name || "Compétition"}`,
-            location: comp?.city || "",
-            allDay: true,
-            date: comp?.competition_date,
-          })
-        );
-      });
+    });
   }
 
   // ---- Natation (calendrier prévisionnel saisi à la main) ----------------

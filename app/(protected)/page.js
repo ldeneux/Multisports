@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
-import { formatDate, ffbbAssetUrl } from "@/lib/utils";
+import { formatDate, ffbbAssetUrl, ffnCompetitionResultsUrl } from "@/lib/utils";
 import CalendarEvent from "@/components/CalendarEvent";
 import { findHostClub } from "@/lib/ffn-clubs-rhone";
 
@@ -24,6 +24,8 @@ const SPORT_ICONS = {
 function iconFor(slug) {
   return SPORT_ICONS[slug] ?? "📅";
 }
+
+const MONTH_SHORT = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 
 const MONTH_NAMES = [
   "janvier",
@@ -165,11 +167,6 @@ export default async function HomePage({ searchParams }) {
   // couvre largement tout événement raisonnable.
   const lookbackDateStr = addDaysStr(startDateStr, -13);
 
-  const prevMonth = month === 1 ? 12 : month - 1;
-  const prevYear = month === 1 ? year - 1 : year;
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const nextYear = month === 12 ? year + 1 : year;
-
   // ---- Basket : matchs du mois, toujours "les nôtres" (pas de notion de
   // "suivi" côté basket comme pour la natation). ----------------------------
   const { data: bbMatches } = await supabase
@@ -272,6 +269,15 @@ export default async function HomePage({ searchParams }) {
       };
     });
 
+  // Compétitions natation à venir saisies à la main (le calendrier
+  // prévisionnel de la page Natation) — seule source pour les événements
+  // natation réellement à venir, y compris sur plusieurs jours.
+  const { data: plannedRows } = await supabase
+    .from("swim_planned_competitions")
+    .select("*, participant_sports(participant_id, participants(first_name))")
+    .gte("start_date", lookbackDateStr)
+    .lt("start_date", endDateStr);
+
   // ---- Natation : compétitions du mois où une de nos filles (pas les
   // nageuses "suivies" d'autres clubs) a un résultat enregistré. Limite
   // connue : la synchro FFN récupère les compétitions via leurs RÉSULTATS,
@@ -283,56 +289,74 @@ export default async function HomePage({ searchParams }) {
     .gte("competition_date", startDateStr)
     .lt("competition_date", endDateStr);
 
+  // Jours déjà couverts par une ligne du calendrier prévisionnel (par
+  // participant) : la ligne saisie à la main est plus riche (heure, lien,
+  // commentaire), on n'ajoute donc pas en double la compétition FFN du même jour.
+  const plannedCover = new Set();
+  (plannedRows ?? []).forEach((row) => {
+    const pid = row.participant_sports?.participant_id;
+    for (let i = 0; i < (row.nb_days || 1); i++) plannedCover.add(`${pid}|${addDaysStr(row.start_date, i)}`);
+  });
+
   let swimEvents = [];
   if (competitions && competitions.length > 0) {
-    const { data: swimRows } = await supabase
-      .from("swim_results")
-      .select("competition_id, swimmer_id, swimmers(participant_id, full_name, participants(first_name))")
-      .in(
-        "competition_id",
-        competitions.map((c) => c.id)
-      );
+    const compIds = competitions.map((c) => c.id);
+    // On part de NOS nageuses (liées à un participant) plutôt que de lire tous
+    // les résultats de la compétition : une compétition compte des milliers de
+    // lignes et Supabase en renvoie 1000 au maximum, ce qui faisait manquer
+    // certaines de nos compétitions. On inclut aussi les relais (sans course
+    // individuelle, la nageuse n'a aucune ligne dans swim_results).
+    const { data: ourSwimmers } = await supabase
+      .from("swimmers")
+      .select("id, participant_id")
+      .not("participant_id", "is", null);
+    const participantBySwimmer = new Map((ourSwimmers ?? []).map((w) => [w.id, w.participant_id]));
+    const ourIds = [...participantBySwimmer.keys()];
 
-    const seen = new Set();
-    swimEvents = (swimRows ?? [])
-      .filter((r) => r.swimmers?.participant_id)
-      .filter((r) => {
-        const dedupeKey = `${r.competition_id}-${r.swimmers.participant_id}`;
-        if (seen.has(dedupeKey)) return false;
-        seen.add(dedupeKey);
-        return true;
-      })
-      .map((r) => {
-        const comp = competitions.find((c) => c.id === r.competition_id);
-        const title = comp?.name || "Compétition";
+    const pairs = new Map(); // `${competition}|${participant}` -> { competitionId, participantId }
+    if (ourIds.length > 0) {
+      const [{ data: swimRows }, { data: legRows }] = await Promise.all([
+        supabase.from("swim_results").select("competition_id, swimmer_id").in("swimmer_id", ourIds).in("competition_id", compIds),
+        supabase
+          .from("swim_relay_legs")
+          .select("swimmer_id, swim_relay_teams!inner(competition_id)")
+          .in("swimmer_id", ourIds)
+          .in("swim_relay_teams.competition_id", compIds),
+      ]);
+      const addPair = (competitionId, swimmerId) => {
+        const participantId = participantBySwimmer.get(swimmerId);
+        if (competitionId && participantId) pairs.set(`${competitionId}|${participantId}`, { competitionId, participantId });
+      };
+      (swimRows ?? []).forEach((r) => addPair(r.competition_id, r.swimmer_id));
+      (legRows ?? []).forEach((l) => addPair(l.swim_relay_teams?.competition_id, l.swimmer_id));
+    }
+
+    swimEvents = [...pairs.values()]
+      .map(({ competitionId, participantId }) => {
+        const comp = competitions.find((c) => c.id === competitionId);
+        if (!comp || plannedCover.has(`${participantId}|${comp.competition_date}`)) return null;
+        const title = comp.name || "Compétition";
         return {
-          key: `sw-${r.competition_id}-${r.swimmers.participant_id}`,
-          date: comp?.competition_date,
+          key: `sw-${competitionId}-${participantId}`,
+          date: comp.competition_date,
           time: null,
           sportSlug: "natation",
-          participantId: r.swimmers.participant_id,
+          participantId,
           title,
-          subtitle: (comp?.city || "LIEU INCONNU").toUpperCase(),
+          subtitle: (comp.city || "LIEU INCONNU").toUpperCase(),
           detail: swimDetail({
             title,
-            city: comp?.city,
-            poolLength: comp?.pool_length,
-            dateStr: comp?.competition_date,
+            city: comp.city,
+            poolLength: comp.pool_length,
+            dateStr: comp.competition_date,
             nbDays: 1,
             time: null,
+            ffnLink: ffnCompetitionResultsUrl(comp.ffn_competition_id),
           }),
         };
-      });
+      })
+      .filter(Boolean);
   }
-
-  // Compétitions natation à venir saisies à la main (le calendrier
-  // prévisionnel de la page Natation) — seule source pour les événements
-  // natation réellement à venir, y compris sur plusieurs jours.
-  const { data: plannedRows } = await supabase
-    .from("swim_planned_competitions")
-    .select("*, participant_sports(participant_id, participants(first_name))")
-    .gte("start_date", lookbackDateStr)
-    .lt("start_date", endDateStr);
 
   let plannedEvents = [];
   (plannedRows ?? []).forEach((row) => {
@@ -512,16 +536,48 @@ export default async function HomePage({ searchParams }) {
           </div>
 
           <div className="overflow-hidden rounded-card shadow-sm">
-            <div className="flex items-center justify-between bg-navy px-4 py-3 text-white">
-              <Link href={homeHref({ month: prevMonth, year: prevYear, participant: selectedParticipantId })} className="px-2 text-lg font-bold hover:text-cardinal-light">
-                ‹
-              </Link>
-              <span className="font-display text-sm uppercase tracking-tight">
-                {MONTH_NAMES[month - 1]} {year}
-              </span>
-              <Link href={homeHref({ month: nextMonth, year: nextYear, participant: selectedParticipantId })} className="px-2 text-lg font-bold hover:text-cardinal-light">
-                ›
-              </Link>
+            <div className="bg-navy px-4 pb-3 pt-3 text-white">
+              <div className="flex items-center justify-between">
+                <Link
+                  href={homeHref({ month, year: year - 1, participant: selectedParticipantId })}
+                  aria-label="Année précédente"
+                  className="px-2 text-lg font-bold hover:text-cardinal-light"
+                >
+                  ‹
+                </Link>
+                <span className="font-display text-sm uppercase tracking-tight">{year}</span>
+                <Link
+                  href={homeHref({ month, year: year + 1, participant: selectedParticipantId })}
+                  aria-label="Année suivante"
+                  className="px-2 text-lg font-bold hover:text-cardinal-light"
+                >
+                  ›
+                </Link>
+              </div>
+              <div className="mt-2 grid grid-cols-6 gap-1 sm:grid-cols-12">
+                {MONTH_SHORT.map((label, i) => {
+                  const m = i + 1;
+                  const active = m === month;
+                  const isNow = m === now.getMonth() + 1 && year === now.getFullYear();
+                  return (
+                    <Link
+                      key={m}
+                      href={homeHref({ month: m, year, participant: selectedParticipantId })}
+                      aria-current={active ? "true" : undefined}
+                      title={`${capitalize(MONTH_NAMES[i])} ${year}`}
+                      className={`rounded-full px-1 py-1.5 text-center text-xs font-semibold capitalize ${
+                        active
+                          ? "bg-white text-navy"
+                          : isNow
+                          ? "text-white ring-1 ring-white/50 hover:bg-white/10"
+                          : "text-white/70 hover:bg-white/10 hover:text-white"
+                      }`}
+                    >
+                      {label}
+                    </Link>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="divide-y divide-ink/5 bg-white">
