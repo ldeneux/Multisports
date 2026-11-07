@@ -19,7 +19,9 @@ const SPORT_ICONS = {
   "course-a-pied": "🏃‍♀️",
   triathlon: "🚴",
   plongee: "🤿",
-  Parapente: "🪁",
+  parapente: "🪁",
+  volley: "🏐",
+  badminton: "🏸",
 };
 function iconFor(slug) {
   return SPORT_ICONS[slug] ?? "📅";
