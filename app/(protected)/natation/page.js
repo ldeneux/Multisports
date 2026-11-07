@@ -4,6 +4,7 @@ import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear, ffn
 import SyncButton from "@/components/SyncButton";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import PlannedYearSelect from "@/components/PlannedYearSelect";
+import UrlSelect from "@/components/UrlSelect";
 import { SwimRadarChart, SwimPercentileTrendChart, SwimScatterChart, SwimTimeTrendChart } from "@/components/SwimCharts";
 import {
   syncClubCompetitions,
@@ -1404,7 +1405,7 @@ async function fetchAllRows(supabase, table, columns, applyFilters = (q) => q, o
   return { rows, error };
 }
 
-async function buildMpaData(supabase, selectedCats) {
+async function buildMpaData(supabase, { cats: selectedCats, clubOnly, competitionId, swimmerId }) {
   // Sans filtre (null) tout passe, y compris une année de naissance inconnue ;
   // avec un filtre, l'année doit exister et tomber dans une catégorie choisie.
   const yearAllowed = (y) => !selectedCats || selectedCats.includes(mpaCategoryFromBirthYear(y));
@@ -1412,7 +1413,8 @@ async function buildMpaData(supabase, selectedCats) {
   // Colonnes minimales, SANS jointures imbriquées PostgREST (lentes sur des
   // milliers de lignes) : nageuses, compétitions et relayeuses sont chargées
   // à part (petites tables) et rattachées en mémoire.
-  const [indiv, relays, legsRes, swimmersRes, compsRes] = await Promise.all([
+  const none = { rows: [], error: null };
+  const [indiv, relays, legsRes, swimmersRes, compsRes, partResultsRes, partTeamsRes] = await Promise.all([
     fetchAllRows(
       supabase,
       "swim_results",
@@ -1422,15 +1424,24 @@ async function buildMpaData(supabase, selectedCats) {
     fetchAllRows(
       supabase,
       "swim_relay_teams",
-      "id, competition_id, event_name, gender, club, team_time_ms, points",
+      "id, competition_id, event_name, gender, club, ffn_club_id, team_time_ms, points",
       (q) => q.in("gender", ["F", "X"]).not("team_time_ms", "is", null)
     ),
     fetchAllRows(supabase, "swim_relay_legs", "relay_team_id, position, swimmer_id", (q) => q, [
       "relay_team_id",
       "position",
     ]),
-    fetchAllRows(supabase, "swimmers", "id, full_name, club, birth_year"),
-    fetchAllRows(supabase, "swim_competitions", "id, pool_length"),
+    fetchAllRows(supabase, "swimmers", "id, full_name, club, ffn_club_id, birth_year"),
+    fetchAllRows(supabase, "swim_competitions", "id, pool_length, name, city, competition_date"),
+    // Participantes d'une compétition (filtre « participantes à ») : TOUTES les
+    // lignes de la compétition, filles ou garçons (les garçons comptent pour
+    // les relais mixtes), et ses équipes de relais pour en lire les relayeurs.
+    competitionId
+      ? fetchAllRows(supabase, "swim_results", "swimmer_id", (q) => q.eq("competition_id", competitionId))
+      : Promise.resolve(none),
+    competitionId
+      ? fetchAllRows(supabase, "swim_relay_teams", "id", (q) => q.eq("competition_id", competitionId))
+      : Promise.resolve(none),
   ]);
 
   const swimmerById = new Map(swimmersRes.rows.map((w) => [w.id, w]));
@@ -1441,9 +1452,40 @@ async function buildMpaData(supabase, selectedCats) {
     legsByTeam.get(l.relay_team_id).push({ ...l, swimmers: swimmerById.get(l.swimmer_id) ?? null });
   }
 
+  // Club de la nageuse suivie (filtre « mon club ») : on compare l'identifiant
+  // FFN du club, à défaut le nom.
+  const mySwimmer = swimmerById.get(swimmerId) ?? null;
+  const clubLabel = mySwimmer?.club ?? null;
+  const normName = (v) => String(v ?? "").trim().toLowerCase();
+  const sameClub = (ffnClubId, clubName) =>
+    !!mySwimmer &&
+    (mySwimmer.ffn_club_id && ffnClubId
+      ? mySwimmer.ffn_club_id === ffnClubId
+      : normName(clubName) === normName(mySwimmer.club));
+  const clubActive = !!clubOnly && !!mySwimmer;
+
+  // Nageuses ayant participé à la compétition choisie. Elles ne servent qu'à
+  // restreindre QUI apparaît : les temps restent leurs meilleurs temps toutes
+  // compétitions confondues.
+  const competitions = compsRes.rows
+    .filter((c) => c.competition_date)
+    .sort((a, b) => b.competition_date.localeCompare(a.competition_date))
+    .map((c) => ({
+      value: c.id,
+      label: `${c.competition_date.split("-").reverse().join("/")} — ${c.name}${c.city ? ` (${c.city})` : ""}`,
+    }));
+  let participants = null;
+  if (competitionId && competitions.some((c) => c.value === competitionId)) {
+    participants = new Set(partResultsRes.rows.map((r) => r.swimmer_id));
+    partTeamsRes.rows.forEach((t) => (legsByTeam.get(t.id) ?? []).forEach((l) => participants.add(l.swimmer_id)));
+  }
+
   // --- Individuel : meilleur temps de chaque nageuse par épreuve + bassin
   const bestBySwimmerEvent = new Map();
   for (const r of indiv.rows) {
+    if (participants && !participants.has(r.swimmer_id)) continue;
+    const w = swimmerById.get(r.swimmer_id);
+    if (clubActive && !sameClub(w?.ffn_club_id, w?.club)) continue;
     const pool = poolByComp.get(r.competition_id) ?? r.pool_length ?? "?";
     r.swimmers = swimmerById.get(r.swimmer_id) ?? null;
     const key = `${pool}|${r.distance_m}|${r.stroke}|${r.swimmer_id}`;
@@ -1490,6 +1532,8 @@ async function buildMpaData(supabase, selectedCats) {
 
   const relayByPool = {};
   for (const t of bestByLineup.values()) {
+    if (clubActive && !sameClub(t.ffn_club_id, t.club)) continue;
+    if (participants && (t.legs.length === 0 || !t.legs.every((l) => participants.has(l.swimmer_id)))) continue;
     // Avec un filtre actif, toutes les relayeuses doivent être dans les
     // années choisies (une année inconnue ne peut pas correspondre).
     if (selectedCats && !t.legs.every((l) => yearAllowed(l.swimmers?.birth_year ?? null))) continue;
@@ -1534,52 +1578,83 @@ async function buildMpaData(supabase, selectedCats) {
 
   return {
     sections,
+    competitions,
+    clubLabel,
     error:
-      [indiv, relays, legsRes, swimmersRes, compsRes].map((r) => r.error?.message).find(Boolean) ?? null,
+      [indiv, relays, legsRes, swimmersRes, compsRes, partResultsRes, partTeamsRes]
+        .map((r) => r.error?.message)
+        .find(Boolean) ?? null,
   };
 }
 
-function mpaHref(swimmerId, cats) {
-  const cat = cats && cats.length > 0 ? `&cat=${cats.join(",")}` : "";
-  return `/natation?tab=performances&view=mpa&swimmer=${swimmerId ?? ""}${cat}`;
+// État des filtres MPA dans l'URL : cat (catégories), club=1 (mon club),
+// comp (compétition dont on garde les participantes).
+function mpaHref(swimmerId, { cats = null, club = false, comp = null } = {}) {
+  const parts = [];
+  if (cats && cats.length > 0) parts.push(`cat=${cats.join(",")}`);
+  if (club) parts.push("club=1");
+  if (comp) parts.push(`comp=${comp}`);
+  return `/natation?tab=performances&view=mpa&swimmer=${swimmerId ?? ""}${parts.map((p) => `&${p}`).join("")}`;
 }
 
-// Filtre par catégorie officielle. Par défaut (aucun paramètre) tout est
-// sélectionné ; un clic sur une catégorie quand tout est sélectionné ne
-// garde que celle-ci, les clics suivants ajoutent/retirent. Si on
-// désélectionne la dernière, on revient à "Toutes".
-function MpaCategoryFilter({ swimmerId, selectedCats }) {
-  const toggle = (key) => {
+const titleCase = (v) => String(v ?? "").toLowerCase().replace(/(^|[\s-])\S/g, (c) => c.toUpperCase());
+
+// Filtres MPA. Catégorie : par défaut (aucun paramètre) tout est sélectionné ;
+// un clic sur une catégorie quand tout est sélectionné ne garde que celle-ci,
+// les clics suivants ajoutent/retirent (retirer la dernière revient à
+// "Toutes"). Club : interrupteur. Compétition : ne garde que les nageuses qui
+// y ont participé, sans réduire leurs résultats à cette compétition.
+function MpaFilters({ swimmerId, state, competitions, clubLabel }) {
+  const { cats: selectedCats, club, comp } = state;
+  const toggleCat = (key) => {
     if (!selectedCats) return [key];
     const next = selectedCats.includes(key) ? selectedCats.filter((k) => k !== key) : [...selectedCats, key];
     return MPA_CATEGORIES.map((c) => c.key).filter((k) => next.includes(k));
   };
+  const chip = (active) =>
+    `rounded-full px-3 py-1 text-xs font-semibold ${
+      active ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
+    }`;
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-card bg-white p-3 shadow-sm">
-      <span className="text-xs font-semibold text-ink/50">Catégorie</span>
-      <Link
-        href={mpaHref(swimmerId, null)}
-        className={`rounded-full px-3 py-1 text-xs font-semibold ${
-          !selectedCats ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
-        }`}
-      >
-        Toutes
-      </Link>
-      {MPA_CATEGORIES.map((c) => {
-        const active = !!selectedCats && selectedCats.includes(c.key);
-        return (
+    <div className="space-y-2 rounded-card bg-white p-3 shadow-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-ink/50">Catégorie</span>
+        <Link href={mpaHref(swimmerId, { ...state, cats: null })} className={chip(!selectedCats)}>
+          Toutes
+        </Link>
+        {MPA_CATEGORIES.map((c) => (
           <Link
             key={c.key}
-            href={mpaHref(swimmerId, toggle(c.key))}
+            href={mpaHref(swimmerId, { ...state, cats: toggleCat(c.key) })}
             title={mpaCategoryHint(c)}
-            className={`rounded-full px-3 py-1 text-xs font-semibold ${
-              active ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
-            }`}
+            className={chip(!!selectedCats && selectedCats.includes(c.key))}
           >
             {c.label}
           </Link>
-        );
-      })}
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {clubLabel && (
+          <Link
+            href={mpaHref(swimmerId, { ...state, club: !club })}
+            aria-pressed={club}
+            title={club ? "Cliquer pour afficher tous les clubs" : "Cliquer pour ne garder que ce club"}
+            className={chip(club)}
+          >
+            {club ? "✓ " : ""}
+            {titleCase(clubLabel)}
+          </Link>
+        )}
+        <span className="text-xs font-semibold text-ink/50">Participantes à</span>
+        <UrlSelect
+          options={competitions}
+          value={comp ?? ""}
+          basePath={`${mpaHref(swimmerId, { ...state, comp: null })}&`}
+          param="comp"
+          emptyLabel="Toutes les compétitions"
+          ariaLabel="Ne garder que les nageuses ayant participé à une compétition"
+        />
+      </div>
     </div>
   );
 }
@@ -1778,9 +1853,22 @@ export default async function NatationPage({ searchParams }) {
     const selectedCats = parsedCats.length > 0 ? [...new Set(parsedCats)] : null;
 
     if (view === "mpa") {
-      const { sections, error } = await buildMpaData(supabase, selectedCats);
+      const clubOnly = searchParams?.club === "1";
+      const compParam = typeof searchParams?.comp === "string" ? searchParams.comp : "";
+      const competitionId = /^[0-9a-f-]{36}$/i.test(compParam) ? compParam : null;
+      const { sections, competitions, clubLabel, error } = await buildMpaData(supabase, {
+        cats: selectedCats,
+        clubOnly,
+        competitionId,
+        swimmerId: selectedSwimmerId,
+      });
       mpaFilter = (
-        <MpaCategoryFilter swimmerId={selectedSwimmerId} selectedCats={selectedCats} />
+        <MpaFilters
+          swimmerId={selectedSwimmerId}
+          state={{ cats: selectedCats, club: clubOnly, comp: competitionId }}
+          competitions={competitions}
+          clubLabel={clubLabel}
+        />
       );
       performancesContent = <MpaTab sections={sections} error={error} />;
     } else if (selectedSwimmerId) {
