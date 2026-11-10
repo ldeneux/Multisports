@@ -1373,6 +1373,48 @@ function mpaCategoryHint(c) {
   return `${ages} · ${years}`;
 }
 
+// Pastilles d'années (filtre en cascade sous chaque catégorie sélectionnée).
+// Séniors : on détaille les années de 19 à 26 ans, puis une pastille
+// « + de 26 ans » regroupe toutes les nageuses plus âgées.
+const MPA_SENIOR_MAX_AGE = 26;
+const MPA_OLD_TOKEN = "old";
+
+// Jeton de filtre d'une année de naissance : l'année, ou « old » (séniors > 26 ans).
+function mpaYearToken(birthYear) {
+  const age = computeCurrentSeasonYear() - birthYear;
+  return age > MPA_SENIOR_MAX_AGE ? MPA_OLD_TOKEN : String(birthYear);
+}
+
+// Catégorie à laquelle appartient un jeton (année ou « old »).
+function mpaTokenCategory(token) {
+  return token === MPA_OLD_TOKEN ? "senior" : mpaCategoryFromBirthYear(Number(token));
+}
+
+// Pastilles d'une catégorie, de l'année la plus récente à la plus ancienne.
+// Avenirs : pas de borne basse d'âge, on s'arrête à la nageuse la plus jeune
+// présente en base (youngestBirthYear).
+function mpaYearChips(c, youngestBirthYear) {
+  const season = computeCurrentSeasonYear();
+  const isSenior = c.maxAge === Infinity;
+  const oldest = season - (isSenior ? MPA_SENIOR_MAX_AGE : c.maxAge);
+  const youngest =
+    c.minAge === 0
+      ? Math.max(oldest, Math.min(youngestBirthYear ?? oldest, season))
+      : season - c.minAge;
+  const chips = [];
+  for (let y = youngest; y >= oldest; y--) {
+    chips.push({ token: String(y), label: String(y), title: `${season - y} ans` });
+  }
+  if (isSenior) {
+    chips.push({
+      token: MPA_OLD_TOKEN,
+      label: `+ de ${MPA_SENIOR_MAX_AGE} ans`,
+      title: `nées en ${oldest - 1} et avant`,
+    });
+  }
+  return chips;
+}
+
 // Supabase plafonne chaque requête à 1000 lignes. Plutôt que de paginer l'une
 // après l'autre (un aller-retour réseau par page = lent), on compte d'abord
 // les lignes puis on lance toutes les pages EN PARALLÈLE.
@@ -1405,10 +1447,16 @@ async function fetchAllRows(supabase, table, columns, applyFilters = (q) => q, o
   return { rows, error };
 }
 
-async function buildMpaData(supabase, { cats: selectedCats, clubOnly, competitionId, swimmerId }) {
+async function buildMpaData(supabase, { cats: selectedCats, excluded = [], clubOnly, competitionId, swimmerId }) {
   // Sans filtre (null) tout passe, y compris une année de naissance inconnue ;
-  // avec un filtre, l'année doit exister et tomber dans une catégorie choisie.
-  const yearAllowed = (y) => !selectedCats || selectedCats.includes(mpaCategoryFromBirthYear(y));
+  // avec un filtre, l'année doit exister, tomber dans une catégorie choisie
+  // et ne pas avoir été décochée dans les pastilles d'années.
+  const excludedSet = new Set(excluded);
+  const yearAllowed = (y) => {
+    if (!selectedCats) return true;
+    if (!y) return false;
+    return selectedCats.includes(mpaCategoryFromBirthYear(y)) && !excludedSet.has(mpaYearToken(y));
+  };
 
   // Colonnes minimales, SANS jointures imbriquées PostgREST (lentes sur des
   // milliers de lignes) : nageuses, compétitions et relayeuses sont chargées
@@ -1576,10 +1624,15 @@ async function buildMpaData(supabase, { cats: selectedCats, clubOnly, competitio
     return { pool, individual, relay };
   });
 
+  const season = computeCurrentSeasonYear();
+  const youngestBirthYear =
+    swimmersRes.rows.reduce((m, w) => (w.birth_year && w.birth_year <= season ? Math.max(m, w.birth_year) : m), 0) || null;
+
   return {
     sections,
     competitions,
     clubLabel,
+    youngestBirthYear,
     error:
       [indiv, relays, legsRes, swimmersRes, compsRes, partResultsRes, partTeamsRes]
         .map((r) => r.error?.message)
@@ -1587,11 +1640,14 @@ async function buildMpaData(supabase, { cats: selectedCats, clubOnly, competitio
   };
 }
 
-// État des filtres MPA dans l'URL : cat (catégories), club=1 (mon club),
+// État des filtres MPA dans l'URL : cat (catégories), hors (années décochées),
+// club=1 (mon club),
 // comp (compétition dont on garde les participantes).
-function mpaHref(swimmerId, { cats = null, club = false, comp = null } = {}) {
+function mpaHref(swimmerId, { cats = null, excluded = [], club = false, comp = null } = {}) {
   const parts = [];
   if (cats && cats.length > 0) parts.push(`cat=${cats.join(",")}`);
+  // hors = années décochées (les pastilles d'années n'existent qu'avec une catégorie).
+  if (cats && cats.length > 0 && excluded.length > 0) parts.push(`hors=${excluded.join(",")}`);
   if (club) parts.push("club=1");
   if (comp) parts.push(`comp=${comp}`);
   return `/natation?tab=performances&view=mpa&swimmer=${swimmerId ?? ""}${parts.map((p) => `&${p}`).join("")}`;
@@ -1604,12 +1660,22 @@ const titleCase = (v) => String(v ?? "").toLowerCase().replace(/(^|[\s-])\S/g, (
 // les clics suivants ajoutent/retirent (retirer la dernière revient à
 // "Toutes"). Club : interrupteur. Compétition : ne garde que les nageuses qui
 // y ont participé, sans réduire leurs résultats à cette compétition.
-function MpaFilters({ swimmerId, state, competitions, clubLabel }) {
-  const { cats: selectedCats, club, comp } = state;
+function MpaFilters({ swimmerId, state, competitions, clubLabel, youngestBirthYear }) {
+  const { cats: selectedCats, excluded = [], club, comp } = state;
   const toggleCat = (key) => {
     if (!selectedCats) return [key];
     const next = selectedCats.includes(key) ? selectedCats.filter((k) => k !== key) : [...selectedCats, key];
     return MPA_CATEGORIES.map((c) => c.key).filter((k) => next.includes(k));
+  };
+  // Changer une catégorie remet toutes ses années cochées.
+  const excludedWithout = (key) => excluded.filter((t) => mpaTokenCategory(t) !== key);
+  // Clic sur une pastille d'année : coche/décoche, sauf la dernière cochée
+  // de la catégorie (il en reste toujours au moins une).
+  const toggleYear = (c, chips, token) => {
+    const isExcluded = excluded.includes(token);
+    if (isExcluded) return excluded.filter((t) => t !== token);
+    const activeCount = chips.filter((ch) => !excluded.includes(ch.token)).length;
+    return activeCount <= 1 ? excluded : [...excluded, token];
   };
   const chip = (active) =>
     `rounded-full px-3 py-1 text-xs font-semibold ${
@@ -1619,13 +1685,13 @@ function MpaFilters({ swimmerId, state, competitions, clubLabel }) {
     <div className="space-y-2 rounded-card bg-white p-3 shadow-sm">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-semibold text-ink/50">Catégorie</span>
-        <Link href={mpaHref(swimmerId, { ...state, cats: null })} className={chip(!selectedCats)}>
+        <Link href={mpaHref(swimmerId, { ...state, cats: null, excluded: [] })} className={chip(!selectedCats)}>
           Toutes
         </Link>
         {MPA_CATEGORIES.map((c) => (
           <Link
             key={c.key}
-            href={mpaHref(swimmerId, { ...state, cats: toggleCat(c.key) })}
+            href={mpaHref(swimmerId, { ...state, cats: toggleCat(c.key), excluded: excludedWithout(c.key) })}
             title={mpaCategoryHint(c)}
             className={chip(!!selectedCats && selectedCats.includes(c.key))}
           >
@@ -1633,6 +1699,31 @@ function MpaFilters({ swimmerId, state, competitions, clubLabel }) {
           </Link>
         ))}
       </div>
+      {selectedCats &&
+        MPA_CATEGORIES.filter((c) => selectedCats.includes(c.key)).map((c) => {
+          const chips = mpaYearChips(c, youngestBirthYear);
+          const activeCount = chips.filter((ch) => !excluded.includes(ch.token)).length;
+          return (
+            <div key={`years-${c.key}`} className="flex flex-wrap items-center gap-2 pl-3">
+              <span className="text-xs font-semibold text-ink/50">{c.label.split(" (")[0]} · années</span>
+              {chips.map((ch) => {
+                const active = !excluded.includes(ch.token);
+                const isLast = active && activeCount <= 1;
+                return (
+                  <Link
+                    key={ch.token}
+                    href={mpaHref(swimmerId, { ...state, excluded: toggleYear(c, chips, ch.token) })}
+                    aria-pressed={active}
+                    title={isLast ? "Au moins une année doit rester sélectionnée" : ch.title}
+                    className={chip(active)}
+                  >
+                    {ch.label}
+                  </Link>
+                );
+              })}
+            </div>
+          );
+        })}
       <div className="flex flex-wrap items-center gap-2">
         {clubLabel && (
           <Link
@@ -1851,13 +1942,21 @@ export default async function NatationPage({ searchParams }) {
     const catParam = Array.isArray(searchParams?.cat) ? searchParams.cat.join(",") : searchParams?.cat;
     const parsedCats = (catParam ?? "").split(",").filter((k) => MPA_CATEGORIES.some((c) => c.key === k));
     const selectedCats = parsedCats.length > 0 ? [...new Set(parsedCats)] : null;
+    // Années décochées (pastilles) : uniquement celles des catégories sélectionnées.
+    const horsParam = Array.isArray(searchParams?.hors) ? searchParams.hors.join(",") : searchParams?.hors;
+    const excludedYears = selectedCats
+      ? [...new Set((horsParam ?? "").split(",").filter((t) => /^(\d{4}|old)$/.test(t)))].filter((t) =>
+          selectedCats.includes(mpaTokenCategory(t))
+        )
+      : [];
 
     if (view === "mpa") {
       const clubOnly = searchParams?.club === "1";
       const compParam = typeof searchParams?.comp === "string" ? searchParams.comp : "";
       const competitionId = /^[0-9a-f-]{36}$/i.test(compParam) ? compParam : null;
-      const { sections, competitions, clubLabel, error } = await buildMpaData(supabase, {
+      const { sections, competitions, clubLabel, youngestBirthYear, error } = await buildMpaData(supabase, {
         cats: selectedCats,
+        excluded: excludedYears,
         clubOnly,
         competitionId,
         swimmerId: selectedSwimmerId,
@@ -1865,9 +1964,10 @@ export default async function NatationPage({ searchParams }) {
       mpaFilter = (
         <MpaFilters
           swimmerId={selectedSwimmerId}
-          state={{ cats: selectedCats, club: clubOnly, comp: competitionId }}
+          state={{ cats: selectedCats, excluded: excludedYears, club: clubOnly, comp: competitionId }}
           competitions={competitions}
           clubLabel={clubLabel}
+          youngestBirthYear={youngestBirthYear}
         />
       );
       performancesContent = <MpaTab sections={sections} error={error} />;
