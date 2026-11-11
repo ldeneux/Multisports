@@ -1412,6 +1412,50 @@ function relayLegDistance(eventName) {
   return m ? parseInt(m[2], 10) : null;
 }
 
+// --- Clubs du Rhône (annuaire du comité départemental : rhone.auvergnerhonealpes-natation.fr/clubs/).
+// La liste vit dans la table multisports.swim_clubs_rhone (supabase/9-swim-clubs-rhone.sql) : on y ajoute un club
+// ou un autre nom (alias) sans toucher au code. Cette liste intégrée ne sert que tant que la table est vide ou absente.
+const RHONE_CLUBS_DEFAULT = [
+  "Cercle Aquatique Lyon Métropole", "Les Crocos de l'Archipel", "Club Vaudais Natation", "Sauveteurs Givors", "Team A.B Lyon",
+  "Triton Club Belleville", "Ujs La Mulatière Natation", "Usol Vaugneray", "Vienne Condrieu Olympique", "Villeurbanne Natation",
+  "SAL St-Priest Natation", "Rillieux Natation", "RC Bron Décines Natation", "Patronage Laïque d'Oullins",
+  "Nat Villefranche En Beaujolais", "Lyon Rhône Water Polo", "A.S. Grezieu La Varenne", "Aqua Synchro Lyon", "Aquatic Club Fidesien",
+  "AS Caluire", "CA Des Pierres Dorées", "Cascol Natation", "Chassieu Natation", "CMO Vénissieux", "Cn Du Pays Mornantais",
+  "CN Tarare", "Lyon Natation Métropole", "Lyon Plongeon Club", "A.S Mure Natation",
+];
+
+const CLUB_STOPWORDS = new Set(["de", "du", "des", "la", "le", "les", "d", "l", "et", "en", "sur", "a", "au", "aux"]);
+
+// Nom de club -> mots comparables : sans accents, majuscules, ponctuation ni petits mots ; « natation » = « nat »,
+// « saint » = « st » (les noms de la FFN et du comité ne s'écrivent pas toujours pareil).
+function clubTokens(name) {
+  return String(name ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .map((t) => (t === "natation" ? "nat" : t === "saint" ? "st" : t === "sainte" ? "ste" : t))
+    .filter((t) => !CLUB_STOPWORDS.has(t));
+}
+
+// Un club est « du Rhône » si son identifiant FFN figure dans la liste, ou si tous les mots d'un nom de la liste
+// (au moins deux) se retrouvent dans son nom. Ex. « SAUVETEURS DE GIVORS NATATION » correspond à « Sauveteurs Givors ».
+function makeRhoneMatcher(rows) {
+  const entries = rows.map((r) => ({ tokens: clubTokens(r.name), ffn: r.ffn_club_id ?? null }));
+  const ffnIds = new Set(entries.map((e) => e.ffn).filter(Boolean));
+  const named = entries.filter((e) => e.tokens.length >= 2);
+  return (clubName, ffnClubId) => {
+    if (ffnClubId && ffnIds.has(ffnClubId)) return true;
+    const tokens = new Set(clubTokens(clubName));
+    if (tokens.size === 0) return false;
+    return named.some((e) => e.tokens.every((t) => tokens.has(t)));
+  };
+}
+
 // Supabase plafonne chaque requête à 1000 lignes. Plutôt que de paginer l'une
 // après l'autre (un aller-retour réseau par page = lent), on compte d'abord
 // les lignes puis on lance toutes les pages EN PARALLÈLE.
@@ -1444,7 +1488,7 @@ async function fetchAllRows(supabase, table, columns, applyFilters = (q) => q, o
   return { rows, error };
 }
 
-async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], dist = 50, pool: poolFilter = 25, clubOnly, competitionId, swimmerId }) {
+async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], dist = 50, pool: poolFilter = 25, clubOnly, rhoneOnly = false, competitionId, swimmerId }) {
   // Sans filtre (null) tout passe, y compris une année de naissance inconnue ;
   // avec un filtre, l'année doit exister et tomber dans une catégorie choisie.
   // Les années décochées (jetons) ne comptent que pour les catégories choisies.
@@ -1462,7 +1506,7 @@ async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], 
   // milliers de lignes) : nageuses, compétitions et relayeuses sont chargées
   // à part (petites tables) et rattachées en mémoire.
   const none = { rows: [], error: null };
-  const [indiv, relays, legsRes, swimmersRes, compsRes, partResultsRes, partTeamsRes] = await Promise.all([
+  const [indiv, relays, legsRes, swimmersRes, compsRes, partResultsRes, partTeamsRes, rhoneRes] = await Promise.all([
     fetchAllRows(
       supabase,
       "swim_results",
@@ -1490,6 +1534,8 @@ async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], 
     competitionId
       ? fetchAllRows(supabase, "swim_relay_teams", "id", (q) => q.eq("competition_id", competitionId))
       : Promise.resolve(none),
+    // Clubs du Rhône (table facultative : si elle manque ou est vide, la liste intégrée prend le relais).
+    fetchAllRows(supabase, "swim_clubs_rhone", "id, name, ffn_club_id"),
   ]);
 
   const swimmerById = new Map(swimmersRes.rows.map((w) => [w.id, w]));
@@ -1511,6 +1557,11 @@ async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], 
       ? mySwimmer.ffn_club_id === ffnClubId
       : normName(clubName) === normName(mySwimmer.club));
   const clubActive = !!clubOnly && !!mySwimmer;
+
+  // Filtre « clubs du Rhône » + liste des clubs écartés (pour repérer un club du Rhône mal reconnu).
+  const rhoneRows = !rhoneRes.error && rhoneRes.rows.length > 0 ? rhoneRes.rows : RHONE_CLUBS_DEFAULT.map((name) => ({ name }));
+  const isRhoneClub = makeRhoneMatcher(rhoneRows);
+  const excludedClubs = new Set();
 
   // Nageuses ayant participé à la compétition choisie. Elles ne servent qu'à
   // restreindre QUI apparaît : les temps restent leurs meilleurs temps toutes
@@ -1535,6 +1586,9 @@ async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], 
     const w = swimmerById.get(r.swimmer_id);
     if (w?.birth_year) birthYearsSeen.add(w.birth_year);
     if (Number(pool) === poolFilter && r.distance_m != null) distancesSeen.add(r.distance_m);
+    const rhoneOk = isRhoneClub(w?.club, w?.ffn_club_id);
+    if (!rhoneOk && w?.club) excludedClubs.add(w.club);
+    if (rhoneOnly && !rhoneOk) continue;
     // Bassin (25 m ou 50 m) et distance : filtres de la page (par défaut 25 m et 50 m).
     if (Number(pool) !== poolFilter) continue;
     if (dist !== "all" && r.distance_m !== dist) continue;
@@ -1576,6 +1630,9 @@ async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], 
     const legs = legsByTeam.get(t.id) ?? [];
     const pool = poolByComp.get(t.competition_id) ?? "?";
     legs.forEach((l) => { if (l.swimmers?.birth_year) birthYearsSeen.add(l.swimmers.birth_year); });
+    const rhoneOk = isRhoneClub(t.club, t.ffn_club_id);
+    if (!rhoneOk && t.club) excludedClubs.add(t.club);
+    if (rhoneOnly && !rhoneOk) continue;
     const legDistance = relayLegDistance(t.event_name);
     if (Number(pool) === poolFilter && legDistance != null) distancesSeen.add(legDistance);
     if (Number(pool) !== poolFilter) continue;
@@ -1640,6 +1697,7 @@ async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], 
     clubLabel,
     availableYears: [...birthYearsSeen].sort((a, b) => a - b),
     availableDistances: [...distancesSeen].sort((a, b) => a - b),
+    excludedClubs: [...excludedClubs].sort((a, b) => a.localeCompare(b, "fr")),
     error:
       [indiv, relays, legsRes, swimmersRes, compsRes, partResultsRes, partTeamsRes]
         .map((r) => r.error?.message)
@@ -1648,9 +1706,9 @@ async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], 
 }
 
 // État des filtres MPA dans l'URL : cat (catégories), noyr (années décochées sous les catégories),
-// dist (distance, 50 par défaut, "all" = toutes), pool (bassin, 25 par défaut), club=1 (mon club),
+// dist (distance, 50 par défaut, "all" = toutes), pool (bassin, 25 par défaut), club=1 (mon club), rhone=1 (clubs du Rhône),
 // comp (compétition dont on garde les participantes). Seules les valeurs non standard sont écrites.
-function mpaHref(swimmerId, { cats = null, noyr = [], dist = 50, pool = 25, club = false, comp = null } = {}) {
+function mpaHref(swimmerId, { cats = null, noyr = [], dist = 50, pool = 25, club = false, rhone = false, comp = null } = {}) {
   const parts = [];
   if (cats && cats.length > 0) {
     parts.push(`cat=${cats.join(",")}`);
@@ -1659,6 +1717,7 @@ function mpaHref(swimmerId, { cats = null, noyr = [], dist = 50, pool = 25, club
   if (dist !== 50) parts.push(`dist=${dist}`);
   if (pool !== 25) parts.push(`pool=${pool}`);
   if (club) parts.push("club=1");
+  if (rhone) parts.push("rhone=1");
   if (comp) parts.push(`comp=${comp}`);
   return `/natation?tab=performances&view=mpa&swimmer=${swimmerId ?? ""}${parts.map((p) => `&${p}`).join("")}`;
 }
@@ -1671,8 +1730,8 @@ const titleCase = (v) => String(v ?? "").toLowerCase().replace(/(^|[\s-])\S/g, (
 // décocher une l'exclut (changer une catégorie remet ses années à zéro). Distance (50 m par défaut) et bassin
 // (25 m par défaut). Club : interrupteur. Compétition : ne garde que les nageuses qui y ont participé, sans
 // réduire leurs résultats à cette compétition.
-function MpaFilters({ swimmerId, state, competitions, clubLabel, availableYears, availableDistances }) {
-  const { cats: selectedCats, noyr, dist, pool, club, comp } = state;
+function MpaFilters({ swimmerId, state, competitions, clubLabel, availableYears, availableDistances, excludedClubs }) {
+  const { cats: selectedCats, noyr, dist, pool, club, rhone, comp } = state;
   const toggleCat = (key) => {
     // Les années décochées de cette catégorie sont oubliées dès qu'on la coche ou la décoche.
     const kept = noyr.filter((tok) => mpaTokenCategory(tok) !== key);
@@ -1764,6 +1823,14 @@ function MpaFilters({ swimmerId, state, competitions, clubLabel, availableYears,
             {titleCase(clubLabel)}
           </Link>
         )}
+        <Link
+          href={mpaHref(swimmerId, { ...state, rhone: !rhone })}
+          aria-pressed={rhone}
+          title={rhone ? "Cliquer pour afficher tous les clubs" : "Ne garder que les clubs du Rhône (liste du comité départemental)"}
+          className={chip(rhone)}
+        >
+          {rhone ? "✓ " : ""}Clubs du Rhône
+        </Link>
         <span className="text-xs font-semibold text-ink/50">Participantes à</span>
         <UrlSelect
           options={competitions}
@@ -1774,6 +1841,15 @@ function MpaFilters({ swimmerId, state, competitions, clubLabel, availableYears,
           ariaLabel="Ne garder que les nageuses ayant participé à une compétition"
         />
       </div>
+
+      {/* Contrôle : clubs écartés par le filtre « Rhône » (pour repérer un club du Rhône mal reconnu) */}
+      {rhone && excludedClubs.length > 0 && (
+        <details className="text-[11px] text-ink/50">
+          <summary className="cursor-pointer select-none">{excludedClubs.length} clubs hors Rhône masqués : vérifier</summary>
+          <p className="mt-1 max-h-32 overflow-y-auto leading-relaxed">{excludedClubs.join(" · ")}</p>
+          <p className="mt-1">Un club du Rhône figure dans cette liste ? Ajoutez son nom dans la table swim_clubs_rhone (Supabase).</p>
+        </details>
+      )}
     </div>
   );
 }
@@ -1973,6 +2049,7 @@ export default async function NatationPage({ searchParams }) {
 
     if (view === "mpa") {
       const clubOnly = searchParams?.club === "1";
+      const rhoneOnly = searchParams?.rhone === "1";
       // Années décochées (seulement utiles quand des catégories sont choisies), distance (50 par défaut) et bassin (25 par défaut).
       const noyrParam = Array.isArray(searchParams?.noyr) ? searchParams.noyr.join(",") : searchParams?.noyr;
       const excludedYears = selectedCats
@@ -1984,23 +2061,25 @@ export default async function NatationPage({ searchParams }) {
       const poolFilter = searchParams?.pool === "50" ? 50 : 25;
       const compParam = typeof searchParams?.comp === "string" ? searchParams.comp : "";
       const competitionId = /^[0-9a-f-]{36}$/i.test(compParam) ? compParam : null;
-      const { sections, competitions, clubLabel, availableYears, availableDistances, error } = await buildMpaData(supabase, {
+      const { sections, competitions, clubLabel, availableYears, availableDistances, excludedClubs, error } = await buildMpaData(supabase, {
         cats: selectedCats,
         excludedYears,
         dist,
         pool: poolFilter,
         clubOnly,
+        rhoneOnly,
         competitionId,
         swimmerId: selectedSwimmerId,
       });
       mpaFilter = (
         <MpaFilters
           swimmerId={selectedSwimmerId}
-          state={{ cats: selectedCats, noyr: excludedYears, dist, pool: poolFilter, club: clubOnly, comp: competitionId }}
+          state={{ cats: selectedCats, noyr: excludedYears, dist, pool: poolFilter, club: clubOnly, rhone: rhoneOnly, comp: competitionId }}
           competitions={competitions}
           clubLabel={clubLabel}
           availableYears={availableYears}
           availableDistances={availableDistances}
+          excludedClubs={excludedClubs}
         />
       );
       performancesContent = <MpaTab sections={sections} error={error} />;
