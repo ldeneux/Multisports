@@ -5,6 +5,8 @@ import SyncButton from "@/components/SyncButton";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
 import PlannedYearSelect from "@/components/PlannedYearSelect";
 import UrlSelect from "@/components/UrlSelect";
+import MedalIcon from "@/components/MedalIcon";
+import MedalPicker from "@/components/MedalPicker";
 import { SwimRadarChart, SwimPercentileTrendChart, SwimScatterChart, SwimTimeTrendChart } from "@/components/SwimCharts";
 import {
   syncClubCompetitions,
@@ -347,24 +349,35 @@ function MeetDetails({ rows, highlightSwimmerId }) {
 
   return (
     <div className="space-y-0.5 bg-navy/5 px-4 py-2">
-      {sorted.map((r, i) => (
-        <div
-          key={r.id}
-          className={`flex items-center justify-between rounded px-2 py-1 text-xs ${
-            r.swimmer_id === highlightSwimmerId
-              ? "bg-cardinal-light font-semibold text-cardinal-dark"
-              : r.swimmers?.is_flagged
-              ? "bg-lagoon-light text-navy"
-              : "text-ink/60"
-          }`}
-        >
-          <span>
-            {i + 1}. {r.swimmers?.full_name}
-            {r.swimmers?.club ? ` · ${r.swimmers.club}` : ""}
-          </span>
-          <span className="font-display">{r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label}</span>
-        </div>
-      ))}
+      {sorted.map((r, i) => {
+        const isFollowed = r.swimmer_id === highlightSwimmerId;
+        const line = (
+          <div
+            className={`flex items-center justify-between rounded px-2 py-1 text-xs ${
+              isFollowed
+                ? "bg-cardinal-light font-semibold text-cardinal-dark"
+                : r.swimmers?.is_flagged
+                ? "bg-lagoon-light text-navy"
+                : "text-ink/60"
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
+              {i + 1}. {r.swimmers?.full_name}
+              {r.swimmers?.club ? ` · ${r.swimmers.club}` : ""}
+              {isFollowed && r.medal && <MedalIcon kind={r.medal} size={15} />}
+            </span>
+            <span className="font-display">{r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label}</span>
+          </div>
+        );
+        // Clic sur la nageuse suivie : menu pour lui attribuer une médaille pour cette course.
+        return isFollowed ? (
+          <MedalPicker key={r.id} kind="result" id={r.id} medal={r.medal ?? null}>
+            {line}
+          </MedalPicker>
+        ) : (
+          <div key={r.id}>{line}</div>
+        );
+      })}
     </div>
   );
 }
@@ -393,26 +406,31 @@ function RelayFieldDetails({ teams, highlightSwimmerId }) {
             {(team.swim_relay_legs ?? [])
               .slice()
               .sort((a, b) => a.position - b.position)
-              .map((leg) => (
-                <div
-                  key={leg.position}
-                  className={`flex items-center justify-between px-1 ${
-                    leg.swimmers && highlightSwimmerId && leg.swimmer_id === highlightSwimmerId
-                      ? "font-semibold text-cardinal-dark"
-                      : "text-ink/60"
-                  }`}
-                >
-                  <span>
-                    {leg.position}. {leg.swimmers?.full_name ?? "?"}
-                  </span>
-                  <span className="flex gap-3 font-display">
-                    <span>{leg.leg_time_ms != null ? msToSwimTime(leg.leg_time_ms) : "—"}</span>
-                    <span className="text-ink/40">
-                      ({leg.cumulative_time_ms != null ? msToSwimTime(leg.cumulative_time_ms) : "—"})
+              .map((leg) => {
+                const isFollowed = !!(leg.swimmers && highlightSwimmerId && leg.swimmer_id === highlightSwimmerId);
+                const line = (
+                  <div className={`flex items-center justify-between px-1 ${isFollowed ? "font-semibold text-cardinal-dark" : "text-ink/60"}`}>
+                    <span className="flex items-center gap-1.5">
+                      {leg.position}. {leg.swimmers?.full_name ?? "?"}
+                      {isFollowed && team.medal && <MedalIcon kind={team.medal} size={15} />}
                     </span>
-                  </span>
-                </div>
-              ))}
+                    <span className="flex gap-3 font-display">
+                      <span>{leg.leg_time_ms != null ? msToSwimTime(leg.leg_time_ms) : "—"}</span>
+                      <span className="text-ink/40">
+                        ({leg.cumulative_time_ms != null ? msToSwimTime(leg.cumulative_time_ms) : "—"})
+                      </span>
+                    </span>
+                  </div>
+                );
+                // Clic sur la relayeuse suivie : médaille pour ce relais (attribuée à l'équipe).
+                return isFollowed ? (
+                  <MedalPicker key={leg.position} kind="relay" id={team.id} medal={team.medal ?? null}>
+                    {line}
+                  </MedalPicker>
+                ) : (
+                  <div key={leg.position}>{line}</div>
+                );
+              })}
           </div>
         </div>
       ))}
@@ -433,6 +451,10 @@ function ResultRow({ r, showEventName, meetRowsByKey, relayFieldByKey, swimmerId
         r.gender ? ` ${GENDER_LABELS[r.gender] ?? ""}` : ""
       })`
     : r.swim_competitions?.city ?? r.swim_competitions?.name ?? "";
+  // Médaille de la course : sur le résultat, ou sur l'équipe quand c'est un relais.
+  const medal = relayField
+    ? relayField.teams.find((t) => t.ffn_result_id === r.relay_ffn_result_id)?.medal ?? null
+    : r.medal ?? null;
 
   const rowContent = (
     <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
@@ -440,7 +462,15 @@ function ResultRow({ r, showEventName, meetRowsByKey, relayFieldByKey, swimmerId
       <span className="w-24 shrink-0 text-right font-display text-lg text-navy">
         {r.time_ms != null ? msToSwimTime(r.time_ms) : r.time_label ?? "—"}
       </span>
-      <span className="hidden flex-1 truncate text-xs text-ink/50 sm:block">{cityLabel}</span>
+      <span className="hidden min-w-0 flex-1 items-center gap-1.5 text-xs text-ink/50 sm:flex">
+        <span className="truncate">{cityLabel}</span>
+        {medal && <MedalIcon kind={medal} size={16} />}
+      </span>
+      {medal && (
+        <span className="sm:hidden">
+          <MedalIcon kind={medal} size={16} />
+        </span>
+      )}
       <span className="shrink-0 text-xs text-ink/50">
         {r.swim_competitions?.competition_date
           ? formatDate(r.swim_competitions.competition_date, { weekday: false })
@@ -542,7 +572,15 @@ function RelayResultRow({ leg, showEventName, relayFieldByTeamId, swimmerId, str
       <span className="w-24 shrink-0 text-right font-display text-lg text-navy">
         {team.team_time_ms != null ? msToSwimTime(team.team_time_ms) : "—"}
       </span>
-      <span className="hidden flex-1 truncate text-xs text-ink/50 sm:block">{label}</span>
+      <span className="hidden min-w-0 flex-1 items-center gap-1.5 text-xs text-ink/50 sm:flex">
+        <span className="truncate">{label}</span>
+        {team.medal && <MedalIcon kind={team.medal} size={16} />}
+      </span>
+      {team.medal && (
+        <span className="sm:hidden">
+          <MedalIcon kind={team.medal} size={16} />
+        </span>
+      )}
       <span className="shrink-0 text-xs text-ink/50">
         {team.swim_competitions?.competition_date
           ? formatDate(team.swim_competitions.competition_date, { weekday: false })
@@ -1373,39 +1411,6 @@ function mpaCategoryHint(c) {
   return `${ages} · ${years}`;
 }
 
-// --- Filtre en cascade : sous chaque catégorie choisie, une pastille par année de naissance.
-// Séniors : de 19 à 26 ans année par année, puis une seule pastille « + de 26 ans ».
-const MPA_LISTED_MAX_AGE = 26;
-
-// Jeton de filtre d'une année de naissance : l'année, ou "old" au-delà de 26 ans.
-function mpaYearToken(birthYear) {
-  if (!birthYear) return null;
-  return computeCurrentSeasonYear() - birthYear > MPA_LISTED_MAX_AGE ? "old" : String(birthYear);
-}
-
-function mpaTokenCategory(token) {
-  return token === "old" ? "senior" : mpaCategoryFromBirthYear(Number(token));
-}
-
-// Pastilles d'une catégorie, de la plus jeune à la plus âgée. Pour les Avenirs (U11 et moins, sans limite
-// basse) on ne propose que les années réellement présentes dans les données.
-function mpaCategoryYearChips(c, availableYears) {
-  const season = computeCurrentSeasonYear();
-  const youngest = season - c.minAge;
-  const oldest = c.maxAge === Infinity ? season - MPA_LISTED_MAX_AGE : season - c.maxAge;
-  let years = [];
-  if (c.minAge === 0) {
-    years = availableYears.filter((y) => y <= youngest && y >= oldest).sort((a, b) => b - a);
-  } else {
-    for (let y = youngest; y >= oldest; y--) years.push(y);
-  }
-  const chips = years.map((y) => ({ token: String(y), label: String(y), hint: `${season - y} ans` }));
-  if (c.maxAge === Infinity) {
-    chips.push({ token: "old", label: `+ de ${MPA_LISTED_MAX_AGE} ans`, hint: `nées en ${season - MPA_LISTED_MAX_AGE - 1} et avant` });
-  }
-  return chips;
-}
-
 // Distance d'un relais = distance de chaque relayeuse (4x50 -> 50), pour partager le filtre « distance ».
 function relayLegDistance(eventName) {
   const m = (eventName ?? "").match(/^(\d+)\s*x\s*(\d+)/i);
@@ -1488,17 +1493,17 @@ async function fetchAllRows(supabase, table, columns, applyFilters = (q) => q, o
   return { rows, error };
 }
 
-async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], dist = 50, pool: poolFilter = 25, clubOnly, rhoneOnly = false, competitionId, swimmerId }) {
+async function buildMpaData(supabase, { cats: selectedCats, yearRange = null, dist = 50, pool: poolFilter = 25, clubOnly, rhoneOnly = false, competitionId, swimmerId }) {
   // Sans filtre (null) tout passe, y compris une année de naissance inconnue ;
   // avec un filtre, l'année doit exister et tomber dans une catégorie choisie.
-  // Les années décochées (jetons) ne comptent que pour les catégories choisies.
-  const excluded = new Set(excludedYears);
+  // Catégorie spécifique : plage d'années de naissance (début et fin incluses), comme sur le site de la FFN.
+  // Sinon : catégories standards cochées ; sans filtre, tout passe (y compris une année inconnue).
   const yearAllowed = (y) => {
+    if (yearRange) return y != null && y >= yearRange.from && y <= yearRange.to;
     if (!selectedCats) return true;
-    if (!selectedCats.includes(mpaCategoryFromBirthYear(y))) return false;
-    return !excluded.has(mpaYearToken(y));
+    return selectedCats.includes(mpaCategoryFromBirthYear(y));
   };
-  // Pour proposer les bonnes pastilles : années de naissance présentes et distances du bassin choisi.
+  // Pour proposer les bonnes valeurs : années de naissance présentes et distances du bassin choisi.
   const birthYearsSeen = new Set();
   const distancesSeen = new Set();
 
@@ -1705,14 +1710,18 @@ async function buildMpaData(supabase, { cats: selectedCats, excludedYears = [], 
   };
 }
 
-// État des filtres MPA dans l'URL : cat (catégories), noyr (années décochées sous les catégories),
-// dist (distance, 50 par défaut, "all" = toutes), pool (bassin, 25 par défaut), club=1 (mon club), rhone=1 (clubs du Rhône),
-// comp (compétition dont on garde les participantes). Seules les valeurs non standard sont écrites.
-function mpaHref(swimmerId, { cats = null, noyr = [], dist = 50, pool = 25, club = false, rhone = false, comp = null } = {}) {
+// État des filtres MPA dans l'URL : cat (catégories standards) OU mode=spec + yfrom / yto (plage d'années de
+// naissance), dist (distance, 50 par défaut, "all" = toutes), pool (bassin, 25 par défaut), club=1 (mon club),
+// rhone=1 (clubs du Rhône), comp (compétition dont on garde les participantes). Seules les valeurs non standard
+// sont écrites.
+function mpaHref(swimmerId, { cats = null, spec = false, yfrom = null, yto = null, dist = 50, pool = 25, club = false, rhone = false, comp = null } = {}) {
   const parts = [];
-  if (cats && cats.length > 0) {
+  if (spec) {
+    parts.push("mode=spec");
+    if (yfrom) parts.push(`yfrom=${yfrom}`);
+    if (yto) parts.push(`yto=${yto}`);
+  } else if (cats && cats.length > 0) {
     parts.push(`cat=${cats.join(",")}`);
-    if (noyr.length > 0) parts.push(`noyr=${noyr.join(",")}`);
   }
   if (dist !== 50) parts.push(`dist=${dist}`);
   if (pool !== 25) parts.push(`pool=${pool}`);
@@ -1724,74 +1733,87 @@ function mpaHref(swimmerId, { cats = null, noyr = [], dist = 50, pool = 25, club
 
 const titleCase = (v) => String(v ?? "").toLowerCase().replace(/(^|[\s-])\S/g, (c) => c.toUpperCase());
 
-// Filtres MPA. Catégorie : par défaut (aucun paramètre) tout est sélectionné ; un clic sur une catégorie quand
-// tout est sélectionné ne garde que celle-ci, les clics suivants ajoutent/retirent (retirer la dernière revient à
-// "Toutes"). Sous chaque catégorie choisie : une pastille par année de naissance, toutes cochées par défaut ; en
-// décocher une l'exclut (changer une catégorie remet ses années à zéro). Distance (50 m par défaut) et bassin
-// (25 m par défaut). Club : interrupteur. Compétition : ne garde que les nageuses qui y ont participé, sans
-// réduire leurs résultats à cette compétition.
+// Filtres MPA. Deux onglets comme sur le site de la FFN :
+//  - Catégories standards : Avenirs / Benjamins / Juniors / Séniors. Par défaut tout est sélectionné ; un clic quand tout
+//    est sélectionné ne garde que celle-ci, les clics suivants ajoutent/retirent (retirer la dernière revient à « Toutes »).
+//  - Catégories spécifiques : « De [année de naissance] à [année de naissance] » + bouton ok (formulaire sans JavaScript).
+// Puis distance (50 m par défaut) et bassin (25 m par défaut), club, clubs du Rhône, et « Participantes à » (ne garde que
+// les nageuses de cette compétition, sans réduire leurs résultats à cette compétition).
 function MpaFilters({ swimmerId, state, competitions, clubLabel, availableYears, availableDistances, excludedClubs }) {
-  const { cats: selectedCats, noyr, dist, pool, club, rhone, comp } = state;
+  const { cats: selectedCats, spec, yfrom, yto, dist, pool, club, rhone, comp } = state;
+  const season = computeCurrentSeasonYear();
   const toggleCat = (key) => {
-    // Les années décochées de cette catégorie sont oubliées dès qu'on la coche ou la décoche.
-    const kept = noyr.filter((tok) => mpaTokenCategory(tok) !== key);
-    if (!selectedCats) return { cats: [key], noyr: kept };
+    if (!selectedCats) return [key];
     const next = selectedCats.includes(key) ? selectedCats.filter((k) => k !== key) : [...selectedCats, key];
-    const ordered = MPA_CATEGORIES.map((c) => c.key).filter((k) => next.includes(k));
-    return { cats: ordered.length > 0 ? ordered : null, noyr: ordered.length > 0 ? kept : [] };
+    return MPA_CATEGORIES.map((c) => c.key).filter((k) => next.includes(k));
   };
-  const toggleYear = (token) =>
-    noyr.includes(token) ? noyr.filter((t) => t !== token) : [...noyr, token];
   const chip = (active) =>
     `rounded-full px-3 py-1 text-xs font-semibold ${
       active ? "bg-navy text-white" : "bg-sand text-ink/50 hover:text-ink"
     }`;
-  const smallChip = (active) =>
-    `rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-      active ? "bg-lagoon text-white" : "bg-sand text-ink/50 hover:text-ink"
-    }`;
+  const tab = (active) =>
+    `rounded-lg px-4 py-1.5 text-xs font-semibold ${active ? "bg-white text-lagoon shadow-sm" : "text-ink/50 hover:text-ink"}`;
   const distances = [...new Set([...availableDistances, ...(typeof dist === "number" ? [dist] : [])])].sort((a, b) => a - b);
+
+  // Années proposées dans « De / à » : celles présentes en base, de la plus ancienne à la plus récente (+ les valeurs choisies).
+  const years = [...new Set([...availableYears, ...(yfrom ? [yfrom] : []), ...(yto ? [yto] : [])])].sort((a, b) => a - b);
+  const fromValue = yfrom ?? years[0];
+  const toValue = yto ?? years[years.length - 1];
+  const yearLabel = (y) => `${y} (${season - y} ans)`;
+  // Les autres filtres voyagent en champs cachés : le formulaire « ok » ne les perd pas.
+  const hiddenParams = [
+    ...new URL(mpaHref(swimmerId, { ...state, spec: true, yfrom: null, yto: null }), "http://local").searchParams.entries(),
+  ];
+
   return (
     <div className="space-y-2 rounded-card bg-white p-3 shadow-sm">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-semibold text-ink/50">Catégorie</span>
-        <Link href={mpaHref(swimmerId, { ...state, cats: null, noyr: [] })} className={chip(!selectedCats)}>
-          Toutes
+      <div className="inline-flex gap-1 rounded-xl bg-sand p-1">
+        <Link href={mpaHref(swimmerId, { ...state, spec: false, yfrom: null, yto: null })} className={tab(!spec)}>
+          Catégories standards
         </Link>
-        {MPA_CATEGORIES.map((c) => (
-          <Link
-            key={c.key}
-            href={mpaHref(swimmerId, { ...state, ...toggleCat(c.key) })}
-            title={mpaCategoryHint(c)}
-            className={chip(!!selectedCats && selectedCats.includes(c.key))}
-          >
-            {c.label}
-          </Link>
-        ))}
+        <Link href={mpaHref(swimmerId, { ...state, spec: true })} className={tab(spec)}>
+          Catégories spécifiques
+        </Link>
       </div>
 
-      {/* Cascade : années de naissance des catégories choisies */}
-      {selectedCats &&
-        MPA_CATEGORIES.filter((c) => selectedCats.includes(c.key)).map((c) => {
-          const chips = mpaCategoryYearChips(c, availableYears);
-          if (chips.length === 0) return null;
-          return (
-            <div key={c.key} className="flex flex-wrap items-center gap-1.5 border-l-2 border-lagoon/40 pl-3">
-              <span className="w-28 shrink-0 text-[11px] font-semibold text-ink/50">{c.label}</span>
-              {chips.map((y) => (
-                <Link
-                  key={y.token}
-                  href={mpaHref(swimmerId, { ...state, noyr: toggleYear(y.token) })}
-                  title={y.hint}
-                  aria-pressed={!noyr.includes(y.token)}
-                  className={smallChip(!noyr.includes(y.token))}
-                >
-                  {y.label}
-                </Link>
-              ))}
-            </div>
-          );
-        })}
+      {!spec ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-ink/50">Catégorie</span>
+          <Link href={mpaHref(swimmerId, { ...state, cats: null })} className={chip(!selectedCats)}>
+            Toutes
+          </Link>
+          {MPA_CATEGORIES.map((c) => (
+            <Link
+              key={c.key}
+              href={mpaHref(swimmerId, { ...state, cats: toggleCat(c.key) })}
+              title={mpaCategoryHint(c)}
+              className={chip(!!selectedCats && selectedCats.includes(c.key))}
+            >
+              {c.label}
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <form action="/natation" method="get" className="flex flex-wrap items-center gap-2 rounded-xl bg-sand/70 p-2">
+          {hiddenParams.map(([k, v]) => (
+            <input key={k} type="hidden" name={k} value={v} />
+          ))}
+          <label htmlFor="mpa-yfrom" className="text-xs font-semibold text-ink/60">De :</label>
+          <select id="mpa-yfrom" name="yfrom" defaultValue={fromValue} className="rounded-lg border border-ink/10 bg-white px-2 py-1.5 text-xs font-semibold text-navy">
+            {years.map((y) => (
+              <option key={y} value={y}>{yearLabel(y)}</option>
+            ))}
+          </select>
+          <label htmlFor="mpa-yto" className="text-xs font-semibold text-ink/60">à :</label>
+          <select id="mpa-yto" name="yto" defaultValue={toValue} className="rounded-lg border border-ink/10 bg-white px-2 py-1.5 text-xs font-semibold text-navy">
+            {years.map((y) => (
+              <option key={y} value={y}>{yearLabel(y)}</option>
+            ))}
+          </select>
+          <span className="text-[11px] text-ink/40">année de naissance</span>
+          <button type="submit" className="rounded-lg bg-navy px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">ok</button>
+        </form>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-semibold text-ink/50">Distance</span>
@@ -2050,11 +2072,17 @@ export default async function NatationPage({ searchParams }) {
     if (view === "mpa") {
       const clubOnly = searchParams?.club === "1";
       const rhoneOnly = searchParams?.rhone === "1";
-      // Années décochées (seulement utiles quand des catégories sont choisies), distance (50 par défaut) et bassin (25 par défaut).
-      const noyrParam = Array.isArray(searchParams?.noyr) ? searchParams.noyr.join(",") : searchParams?.noyr;
-      const excludedYears = selectedCats
-        ? [...new Set((noyrParam ?? "").split(",").filter((t) => /^(\d{4}|old)$/.test(t)))]
-        : [];
+      // Catégorie spécifique : plage d'années de naissance (début / fin, échangées si inversées).
+      const spec = searchParams?.mode === "spec";
+      const yearParam = (v) => {
+        const n = parseInt(Array.isArray(v) ? v[0] : v, 10);
+        return Number.isInteger(n) && n >= 1900 && n <= 2100 ? n : null;
+      };
+      let yfrom = spec ? yearParam(searchParams?.yfrom) : null;
+      let yto = spec ? yearParam(searchParams?.yto) : null;
+      if (yfrom && yto && yfrom > yto) [yfrom, yto] = [yto, yfrom];
+      const yearRange = spec && (yfrom || yto) ? { from: yfrom ?? 1900, to: yto ?? 2100 } : null;
+      // Distance (50 par défaut) et bassin (25 par défaut).
       const distRaw = Array.isArray(searchParams?.dist) ? searchParams.dist[0] : searchParams?.dist;
       const distParsed = parseInt(distRaw, 10);
       const dist = distRaw === "all" ? "all" : Number.isInteger(distParsed) && distParsed > 0 ? distParsed : 50;
@@ -2062,8 +2090,8 @@ export default async function NatationPage({ searchParams }) {
       const compParam = typeof searchParams?.comp === "string" ? searchParams.comp : "";
       const competitionId = /^[0-9a-f-]{36}$/i.test(compParam) ? compParam : null;
       const { sections, competitions, clubLabel, availableYears, availableDistances, excludedClubs, error } = await buildMpaData(supabase, {
-        cats: selectedCats,
-        excludedYears,
+        cats: spec ? null : selectedCats,
+        yearRange,
         dist,
         pool: poolFilter,
         clubOnly,
@@ -2074,7 +2102,7 @@ export default async function NatationPage({ searchParams }) {
       mpaFilter = (
         <MpaFilters
           swimmerId={selectedSwimmerId}
-          state={{ cats: selectedCats, noyr: excludedYears, dist, pool: poolFilter, club: clubOnly, rhone: rhoneOnly, comp: competitionId }}
+          state={{ cats: selectedCats, spec, yfrom, yto, dist, pool: poolFilter, club: clubOnly, rhone: rhoneOnly, comp: competitionId }}
           competitions={competitions}
           clubLabel={clubLabel}
           availableYears={availableYears}

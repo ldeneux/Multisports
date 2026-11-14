@@ -642,3 +642,27 @@ export async function deletePlannedCompetition(formData) {
 
   revalidatePath("/natation");
 }
+
+// ---- Médailles ------------------------------------------------------------
+// La nageuse suivie peut se voir attribuer une médaille (or, argent, bronze) pour une course : sur son résultat
+// individuel (swim_results.medal) ou, pour un relais, sur l'équipe (swim_relay_teams.medal). La synchro FFN
+// n'écrit jamais cette colonne : une médaille attribuée n'est donc pas effacée par une nouvelle synchro.
+// Renvoie { ok, error } plutôt que de lever une erreur, pour que le menu affiche le message.
+export async function setRaceMedal(kind, id, medal) {
+  if (!["result", "relay"].includes(kind) || !id) return { ok: false, error: "Course inconnue." };
+  if (medal !== null && !["gold", "silver", "bronze"].includes(medal)) return { ok: false, error: "Médaille inconnue." };
+
+  const supabase = createClient();
+  const table = kind === "relay" ? "swim_relay_teams" : "swim_results";
+  const { error } = await supabase.from(table).update({ medal }).eq("id", id);
+  if (error) {
+    return {
+      ok: false,
+      error: /medal/i.test(error.message)
+        ? "La colonne « medal » n'existe pas encore : exécutez supabase/10-swim-medals.sql dans Supabase."
+        : error.message,
+    };
+  }
+  revalidatePath("/natation");
+  return { ok: true };
+}
