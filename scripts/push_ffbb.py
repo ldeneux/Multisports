@@ -2,21 +2,23 @@
 Dépose depuis TON PC les pages des poules FFBB dans Supabase (table ffbb_poule_cache).
 
 Pourquoi : competitions.ffbb.com bloque les serveurs Vercel (HTTP 403) mais pas ton PC.
-Ce script lit les pages (comme ton navigateur) et les envoie à Supabase ; ensuite, dans
+Ce programme lit les pages (comme ton navigateur) et les envoie à Supabase ; ensuite, dans
 l'appli, le bouton « Synchroniser FFBB » de l'onglet Basket les utilise.
 
-Pas besoin de Node ni de npm : seulement Python + `pip install requests`.
+Deux façons de l'utiliser :
+  - version « programme » (MiseAJourFFBB.exe) : double-clic, rien à installer ;
+  - version script : `python push_ffbb.py` (nécessite Python + `pip install requests`).
 
-Usage :   python push_ffbb.py
-  - renseigne SUPABASE_URL et SUPABASE_ANON_KEY ci-dessous (Vercel -> Settings ->
-    Environment Variables : NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    ou Supabase -> Project Settings -> API). La clé « anon » est publique, ce n'est pas un secret.
-  - l'e-mail et le mot de passe du compte familial de l'appli sont demandés au lancement
-    (rien n'est enregistré dans le fichier).
+Au premier lancement, l'e-mail et le mot de passe du compte de l'appli sont demandés,
+puis mémorisés dans le dossier personnel de l'utilisateur (~/.multisports-ffbb/config.json)
+pour que les lancements suivants soient sans question. Supprime ce fichier pour les oublier.
 """
 import getpass
+import json
+import os
 import re
 import sys
+from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse, urlencode
 
@@ -46,13 +48,70 @@ def sb_headers(token=None, profile="multisports", write=False):
     return h
 
 
+class ConnexionRefusee(Exception):
+    """E-mail ou mot de passe refusé par Supabase."""
+
+
+CONFIG = Path.home() / ".multisports-ffbb" / "config.json"
+
+
+def charger_config():
+    try:
+        return json.loads(CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def sauver_config(email, mot_de_passe):
+    try:
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG.write_text(json.dumps({"email": email, "password": mot_de_passe}), encoding="utf-8")
+        try:
+            os.chmod(CONFIG, 0o600)   # lisible par l'utilisateur seul (Mac/Linux)
+        except Exception:
+            pass
+    except Exception:
+        print("(Impossible de mémoriser les identifiants : ils seront redemandés la prochaine fois.)")
+
+
+def oublier_config():
+    try:
+        CONFIG.unlink()
+    except Exception:
+        pass
+
+
 def connexion(email, mot_de_passe):
     r = requests.post(f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
                       headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
                       json={"email": email, "password": mot_de_passe}, timeout=30)
+    if r.status_code in (400, 401):
+        raise ConnexionRefusee()
     if r.status_code != 200:
-        sys.exit(f"Connexion Supabase refusée ({r.status_code}) : {r.text[:200]}")
+        raise RuntimeError(f"Connexion à l'appli impossible ({r.status_code}) : {r.text[:200]}")
     return r.json()["access_token"]
+
+
+def obtenir_token():
+    """Identifiants mémorisés si possibles, sinon on les demande (3 essais)."""
+    cfg = charger_config()
+    if cfg.get("email") and cfg.get("password"):
+        try:
+            return connexion(cfg["email"], cfg["password"])
+        except ConnexionRefusee:
+            print("Les identifiants mémorisés ne fonctionnent plus : merci de les saisir à nouveau.")
+            oublier_config()
+    for _ in range(3):
+        email = input("E-mail du compte de l'appli : ").strip()
+        mot_de_passe = getpass.getpass("Mot de passe (rien ne s'affiche en tapant, c'est normal) : ")
+        try:
+            token = connexion(email, mot_de_passe)
+        except ConnexionRefusee:
+            print("E-mail ou mot de passe incorrect, réessaie.\n")
+            continue
+        sauver_config(email, mot_de_passe)
+        return token
+    raise RuntimeError("Trois essais incorrects. Demande les identifiants à la personne qui gère l'appli.")
 
 
 def lire_phases(token):
@@ -61,7 +120,7 @@ def lire_phases(token):
     r = requests.get(f"{SUPABASE_URL}/rest/v1/basketball_phases", params=params,
                      headers=sb_headers(token), timeout=30)
     if r.status_code != 200:
-        sys.exit(f"Lecture des phases impossible ({r.status_code}) : {r.text[:200]}")
+        raise RuntimeError(f"Lecture des phases impossible ({r.status_code}) : {r.text[:200]}")
     return r.json()
 
 
@@ -108,9 +167,8 @@ def deposer(token, poule_id, pages):
 
 def main():
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        sys.exit("Renseigne SUPABASE_URL et SUPABASE_ANON_KEY en haut du fichier.")
-    email = input("E-mail du compte de l'appli : ").strip()
-    token = connexion(email, getpass.getpass("Mot de passe : "))
+        raise RuntimeError("Renseigne SUPABASE_URL et SUPABASE_ANON_KEY en haut du fichier.")
+    token = obtenir_token()
 
     phases = [p for p in lire_phases(token) if p.get("competition_url") or p.get("poule_id")]
     if not phases:
@@ -133,5 +191,26 @@ def main():
     print("Terminé avec des erreurs." if erreurs else "Terminé. Dans l'appli, clique sur « Synchroniser FFBB ».")
 
 
+def lancer():
+    code = 0
+    try:
+        main()
+    except requests.exceptions.RequestException:
+        print("\nERREUR : pas de connexion Internet (ou service injoignable). Vérifie ta connexion et recommence.")
+        code = 1
+    except KeyboardInterrupt:
+        code = 1
+    except Exception as e:
+        print(f"\nERREUR : {e}")
+        code = 1
+    # Programme double-cliqué : on garde la fenêtre ouverte pour lire le résultat.
+    if getattr(sys, "frozen", False):
+        try:
+            input("\nAppuie sur Entrée pour fermer cette fenêtre...")
+        except EOFError:
+            pass
+    sys.exit(code)
+
+
 if __name__ == "__main__":
-    main()
+    lancer()
