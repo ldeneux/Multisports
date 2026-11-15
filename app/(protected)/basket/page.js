@@ -2299,15 +2299,17 @@ export default async function BasketPage({ searchParams }) {
         (celui qui contient ?poule=…&phase=…). Si le site refuse la requête, le message d'erreur sous
         chaque participant t'indique quoi faire — les matchs déjà synchronisés sont conservés.
         {" "}
-        Si le site bloque le serveur (HTTP 403), télécharge le script ci-dessous, lance-le depuis ton
-        PC (<code>python push_ffbb.py</code>) puis clique sur « Synchroniser FFBB ».
+        Si le site bloque le serveur (HTTP 403), télécharge le programme ci-dessous, double-clique
+        dessus sur ton PC Windows (rien à installer), puis clique sur « Synchroniser FFBB ». Au
+        premier lancement, Windows peut afficher « Windows a protégé votre ordinateur » : clique sur
+        « Informations complémentaires » puis « Exécuter quand même ».
         {" "}
         <a
-          href="/api/telecharger-script-ffbb"
-          download="push_ffbb.py"
+          href="/MiseAJourFFBB_Club.exe"
+          download="MiseAJourFFBB_Club.exe"
           className="font-semibold underline"
         >
-          Télécharger le script de mise à jour
+          Télécharger le programme de mise à jour (MiseAJourFFBB_Club.exe)
         </a>
       </p>
 

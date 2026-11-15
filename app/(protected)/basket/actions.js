@@ -1005,7 +1005,7 @@ export async function syncPhase(formData) {
       }
       if (!cachedPoule) {
         throw new Error(
-          `${liveErr?.message || liveErr} Astuce : lance « python push_ffbb.py » depuis ton PC, puis resynchronise.`
+          `${liveErr?.message || liveErr} Astuce : lance le programme MiseAJourFFBB_Club.exe depuis ton PC (lien dans l'onglet Basket), puis resynchronise.`
         );
       }
       poule = cachedPoule;
@@ -1242,7 +1242,14 @@ export async function checkTeamStatsAvailability(matchId) {
     .select("id", { count: "exact", head: true })
     .eq("match_id", statsMatch.id);
 
+  const { count: quartersCount } = await supabase
+    .from("stats_match_events")
+    .select("id", { count: "exact", head: true })
+    .eq("match_id", statsMatch.id)
+    .like("action_type", "ETAT:SCORE_PERIODE:%");
+
   return {
+    quartersCount: quartersCount ?? 0,
     teamHome: statsMatch.team_home,
     teamAway: statsMatch.team_away,
     scoreHome: statsMatch.score_home,
@@ -1268,7 +1275,14 @@ export async function importMatchStatsFromTeamStats(matchId) {
     .maybeSingle();
   if (!statsMatch) throw new Error("Aucune saisie TeamStats trouvée pour ce match.");
 
-  const [{ data: totals }, { data: periodRows }, { data: phase }, { data: allPlayers }, { data: rosterRows }] =
+  const [
+    { data: totals },
+    { data: periodRows },
+    { data: phase },
+    { data: allPlayers },
+    { data: rosterRows },
+    { data: scoreEvents },
+  ] =
     await Promise.all([
       supabase.from("stats_player_game_stats").select("*").eq("match_id", statsMatch.id),
       supabase.from("stats_player_period_stats").select("*").eq("match_id", statsMatch.id),
@@ -1279,6 +1293,13 @@ export async function importMatchStatsFromTeamStats(matchId) {
       match.phase_id
         ? supabase.from("basketball_team").select("player_id").eq("phase_id", match.phase_id)
         : Promise.resolve({ data: [] }),
+      // Score de chaque quart-temps : TeamStats l'enregistre sous forme d'événements
+      // « ETAT:SCORE_PERIODE:<domicile>-<extérieur> » (points marqués DANS la période).
+      supabase
+        .from("stats_match_events")
+        .select("period, action_type")
+        .eq("match_id", statsMatch.id)
+        .like("action_type", "ETAT:SCORE_PERIODE:%"),
     ]);
 
   if (!totals || totals.length === 0) throw new Error("La saisie TeamStats de ce match est vide.");
@@ -1402,12 +1423,51 @@ export async function importMatchStatsFromTeamStats(matchId) {
     if (periodErr) throw new Error(`Enregistrement du détail par quart-temps : ${periodErr.message}`);
   }
 
+  // La feuille de match affiche par défaut TOUTES les joueuses de la fiche (seul on_sheet=false les
+  // en retire). On ne garde donc que celles de TeamStats : toutes les autres sont marquées « absentes »
+  // pour CE match uniquement — elles restent dans l'effectif et gardent leurs stats des autres matchs.
+  const importedIds = new Set(resolvedByName.values());
+  const absentRows = players
+    .filter((p) => p.role !== "entraineur" && !importedIds.has(p.id))
+    .map((p) => ({ match_id: matchId, player_id: p.id, on_sheet: false, updated_at: new Date().toISOString() }));
+  if (absentRows.length > 0) {
+    const { error: absentErr } = await supabase
+      .from("basketball_match_stats")
+      .upsert(absentRows, { onConflict: "match_id,player_id" });
+    if (absentErr) throw new Error(`Mise à jour de la feuille de match : ${absentErr.message}`);
+  }
+
+  // Scores par quart-temps (côté « nous » / « adversaire »). TeamStats stocke domicile/extérieur
+  // au sens strict ; dans MULTISPORTS l'équipe 1 est le domicile. Le score officiel FFBB n'est jamais touché.
+  const quarters = Array.from({ length: 8 }, () => ({ us: null, them: null }));
+  let quartersImported = 0;
+  if (typeof match.us_is_team1 === "boolean") {
+    for (const ev of scoreEvents ?? []) {
+      const m = /^ETAT:SCORE_PERIODE:(\d+)-(\d+)$/.exec(ev.action_type ?? "");
+      const idx = Number(ev.period) - 1;
+      if (!m || !(idx >= 0 && idx < quarters.length)) continue;
+      const home = Number(m[1]);
+      const away = Number(m[2]);
+      quarters[idx] = match.us_is_team1 ? { us: home, them: away } : { us: away, them: home };
+      quartersImported += 1;
+    }
+  }
+  if (quartersImported > 0) {
+    const { error: reportErr } = await supabase
+      .from("basketball_matches")
+      .update({ match_report: { quarters, notes: match.match_report?.notes ?? null } })
+      .eq("id", matchId);
+    if (reportErr) throw new Error(`Enregistrement des scores par quart-temps : ${reportErr.message}`);
+  }
+
   revalidatePath("/basket");
 
   return {
     imported: resolvedByName.size,
     created,
     ambiguous,
+    removedFromSheet: absentRows.length,
+    quartersImported,
   };
 }
 

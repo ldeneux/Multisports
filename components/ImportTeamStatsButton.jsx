@@ -74,16 +74,22 @@ export default function ImportTeamStatsButton({ matchId, preview }) {
                   </p>
                   <p className="mt-1">
                     {preview.playerCount} joueuse{preview.playerCount > 1 ? "s" : ""} saisie
-                    {preview.playerCount > 1 ? "s" : ""}, {preview.periodCount ?? 4} quarts-temps.
+                    {preview.playerCount > 1 ? "s" : ""}, {preview.periodCount ?? 4} quarts-temps
+                    {preview.quartersCount > 0
+                      ? ` (scores de ${preview.quartersCount} quart${preview.quartersCount > 1 ? "s" : ""}-temps disponibles)`
+                      : " (pas de score par quart-temps dans TeamStats)"}
+                    .
                   </p>
                 </div>
                 <div className="mt-3 flex items-start gap-2 rounded-lg border border-cardinal/30 bg-cardinal/5 p-3 text-sm text-cardinal">
                   <TriangleAlert size={16} className="mt-0.5 shrink-0" />
                   <p>
                     Les statistiques actuellement saisies pour ce match dans MULTISPORTS (feuille de match,
-                    quarts-temps) seront <strong>remplacées</strong> par celles de TeamStats. L'effectif de
-                    l'équipe n'est jamais remplacé : les joueuses reconnues y sont seulement ajoutées si elles
-                    n'y figurent pas encore.
+                    quarts-temps) seront <strong>remplacées</strong> par celles de TeamStats : seules les
+                    joueuses de TeamStats resteront sur la feuille de ce match (les autres en sont retirées pour
+                    ce match uniquement, tu peux les réintégrer à la main) et les scores par quart-temps sont
+                    repris. L'effectif de l'équipe n'est jamais remplacé : les joueuses reconnues y sont
+                    seulement ajoutées si elles n'y figurent pas encore.
                   </p>
                 </div>
                 <div className="mt-4 flex justify-end gap-2">
@@ -125,6 +131,16 @@ export default function ImportTeamStatsButton({ matchId, preview }) {
               <>
                 <p className="mt-3 text-sm text-ink/70">
                   {result.imported} joueuse{result.imported > 1 ? "s" : ""} importée{result.imported > 1 ? "s" : ""}.
+                  {result.removedFromSheet > 0 && (
+                    <> {result.removedFromSheet} autre{result.removedFromSheet > 1 ? "s" : ""} joueuse
+                    {result.removedFromSheet > 1 ? "s" : ""} retirée{result.removedFromSheet > 1 ? "s" : ""} de la
+                    feuille de ce match.</>
+                  )}
+                  {result.quartersImported > 0 ? (
+                    <> Scores de {result.quartersImported} quart{result.quartersImported > 1 ? "s" : ""}-temps repris.</>
+                  ) : (
+                    <> Aucun score par quart-temps dans TeamStats.</>
+                  )}
                   {result.created.length > 0 && (
                     <> {result.created.length} nouvelle{result.created.length > 1 ? "s" : ""} fiche
                     {result.created.length > 1 ? "s" : ""} créée{result.created.length > 1 ? "s" : ""} :{" "}
