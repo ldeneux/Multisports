@@ -140,7 +140,26 @@ BASE_COMPETITIONS = f"{SITE}/ligues/ara/comites/0069/competitions"
 DOSSIER = CONFIG.parent
 PAUSE = 0.4   # secondes entre deux pages (on reste poli avec le site)
 
-RE_LIEN = re.compile(r"/competitions/([A-Za-z0-9_.~%-]+)\?([^\"'\\\s<>]*)")
+# Le lien garde son chemin d'origine : …/ligues/ara/comites/0069/competitions/<code> (compétition de comité) ou
+# …/ligues/ara/competitions/<code> (compétition régionale : RM2, PRM...). Reconstruire tout sous le comité donnait un 404.
+RE_LIEN = re.compile(r"((?:/ligues/[A-Za-z0-9_~%-]+)(?:/comites/[A-Za-z0-9_~%-]+)?)?/competitions/([A-Za-z0-9_.~%-]+)\?([^\"'\\\s<>]*)")
+CHEMINS_SECOURS = ("/ligues/ara/comites/0069", "/ligues/ara")   # essayés dans cet ordre si le chemin du lien donne 404
+
+
+class ErreurSite(RuntimeError):
+    def __init__(self, message, statut=None):
+        super().__init__(message)
+        self.statut = statut
+
+
+def bases_competition(code, prefixe=None):
+    """Adresses possibles d'une compétition : le chemin lu dans le lien d'abord, puis comité, puis ligue."""
+    bases = []
+    for chemin in ([prefixe] if prefixe else []) + list(CHEMINS_SECOURS):
+        b = f"{SITE}{chemin}/competitions/{code}"
+        if b not in bases:
+            bases.append(b)
+    return bases
 RE_POULE = re.compile(r'"(?:idPoule|id_poule|pouleId|poule_id)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{9,})')
 RE_PHASE = re.compile(r'"(?:idCompetition|id_competition|competitionId|competition_id|idPhase|phaseId)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{9,})')
 RE_ENG_JSON = re.compile(r'"(?:idEngagement|engagementId|id_engagement)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{12,})')
@@ -151,7 +170,7 @@ def telecharger(url):
     r = requests.get(url, headers=HEADERS_SITE, timeout=30)
     if r.status_code != 200:
         blocage = " (blocage anti-robot du site, réessaie plus tard)" if r.status_code in (403, 429, 503) else ""
-        raise RuntimeError(f"le site répond HTTP {r.status_code}{blocage}")
+        raise ErreurSite(f"le site répond HTTP {r.status_code}{blocage}", r.status_code)
     return r.text
 
 
@@ -196,20 +215,22 @@ def candidats_equipe(txt):
     de sa page ; à défaut, les identifiants de poule / compétition présents dans ses données."""
     vus, res = set(), []
     for m in RE_LIEN.finditer(txt):
-        q = parse_qs(m.group(2))
+        q = parse_qs(m.group(3))
         poule = (q.get("poule") or [""])[0]
         phase = (q.get("phase") or [""])[0] or None
-        cle = (m.group(1), poule, phase)
+        cle = (m.group(2), poule, phase)
         if re.fullmatch(r"\d{9,}", poule) and cle not in vus:
             vus.add(cle)
-            res.append({"base": f"{BASE_COMPETITIONS}/{m.group(1)}", "poule": poule, "phase": phase, "via": "lien"})
+            bases = bases_competition(m.group(2), m.group(1))
+            res.append({"base": bases[0], "bases": bases, "poule": poule, "phase": phase, "via": "lien"})
     if res:
         return res
     poules = list(dict.fromkeys(RE_POULE.findall(txt)))[:3]
     phases = list(dict.fromkeys(RE_PHASE.findall(txt)))[:3] or [None]
     for p in poules:
         for ph in phases:
-            res.append({"base": f"{BASE_COMPETITIONS}/{ph or 'x'}", "poule": p, "phase": ph, "via": "identifiants"})
+            bases = bases_competition(ph or "x")
+            res.append({"base": bases[0], "bases": bases, "poule": p, "phase": ph, "via": "identifiants"})
     return res
 
 
@@ -231,20 +252,145 @@ def candidat_depuis_lien(competition_url, poule_stockee):
 
 def lire_poule(c, engagement=None):
     """Télécharge les journées 1 et 2 de la poule. Si `engagement` est donné, la poule doit
-    contenir cette équipe (sinon ce n'est pas la bonne). Renvoie (pages, nb_matchs)."""
-    pages = []
-    for n in JOURNEES_A_LIRE:
-        params = {"poule": c["poule"]}
-        if c["phase"]:
-            params["phase"] = c["phase"]
-        params["journee"] = n
-        pages.append(telecharger(f"{c['base']}?{urlencode(params)}"))
-    nb = len(re.findall(r'\\?"nomEquipe1\\?"', pages[0]))
-    if c["poule"] not in pages[0] or nb == 0:
-        raise RuntimeError("la page ne contient pas les données de la poule")
-    if engagement and not any(engagement in p for p in pages):
-        raise RuntimeError("notre équipe n'apparaît pas dans cette poule")
-    return pages, nb
+    contenir cette équipe (sinon ce n'est pas la bonne). Renvoie (pages, nb_matchs).
+    Essaie plusieurs adresses (chemin du lien, comité, ligue) : un 404 sur l'une n'arrête pas la lecture."""
+    derniere = None
+    for base in c.get("bases") or [c["base"]]:
+        try:
+            pages = []
+            for n in JOURNEES_A_LIRE:
+                params = {"poule": c["poule"]}
+                if c["phase"]:
+                    params["phase"] = c["phase"]
+                params["journee"] = n
+                pages.append(telecharger(f"{base}?{urlencode(params)}"))
+            nb = len(re.findall(r'\\?"nomEquipe1\\?"', pages[0]))
+            if c["poule"] not in pages[0] or nb == 0:
+                raise RuntimeError("la page ne contient pas les données de la poule")
+            if engagement and not any(engagement in p for p in pages):
+                raise RuntimeError("notre équipe n'apparaît pas dans cette poule")
+            c["base"] = base          # l'adresse qui a fonctionné (reprise dans le rapport)
+            return pages, nb
+        except Exception as e:
+            derniere = e
+            if isinstance(e, ErreurSite) and e.statut in (403, 429, 503):
+                raise                  # blocage anti-robot : inutile d'insister sur les autres adresses
+    raise derniere
+
+
+# ----------------------------------------------------------------------------- autres phases de la compétition
+# La page du club ne liste que la phase en cours de chaque équipe. Or une compétition a plusieurs phases
+# (menu « Phase » du site : « Saison régulière », « Phase 2 »...), chacune avec ses poules. À partir d'une
+# poule lue, on retrouve les autres phases de la même compétition et on y cherche nos équipes.
+RE_CLUB_DANS_PAGE = re.compile(r'nomEquipe[12]\\*"\s*:\s*\\*"\s*' + re.escape(CLUB_NOM), re.I)
+
+
+def blobs_json(html):
+    """Blocs JSON de la page (script application/json + flux Next.js), sous forme d'objets Python."""
+    out = []
+    for m in re.finditer(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.S):
+        for texte in (m.group(1), unescape(m.group(1))):
+            try:
+                out.append(json.loads(texte))
+                break
+            except ValueError:
+                continue
+    flux = []
+    for m in re.finditer(r'self\.__next_f\.push\(\[\d+,\s*("(?:[^"\\]|\\.)*")\]\)', html):
+        try:
+            flux.append(json.loads(m.group(1)))
+        except ValueError:
+            pass
+    for ligne in "".join(flux).split("\n"):
+        m = re.match(r"^[0-9a-f]+:(.*)$", ligne)
+        if m:
+            try:
+                out.append(json.loads(m.group(1)))
+            except ValueError:
+                pass
+    return out
+
+
+def _parcourir(n, visite):
+    if isinstance(n, dict):
+        visite(n)
+        for v in n.values():
+            _parcourir(v, visite)
+    elif isinstance(n, list):
+        for v in n:
+            _parcourir(v, visite)
+
+
+def _ids_poules(liste):
+    return [str(x.get("id")) for x in (liste or []) if isinstance(x, dict) and re.fullmatch(r"\d{9,}", str(x.get("id") or ""))]
+
+
+def phases_soeurs(html, poule, phase_courante=None):
+    """Autres phases de la compétition qui contient `poule` : liste de (id_phase, libellé, [ids de poules connues])."""
+    trouvees = {}
+
+    def visite(d):
+        ph = d.get("phases")
+        if isinstance(ph, list) and ph and all(isinstance(x, dict) for x in ph) and poule in json.dumps(ph):
+            for x in ph:
+                pid = str(x.get("id") or "")
+                if re.fullmatch(r"\d{9,}", pid):
+                    trouvees[pid] = (x.get("libelle") or x.get("nom") or x.get("name") or "", _ids_poules(x.get("poules")))
+
+    for b in blobs_json(html):
+        _parcourir(b, visite)
+    return [(pid, lib, pls) for pid, (lib, pls) in trouvees.items()
+            if pid != str(phase_courante or "") and poule not in pls]
+
+
+def poules_de_phase(html, phase):
+    """Identifiants des poules d'une phase, lus dans sa page."""
+    ids = []
+
+    def visite(d):
+        if str(d.get("id")) == str(phase) and isinstance(d.get("poules"), list):
+            ids.extend(_ids_poules(d["poules"]))
+
+    for b in blobs_json(html):
+        _parcourir(b, visite)
+    return list(dict.fromkeys(ids)) or list(dict.fromkeys(RE_POULE.findall(decoder(html))))
+
+
+def decouvrir_phases_soeurs(token, c, pages, deposees, rapport, diag):
+    """Cherche et dépose les poules des AUTRES phases de la compétition (là où le club joue). Renvoie le nombre déposé."""
+    html0 = pages[0]
+    autres = phases_soeurs(html0, c["poule"], c.get("phase"))
+    if not autres:
+        if not diag.get("faite"):
+            diag["faite"] = True
+            sauver_diag(f"page_poule_{c['poule']}.html", html0)
+        return 0
+    deposes = 0
+    for ph_id, libelle, poules in autres:
+        base = c["base"]
+        try:
+            if not poules:
+                poules = poules_de_phase(telecharger(f"{base}?{urlencode({'phase': ph_id, 'journee': 1})}"), ph_id)
+        except Exception as e:
+            print(f"       phase {libelle or ph_id} : lecture impossible ({e})")
+            continue
+        for pl in poules[:15]:
+            if pl in deposees:
+                continue
+            cand = {"base": base, "bases": c.get("bases") or [base], "poule": pl, "phase": ph_id, "via": "phase soeur"}
+            try:
+                pages_s, nb = lire_poule(cand)
+            except Exception:
+                continue                       # poule sans données : on passe à la suivante
+            if not any(RE_CLUB_DANS_PAGE.search(x) for x in pages_s):
+                continue                       # le club n'est pas dans cette poule
+            deposer(token, pl, pages_s)
+            deposees.add(pl)
+            deposes += 1
+            rapport.append({"engagement": "", "equipe": f"{libelle or 'phase'} (autre phase)", "poule": pl, "phase": ph_id,
+                            "lien": f"{cand['base']}?poule={pl}&phase={ph_id}", "matchs": nb, "statut": "OK (phase soeur)"})
+            print(f"       + autre phase {libelle or ph_id} : poule {pl} ({nb} matchs)")
+    return deposes
 
 
 def deposer(token, poule_id, pages):
@@ -284,6 +430,7 @@ def main():
     # --- 2) La poule de chaque équipe ------------------------------------------------------
     print("\n2/3  Lecture de la poule de chaque équipe ...")
     diag_faite = False
+    diag_phases = {}
     for i, eng in enumerate(engagements, 1):
         ligne = {"engagement": eng, "equipe": "", "poule": "", "phase": "", "lien": "", "matchs": "", "statut": ""}
         html_eq = None
@@ -308,6 +455,10 @@ def main():
                     deposer(token, c["poule"], pages)
                     deposees.add(c["poule"])
                     ligne["statut"] = f"OK ({c['via']})"
+                try:
+                    decouvrir_phases_soeurs(token, c, pages, deposees, rapport, diag_phases)
+                except Exception as e:
+                    print(f"       autres phases : {e}")
                 break
             else:
                 raise RuntimeError(derniere)
