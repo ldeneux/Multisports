@@ -4,6 +4,17 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { computeCurrentSeasonLabel } from "@/lib/utils";
 import { fetchPouleFromPage, parseCompetitionUrl, pouleFromPages } from "@/lib/ffbbPage";
+import {
+  clubEngagementsIn,
+  competitionUrl,
+  identifyTeam,
+  isCup,
+  phaseNumberOf,
+  resolveTargets,
+  seasonOfPoule,
+  targetLabel,
+  teamMatchesTarget,
+} from "@/lib/ffbbClub";
 
 // Supabase-js ne lève pas d'exception sur une erreur de requête : il faut
 // vérifier { error } explicitement, sinon un échec passe inaperçu.
@@ -150,7 +161,35 @@ export async function addMatch(formData) {
   const homeAway = formData.get("home_away");
   const opponent = formData.get("opponent");
   const usIsTeam1 = homeAway === "domicile";
-  const phaseId = formData.get("phase_id") || null;
+  let phaseId = formData.get("phase_id") || null;
+
+  // Match amical : rangé dans la phase « Matchs amicaux » de la saison en cours, créée au besoin.
+  if (formData.get("amical") === "1") {
+    const season = computeCurrentSeasonLabel();
+    const { data: phs } = await supabase
+      .from("basketball_phases")
+      .select("id, phase_type, position")
+      .eq("participant_sport_id", participantSportId)
+      .eq("season", season);
+    const existingAmical = (phs ?? []).find((p) => p.phase_type === "amical");
+    if (existingAmical) {
+      phaseId = existingAmical.id;
+    } else {
+      const { data: created, error: phaseError } = await supabase
+        .from("basketball_phases")
+        .insert({
+          participant_sport_id: participantSportId,
+          season,
+          phase_type: "amical",
+          phase_name: "Matchs amicaux",
+          position: Math.max(0, ...(phs ?? []).map((p) => p.position ?? 0)) + 1,
+        })
+        .select("id")
+        .single();
+      assertNoError("Création de la phase amicale", phaseError);
+      phaseId = created.id;
+    }
+  }
 
   if (phaseId && !isCurrentSeason(await phaseSeason(supabase, phaseId))) {
     revalidatePath("/basket");
@@ -1205,6 +1244,382 @@ export async function syncPhase(formData) {
   }
 
   revalidatePath("/basket");
+}
+
+// ---- « Mettre à jour les calendriers & résultats » (synchro globale) ---------
+// Un seul bouton pour une participante : on lit TOUT le cache FFBB (rempli par
+// MiseAJourFFBB_Club.exe), on garde les poules de la saison en cours où joue une équipe de
+// la participante (voir lib/ffbbClub.js : resolveTargets), et pour chacune on crée ou met à
+// jour automatiquement la phase, ses matchs et son classement. Plus de phase à définir,
+// plus d'ID d'engagement ni de lien de poule à coller.
+//
+// Garde-fous « jamais d'écrasement d'une saison précédente » :
+//  - une poule dont les matchs ne sont pas de la saison en cours est ignorée ;
+//  - seules les phases de la saison en cours sont lues / créées / modifiées ;
+//  - un match déjà rattaché à une autre saison n'est jamais réécrit ;
+//  - le nettoyage ne supprime que des matchs FFBB de la phase en cours ;
+//  - un score saisi à la main n'est pas effacé si la FFBB n'en publie pas encore.
+// L'écran appelle ces actions par lots (voir components/SyncTeamsButton.jsx), pour rester
+// sous la limite de durée de Vercel.
+
+const SYNC_BATCH_MAX = 6;
+
+async function loadSyncContext(supabase, participantSportId) {
+  const season = computeCurrentSeasonLabel();
+  const { data: ps, error: psError } = await supabase
+    .from("participant_sports")
+    .select("id, club, category, ffbb_team_codes")
+    .eq("id", participantSportId)
+    .maybeSingle();
+  if (psError) {
+    return {
+      error: `Lecture de la participante impossible (${psError.message}). As-tu exécuté supabase/11-basket-sync-globale.sql ?`,
+    };
+  }
+  if (!ps) return { error: "Participante introuvable." };
+
+  const { data: phases, error: phError } = await supabase
+    .from("basketball_phases")
+    .select("*")
+    .eq("participant_sport_id", participantSportId)
+    .eq("season", season);
+  if (phError) return { error: `Lecture des phases impossible (${phError.message}).` };
+
+  const resolved = resolveTargets(ps, phases ?? []);
+  if (resolved.error) return { error: resolved.error };
+  return { season, ps, targets: resolved.targets, source: resolved.source };
+}
+
+export async function prepareTeamsSync(participantSportId) {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Non connecté." };
+
+  const ctx = await loadSyncContext(supabase, participantSportId);
+  if (ctx.error) return { error: ctx.error };
+
+  const { data: rows, error } = await supabase
+    .from("ffbb_poule_cache")
+    .select("poule_id, fetched_at")
+    .order("poule_id");
+  if (error) return { error: `Lecture du cache FFBB impossible (${error.message}).` };
+  if (!rows || rows.length === 0) {
+    return { error: "Le cache FFBB est vide : lance d'abord MiseAJourFFBB_Club.exe depuis un PC." };
+  }
+  const last = rows.map((r) => r.fetched_at).filter(Boolean).sort().pop() ?? null;
+  return {
+    season: ctx.season,
+    pouleIds: rows.map((r) => String(r.poule_id)),
+    teams: ctx.targets.map(targetLabel),
+    teamsSource: ctx.source,
+    cacheLastFetchedAt: last,
+  };
+}
+
+export async function syncTeamsBatch(participantSportId, pouleIds) {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Non connecté." };
+
+  const ids = (Array.isArray(pouleIds) ? pouleIds : []).map(String).slice(0, SYNC_BATCH_MAX);
+  if (ids.length === 0) return { results: [] };
+
+  const ctx = await loadSyncContext(supabase, participantSportId);
+  if (ctx.error) return { error: ctx.error };
+
+  const { data: cached, error } = await supabase
+    .from("ffbb_poule_cache")
+    .select("poule_id, data, fetched_at")
+    .in("poule_id", ids);
+  if (error) return { error: `Lecture du cache FFBB impossible (${error.message}).` };
+
+  const results = [];
+  for (const id of ids) {
+    const row = (cached ?? []).find((c) => String(c.poule_id) === id);
+    if (!row) {
+      results.push({ pouleId: id, status: "erreur", message: "Absente du cache.", teams: [], matches: 0 });
+      continue;
+    }
+    try {
+      results.push(await syncOnePoule(supabase, ctx, id, row));
+    } catch (err) {
+      results.push({
+        pouleId: id,
+        status: "erreur",
+        message: String(err?.message || err).slice(0, 300),
+        teams: [],
+        matches: 0,
+      });
+    }
+  }
+  return { results };
+}
+
+export async function finishTeamsSync(participantSportId, summary) {
+  const supabase = createClient();
+  const text = String(summary?.text || "").slice(0, 400);
+  const errors = Number(summary?.errors) || 0;
+  await supabase
+    .from("participant_sports")
+    .update({
+      last_ffbb_sync_at: new Date().toISOString(),
+      last_ffbb_sync_error: errors > 0 ? `${errors} poule(s) en erreur — ${text}`.slice(0, 400) : null,
+      last_ffbb_sync_summary: text || null,
+    })
+    .eq("id", participantSportId);
+  revalidatePath("/basket");
+}
+
+async function syncOnePoule(supabase, ctx, pouleId, row) {
+  const { season, ps, targets } = ctx;
+  const res = { pouleId, status: "ok", message: "", teams: [], matches: 0 };
+
+  // 1) Lecture de la poule dans le cache. Filtre rapide avant l'analyse (lourde) : la page
+  //    doit contenir le nom du club.
+  const data = row.data;
+  let poule = null;
+  if (data?.rencontres?.length) {
+    poule = data;
+  } else if (Array.isArray(data?.pages) && data.pages.length > 0) {
+    const hasClub = data.pages.some((h) => typeof h === "string" && /OLYMPIC\s+SATHONAY/i.test(h));
+    if (!hasClub) return { ...res, status: "ignoree", message: "Aucune équipe du club dans cette poule." };
+    poule = pouleFromPages(data.pages, pouleId);
+  } else {
+    return { ...res, status: "erreur", message: "Format de cache non reconnu (pas de pages)." };
+  }
+  if (!poule.rencontres || poule.rencontres.length === 0) {
+    return { ...res, status: "erreur", message: "Aucun match lu dans les pages du cache." };
+  }
+
+  // 2) Saison : jamais autre chose que la saison en cours.
+  const pSeason = seasonOfPoule(poule);
+  if (pSeason !== season) {
+    return {
+      ...res,
+      status: "ignoree",
+      message: `Poule de la saison ${pSeason ?? "inconnue"} : non modifiée.`,
+    };
+  }
+
+  // 3) Équipes du club présentes, puis seulement celles de la participante.
+  const ours = clubEngagementsIn(poule);
+  if (ours.length === 0) return { ...res, status: "ignoree", message: "Aucune équipe du club dans cette poule." };
+  const identified = ours.map((eng) => ({ eng, ident: identifyTeam(poule.competitionName, eng.teamName) }));
+  const chosen = identified.filter((x) => targets.some((t) => teamMatchesTarget(t, x.ident)));
+  if (chosen.length === 0) {
+    return {
+      ...res,
+      status: "ignoree",
+      message: `Équipe(s) du club (${identified.map((x) => x.ident.label).join(", ")}) : pas celle de cette participante.`,
+    };
+  }
+  const { eng, ident } = chosen[0]; // une seule équipe de la participante par poule
+
+  // 4) La phase : on réutilise celle de la saison en cours si elle existe (mêmes feuilles de
+  //    match, stats et effectif), sinon on la crée.
+  const { data: phases, error: phError } = await supabase
+    .from("basketball_phases")
+    .select("*")
+    .eq("participant_sport_id", ps.id)
+    .eq("season", season);
+  if (phError) throw new Error(`Lecture des phases : ${phError.message}`);
+
+  let phase = (phases ?? []).find(
+    (p) =>
+      p.phase_type !== "amical" &&
+      (String(p.poule_id ?? "") === pouleId ||
+        parseCompetitionUrl(p.competition_url)?.pouleId === pouleId ||
+        (p.ffbb_engagement_id && String(p.ffbb_engagement_id) === eng.engagementId))
+  );
+
+  const phaseNum = phaseNumberOf(poule.phaseLabel ?? poule.competitionName);
+  const cup = isCup(poule.competitionName);
+  const url = competitionUrl(poule.competitionCode, pouleId, poule.competitionId, poule.competitionPrefix);
+  const phaseFields = {
+    ffbb_engagement_id: eng.engagementId,
+    poule_id: pouleId,
+    competition_name: poule.competitionName || null,
+    poule_label: poule.pouleNom || null,
+    competition_logo_asset: poule.competitionLogoAsset || null,
+    our_team_name: eng.teamName || null,
+  };
+
+  if (phase) {
+    const { error } = await supabase
+      .from("basketball_phases")
+      .update({ ...phaseFields, competition_url: phase.competition_url || url })
+      .eq("id", phase.id);
+    if (error) throw new Error(`Mise à jour de la phase : ${error.message}`);
+  } else {
+    const taken = new Set((phases ?? []).map((p) => p.phase_name));
+    const base = cup ? "Coupe" : phaseNum === 1 ? "Saison régulière" : `Phase ${phaseNum}`;
+    let phaseName = targets.length > 1 ? `${ident.label} · ${base}` : base;
+    if (taken.has(phaseName)) phaseName = `${phaseName} (poule ${poule.pouleNom || pouleId})`;
+    const usedPositions = new Set((phases ?? []).map((p) => p.position));
+    const position =
+      !cup && !usedPositions.has(phaseNum)
+        ? phaseNum
+        : Math.max(0, ...(phases ?? []).map((p) => p.position ?? 0)) + 1;
+    const { data: created, error } = await supabase
+      .from("basketball_phases")
+      .insert({
+        participant_sport_id: ps.id,
+        season,
+        phase_type: "ffbb",
+        phase_name: phaseName,
+        competition_url: url,
+        position,
+        ...phaseFields,
+      })
+      .select("*")
+      .single();
+    if (error || !created) throw new Error(`Création de la phase : ${error?.message}`);
+    phase = created;
+  }
+
+  // 5) Les matchs de toute la poule (us_is_team1 = null pour ceux qui ne nous concernent pas).
+  await upsertClubsFromRencontres(supabase, poule.rencontres);
+
+  const payload = poule.rencontres.map((r) => {
+    const isTeam1 = String(r.idEngagementEquipe1?.id) === eng.engagementId;
+    const isTeam2 = String(r.idEngagementEquipe2?.id) === eng.engagementId;
+    const usIsTeam1 = isTeam1 ? true : isTeam2 ? false : null;
+    const location = [r.salle?.libelle, r.salle?.commune?.libelle].filter(Boolean).join(", ");
+    const opponent = usIsTeam1 === true ? r.nomEquipe2 : usIsTeam1 === false ? r.nomEquipe1 : null;
+    const usScore = usIsTeam1 === true ? r.resultatEquipe1 : usIsTeam1 === false ? r.resultatEquipe2 : null;
+    const themScore = usIsTeam1 === true ? r.resultatEquipe2 : usIsTeam1 === false ? r.resultatEquipe1 : null;
+    return {
+      participant_sport_id: ps.id,
+      phase_id: phase.id,
+      ffbb_rencontre_id: String(r.id),
+      poule_id: pouleId,
+      season,
+      division_label: poule.competitionName || null,
+      numero_journee: r.numeroJournee != null ? String(r.numeroJournee) : null,
+      match_date: r.date_rencontre,
+      opponent: opponent || (r.nomEquipe1 && r.nomEquipe2 ? `${r.nomEquipe1} vs ${r.nomEquipe2}` : "Adversaire inconnu"),
+      home_away: usIsTeam1 === true ? "domicile" : usIsTeam1 === false ? "exterieur" : null,
+      team_score_us: usScore ?? null,
+      team_score_them: themScore ?? null,
+      us_is_team1: usIsTeam1,
+      team1_name: r.nomEquipe1 || null,
+      team1_score: r.resultatEquipe1 ?? null,
+      team1_logo_asset: r.idOrganismeEquipe1?.logo?.id || null,
+      team1_engagement_id: r.idEngagementEquipe1?.id ? String(r.idEngagementEquipe1.id) : null,
+      team2_name: r.nomEquipe2 || null,
+      team2_score: r.resultatEquipe2 ?? null,
+      team2_logo_asset: r.idOrganismeEquipe2?.logo?.id || null,
+      team2_engagement_id: r.idEngagementEquipe2?.id ? String(r.idEngagementEquipe2.id) : null,
+      location: location || null,
+      status: r.joue ? "joue" : "a_venir",
+      source: "ffbb",
+    };
+  });
+
+  // Matchs déjà en base : on n'écrase jamais ceux d'une autre saison, et on garde un score
+  // déjà enregistré si la FFBB n'en publie pas encore.
+  const allIds = payload.map((m) => m.ffbb_rencontre_id);
+  const existing = new Map();
+  for (let i = 0; i < allIds.length; i += 100) {
+    const { data: rows, error } = await supabase
+      .from("basketball_matches")
+      .select("ffbb_rencontre_id, season, status, team1_score, team2_score, team_score_us, team_score_them")
+      .eq("participant_sport_id", ps.id)
+      .in("ffbb_rencontre_id", allIds.slice(i, i + 100));
+    if (error) throw new Error(`Lecture des matchs existants : ${error.message}`);
+    for (const row of rows ?? []) existing.set(String(row.ffbb_rencontre_id), row);
+  }
+  let archived = 0;
+  const toWrite = [];
+  for (const m of payload) {
+    const ex = existing.get(m.ffbb_rencontre_id);
+    if (ex && ex.season && ex.season !== season) {
+      archived += 1;
+      continue;
+    }
+    if (ex && m.team1_score == null && m.team2_score == null && ex.status === "joue" && ex.team1_score != null) {
+      m.status = "joue";
+      m.team1_score = ex.team1_score;
+      m.team2_score = ex.team2_score;
+      m.team_score_us = ex.team_score_us;
+      m.team_score_them = ex.team_score_them;
+    }
+    toWrite.push(m);
+  }
+  for (let i = 0; i < toWrite.length; i += 200) {
+    const { error } = await supabase
+      .from("basketball_matches")
+      .upsert(toWrite.slice(i, i + 200), { onConflict: "participant_sport_id,ffbb_rencontre_id" });
+    if (error) throw new Error(`Écriture des matchs : ${error.message}`);
+  }
+
+  // Nettoyage : seulement des matchs FFBB de CETTE phase (saison en cours) disparus de la poule.
+  if (allIds.length > 0) {
+    const { error } = await supabase
+      .from("basketball_matches")
+      .delete()
+      .eq("phase_id", phase.id)
+      .eq("season", season)
+      .eq("source", "ffbb")
+      .not("ffbb_rencontre_id", "in", `(${allIds.join(",")})`);
+    if (error) throw new Error(`Nettoyage des matchs : ${error.message}`);
+  }
+
+  // 6) Le classement officiel (si la page en contient un), sinon calculé à partir des matchs.
+  const standings = (poule.classements ?? [])
+    .filter((c) => c.idEngagement?.id)
+    .map((c) => ({
+      participant_sport_id: ps.id,
+      phase_id: phase.id,
+      poule_id: pouleId,
+      season,
+      engagement_id: String(c.idEngagement.id),
+      engagement_nom: c.idEngagement.nom || "Équipe inconnue",
+      position: c.position ?? null,
+      points: c.points ?? null,
+      matches_joues: c.matchJoues ?? null,
+      gagnes: c.gagnes ?? null,
+      perdus: c.perdus ?? null,
+      is_us: String(c.idEngagement.id) === eng.engagementId,
+      synced_at: new Date().toISOString(),
+    }));
+  let classementNote = null;
+  if (standings.length > 0) {
+    const { error: delError } = await supabase.from("basketball_classements").delete().eq("phase_id", phase.id);
+    if (delError) throw new Error(`Nettoyage du classement : ${delError.message}`);
+    const { error: insError } = await supabase.from("basketball_classements").insert(standings);
+    if (insError) throw new Error(`Écriture du classement : ${insError.message}`);
+  } else {
+    const recalcul = await computeClassementCore(supabase, phase.id);
+    if (recalcul?.error) classementNote = `Classement non recalculé : ${recalcul.error}`;
+  }
+
+  // 7) Statut de la phase.
+  const when = new Date(row.fetched_at).toLocaleString("fr-FR", {
+    timeZone: "Europe/Paris",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  await supabase
+    .from("basketball_phases")
+    .update({
+      last_sync_at: new Date().toISOString(),
+      last_sync_error: [`Données du cache FFBB du ${when}.`, classementNote].filter(Boolean).join(" "),
+    })
+    .eq("id", phase.id);
+
+  res.teams.push(ident.label);
+  res.matches = toWrite.length;
+  res.message = `${ident.label} — ${phase.phase_name} : ${toWrite.length} match(s)${
+    archived ? ` (${archived} d'une saison précédente laissé(s) intact(s))` : ""
+  }`;
+  return res;
 }
 
 // ---- Import des statistiques TeamStats -------------------------------------
