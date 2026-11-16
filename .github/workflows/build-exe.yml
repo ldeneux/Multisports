@@ -1,14 +1,16 @@
 # À placer dans le dépôt : .github/workflows/build-exe.yml
-# Construit MiseAJourFFBB.exe (Windows) à partir de scripts/push_ffbb.py.
-# Lancement : onglet « Actions » du dépôt GitHub -> « Construire MiseAJourFFBB.exe » -> « Run workflow ».
+# Construit UNIQUEMENT MiseAJourFFBB_Club.exe (Windows) à partir de scripts/push_ffbb_club.py.
+# (L'ancien programme MiseAJourFFBB.exe a son propre fichier : push_ffbb.yml.)
+# Lancement : onglet « Actions » -> « Construire MiseAJourFFBB_Club.exe » -> « Run workflow »,
+# ou automatiquement à chaque modification de scripts/push_ffbb_club.py.
 # Le .exe est ensuite téléchargeable en bas de la page de l'exécution (section « Artifacts »).
-name: Construire MiseAJourFFBB.exe
+name: Construire MiseAJourFFBB_Club.exe
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "scripts/push_ffbb.py"
+      - "scripts/push_ffbb_club.py"
 
 jobs:
   build-windows:
@@ -24,10 +26,10 @@ jobs:
         run: pip install pyinstaller requests
 
       - name: Construire l'exécutable
-        run: pyinstaller --onefile --clean --name MiseAJourFFBB scripts/push_ffbb.py
+        run: pyinstaller --onefile --clean --name MiseAJourFFBB_Club scripts/push_ffbb_club.py
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MiseAJourFFBB-windows
-          path: dist/MiseAJourFFBB.exe
+          name: MiseAJourFFBB_Club-windows
+          path: dist/MiseAJourFFBB_Club.exe
           if-no-files-found: error
