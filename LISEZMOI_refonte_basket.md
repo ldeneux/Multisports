@@ -1,4 +1,6 @@
-# Refonte de l'onglet Basket — « Mettre à jour les calendriers & résultats »
+# Refonte de l'onglet Basket — « Mettre à jour les calendriers & résultats » (v2)
+
+v2 : corrige l'erreur « Unsupported Server Component type: Module » de la v1 (page.js était tronqué).
 
 Copie chaque fichier de ce zip à la même place dans le projet (écrase l'ancien), puis :
 

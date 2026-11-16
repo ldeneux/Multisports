@@ -132,7 +132,13 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
       </div>
 
       {!isAmical && selectedPhase?.last_sync_at && (
-        <p className={`text-xs ${selectedPhase.last_sync_error && !/^Données du cache/.test(selectedPhase.last_sync_error) ? "text-cardinal-dark" : "text-ink/40"}`}>
+        <p
+          className={`text-xs ${
+            selectedPhase.last_sync_error && !/^Données du cache/.test(selectedPhase.last_sync_error)
+              ? "text-cardinal-dark"
+              : "text-ink/40"
+          }`}
+        >
           Dernière mise à jour : {formatDateTime(selectedPhase.last_sync_at)}
           {selectedPhase.last_sync_error ? ` — ${selectedPhase.last_sync_error}` : " — OK"}
         </p>
@@ -1249,6 +1255,947 @@ function StatsTab({
 
   return (
     <div className="space-y-4">
+      <p className="rounded-card bg-lagoon-light p-3 text-xs text-navy">
+        La FFBB (fédération, championnats amateurs) ne publie pas de statistiques joueur par joueur —
+        c'est la LNB, qui gère le Betclic Elite (une ligue professionnelle à part), qui a son propre
+        système de stats. Ici, un bilan calculé à partir des matchs de l'équipe.
+      </p>
+
+      {/* En mode "focus sur un match" (ouvert depuis l'icône stats d'une
+          feuille de match), on remplace le filtre par phases — qui n'a pas
+          de sens pour un seul match — par un résumé de ce match. */}
+      {statsMatchFocus ? (
+        <div className="rounded-card bg-white p-3 text-sm shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink/40">Statistiques du match</p>
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+            <p className="font-display text-base uppercase tracking-tight text-navy">
+              <span className={statsMatchFocus.us_is_team1 === true ? "font-bold" : ""}>
+                {statsMatchFocus.team1_name || "EXEMPT"}
+              </span>
+              <span className="mx-2 text-ink/30">vs</span>
+              <span className={statsMatchFocus.us_is_team1 === false ? "font-bold" : ""}>
+                {statsMatchFocus.team2_name || "EXEMPT"}
+              </span>
+              {statsMatchFocus.status === "joue" && (
+                <span className="ml-2 text-ink/50">
+                  ({statsMatchFocus.team1_score ?? "–"} - {statsMatchFocus.team2_score ?? "–"})
+                </span>
+              )}
+            </p>
+            <p className="text-xs text-ink/50">
+              {statsMatchFocus.match_date ? formatDateTime(statsMatchFocus.match_date) : "Date à confirmer"}
+              {statsMatchFocus.location ? ` · ${statsMatchFocus.location}` : ""}
+            </p>
+          </div>
+        </div>
+      ) : (
+        /* Filtre global à tout le module (équipe ET individuelles) : formulaire
+           GET natif, aucun JS nécessaire. stats_filtered=1 permet de
+           distinguer "aucune phase cochée par choix explicite" du premier
+           affichage (où toutes les phases comptent par défaut). */
+        phases.length > 1 && (
+          <form
+            method="get"
+            action="/basket"
+            className="flex flex-wrap items-center gap-3 rounded-card bg-white p-3 text-sm shadow-sm"
+          >
+            <input type="hidden" name="ps" value={selectedPsId} />
+            <input type="hidden" name="tab" value="stats" />
+            <input type="hidden" name="scope" value={scope} />
+            <input type="hidden" name="season" value={selectedSeason} />
+            {selectedPhase?.id && <input type="hidden" name="phase" value={selectedPhase.id} />}
+            {selectedPlayerId && <input type="hidden" name="stats_player" value={selectedPlayerId} />}
+            <input type="hidden" name="stats_filtered" value="1" />
+            <span className="font-semibold text-ink/50">Phases incluses :</span>
+            {phases.map((p) => (
+              <label key={p.id} className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  name="stats_phase"
+                  value={p.id}
+                  defaultChecked={selectedStatsPhaseIds.includes(p.id)}
+                className="h-4 w-4"
+              />
+              {p.phase_name}
+            </label>
+          ))}
+          <button
+            type="submit"
+            className="rounded-full bg-navy px-3 py-1 text-xs font-semibold text-white hover:bg-navy-light"
+          >
+            Appliquer
+          </button>
+        </form>
+        )
+      )}
+
+      <details open className="space-y-4">
+        <summary className="cursor-pointer text-sm font-semibold text-navy">Statistiques équipe</summary>
+
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          {!stats ? (
+            <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+              Pas encore de match joué pour calculer un bilan.
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-card bg-white shadow-sm">
+              <div className="bg-navy px-4 py-2 text-white">
+                <p className="font-display text-sm uppercase tracking-tight">Bilan de la saison</p>
+              </div>
+              <table className="w-full">
+                <tbody>
+                  <StatRow label="Matchs joués" value={stats.played} />
+                  <StatRow label="Bilan" value={`${stats.wins}V - ${stats.losses}D`} />
+                  <StatRow label="Bilan à domicile" value={stats.homeRecord} />
+                  <StatRow label="Bilan à l'extérieur" value={stats.awayRecord} />
+                  <StatRow label="Points marqués / match" value={stats.pointsForAvg.toFixed(1)} />
+                  <StatRow label="Points encaissés / match" value={stats.pointsAgainstAvg.toFixed(1)} />
+                  <StatRow
+                    label="Écart moyen"
+                    value={`${stats.diffAvg > 0 ? "+" : ""}${stats.diffAvg.toFixed(1)}`}
+                  />
+                  <StatRow
+                    label="Série en cours"
+                    value={stats.currentStreak.type ? `${stats.currentStreak.count}${stats.currentStreak.type}` : "—"}
+                  />
+                  {stats.best && (
+                    <StatRow label="Meilleure perf." value={`+${stats.best.diff} vs ${stats.best.opponent}`} />
+                  )}
+                  {stats.worst && stats.worst.diff < 0 && (
+                    <StatRow label="Plus large défaite" value={`${stats.worst.diff} vs ${stats.worst.opponent}`} />
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="rounded-card bg-white p-4 shadow-sm">
+            <p className="mb-2 text-sm font-semibold text-navy">
+              Points vs meilleure marqueuse — domicile vs extérieur
+            </p>
+            {noteRanking.length === 0 ? (
+              <p className="text-xs text-ink/40">Pas encore de statistiques par joueuse.</p>
+            ) : (
+              <PyramidChart items={noteRanking} leftLabel="Domicile" rightLabel="Extérieur" valueSuffix="%" />
+            )}
+            <ChartInfo>
+              Moyenne, sur tous les matchs joués et saisis, des points de la joueuse rapportés à ceux de la meilleure
+              marqueuse de l'équipe ce jour-là (5 pts quand la meilleure en a 13 = 38 %) — à domicile à gauche, à
+              l'extérieur à droite, pour repérer si une joueuse est plus à l'aise chez elle ou en déplacement. 100 % =
+              meilleure marqueuse à chaque match ; les matchs où personne n'a marqué sont ignorés.
+            </ChartInfo>
+          </div>
+        </div>
+      </details>
+
+      <details open className="space-y-3">
+        <summary className="cursor-pointer text-sm font-semibold text-navy">Statistiques individuelles</summary>
+        <div className="mt-3">
+          <IndividualStatsSection
+            players={statsPlayers}
+            playedMatches={playedMatches}
+            statsRows={statsRows}
+            phases={phases}
+            selectedPlayerId={selectedPlayerId}
+            statsQueryBase={statsQueryBase}
+          />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+// Feuille de match complète — remplace toute la page quand ?feuille=<id> est
+// présent dans l'URL. Ouverte en cliquant sur la date ou le score d'un match
+// dans le calendrier. Le score officiel FFBB (s'il y en a un) n'est jamais
+// modifiable ici ; seuls les quarts-temps/notes et les statistiques par
+// joueuse le sont. Pour un match manuel (amical), le score total ET le
+// statut joué/à venir sont recalculés depuis les quarts-temps saisis.
+// Champs communs à "Nouvelle joueuse" et à la modification d'une fiche
+// existante — un seul jeu de champs, pré-rempli via defaultValue quand
+// `player` est fourni. Le rôle choisi détermine, côté serveur (addPlayer /
+// updatePlayer), quels champs sont réellement conservés.
+function PlayerFormFields({ defaultClub, participantFirstName, player }) {
+  const role = player?.role === "entraineur" ? "entraineur" : "joueur";
+  return (
+    <>
+      <div className="flex items-center gap-4 text-sm">
+        <label className="flex items-center gap-1.5">
+          <input type="radio" name="role" value="joueur" defaultChecked={role === "joueur"} className="h-4 w-4" />
+          Joueuse
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input
+            type="radio"
+            name="role"
+            value="entraineur"
+            defaultChecked={role === "entraineur"}
+            className="h-4 w-4"
+          />
+          Entraîneur·e
+        </label>
+      </div>
+
+      {participantFirstName && (
+        <label className="flex items-center gap-1.5 text-sm text-ink/60">
+          <input type="checkbox" name="is_self" defaultChecked={player?.is_self ?? false} className="h-4 w-4" />
+          {`C'est ${participantFirstName} elle-même (utilisée par défaut dans les statistiques individuelles)`}
+        </label>
+      )}
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <input
+          name="last_name"
+          defaultValue={player?.last_name ?? ""}
+          placeholder="Nom *"
+          required
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="first_name"
+          defaultValue={player?.first_name ?? ""}
+          placeholder="Prénom *"
+          required
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="licence_number"
+          defaultValue={player?.licence_number ?? ""}
+          placeholder="N° licence"
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="national_number"
+          defaultValue={player?.national_number ?? ""}
+          placeholder="N° national"
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="licence_type"
+          defaultValue={player?.licence_type ?? ""}
+          placeholder="Type de licence"
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+        <input
+          name="club"
+          defaultValue={player?.club ?? defaultClub}
+          placeholder="Club"
+          className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+        />
+      </div>
+
+      <label className="flex items-center gap-1.5 text-sm text-ink/60">
+        <input
+          type="checkbox"
+          name="licence_not_presented"
+          defaultChecked={player?.licence_not_presented ?? false}
+          className="h-4 w-4"
+        />
+        Licence non présentée
+      </label>
+
+      <div className="grid gap-2 border-t border-ink/10 pt-2 sm:grid-cols-2">
+        <div className="space-y-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">Si joueuse</p>
+          <input
+            type="number"
+            name="jersey_number"
+            defaultValue={player?.jersey_number ?? ""}
+            placeholder="N° de maillot"
+            className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+          />
+          <input
+            name="surclassement"
+            defaultValue={player?.surclassement ?? ""}
+            placeholder="Surclassement (ex. Aucun, 1 an, 2 ans)"
+            className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+          />
+          <label className="flex items-center gap-1.5 text-sm text-ink/60">
+            <input
+              type="checkbox"
+              name="is_default_captain"
+              defaultChecked={player?.is_default_captain ?? false}
+              className="h-4 w-4"
+            />
+            Capitaine habituelle
+          </label>
+        </div>
+        <div className="space-y-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-ink/40">Si entraîneur·e</p>
+          <input
+            name="diplome"
+            defaultValue={player?.diplome ?? ""}
+            placeholder="Diplôme"
+            className="w-full rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
+          />
+          <label className="flex items-center gap-1.5 text-sm text-ink/60">
+            <input
+              type="checkbox"
+              name="is_adjoint"
+              defaultChecked={player?.is_adjoint ?? false}
+              className="h-4 w-4"
+            />
+            Adjoint
+          </label>
+        </div>
+      </div>
+    </>
+  );
+}
+
+async function MatchSheetPage({ matchId, backHref }) {
+  const supabase = createClient();
+
+  const { data: match } = await supabase
+    .from("basketball_matches")
+    .select("*")
+    .eq("id", matchId)
+    .maybeSingle();
+
+  if (!match) {
+    return (
+      <div className="space-y-4">
+        <Link href={backHref} className="inline-block text-sm font-semibold text-navy hover:text-cardinal">
+          ← Retour au calendrier
+        </Link>
+        <div className="rounded-card bg-white p-6 text-center text-sm text-ink/50 shadow-sm">
+          Ce match n'existe plus.
+        </div>
+      </div>
+    );
+  }
+
+  // Lien vers l'écran Statistiques, en mode "focus sur ce match" — repart des
+  // mêmes paramètres que le retour au calendrier (participant, saison,
+  // phase...) mais bascule sur l'onglet stats et ajoute stats_match.
+  const backParams = new URLSearchParams(backHref.split("?")[1] || "");
+  const statsParams = new URLSearchParams(backParams);
+  statsParams.set("tab", "stats");
+  statsParams.set("stats_match", match.id);
+  statsParams.delete("journee");
+  statsParams.delete("journees");
+  const statsHref = `/basket?${statsParams.toString()}`;
+
+  const [{ data: phase }, { data: ps }, { data: allPeople }, { data: statsRows }, { data: periodStatsRows }, teamStatsPreview] =
+    await Promise.all([
+      match.phase_id
+        ? supabase
+            .from("basketball_phases")
+            .select("phase_name, competition_name, poule_label, our_team_name")
+            .eq("id", match.phase_id)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+      supabase
+        .from("participant_sports")
+        .select("club, participants(first_name)")
+        .eq("id", match.participant_sport_id)
+        .maybeSingle(),
+      supabase
+        .from("basketball_players")
+        .select("*")
+        .eq("participant_sport_id", match.participant_sport_id)
+        .order("name", { ascending: true }),
+      supabase.from("basketball_match_stats").select("*").eq("match_id", matchId),
+      supabase
+        .from("basketball_match_period_stats")
+        .select("*")
+        .eq("match_id", matchId)
+        .order("period", { ascending: true }),
+      checkTeamStatsAvailability(matchId),
+    ]);
+
+  const players = (allPeople ?? []).filter((p) => p.role !== "entraineur");
+  const staff = (allPeople ?? []).filter((p) => p.role === "entraineur");
+  const defaultClub = phase?.our_team_name || ps?.club || "";
+  const participantFirstName = ps?.participants?.first_name || "";
+
+  const statsByPlayer = new Map((statsRows ?? []).map((s) => [s.player_id, s]));
+  // Une joueuse est sur la feuille par défaut (on_sheet absent ou true) —
+  // seul un retrait explicite (absence ponctuelle) l'en exclut, sans jamais
+  // la supprimer de l'effectif ni de ses stats sur les autres matchs.
+  const sheetPlayers = players.filter((p) => statsByPlayer.get(p.id)?.on_sheet !== false);
+  const excludedPlayers = players.filter((p) => statsByPlayer.get(p.id)?.on_sheet === false);
+  const isPlayed = match.status === "joue";
+  const usIsLeft = match.us_is_team1 === true;
+  const usIsRight = match.us_is_team1 === false;
+  const leftName = match.team1_name || "EXEMPT";
+  const rightName = match.team2_name || "EXEMPT";
+  const report = match.match_report;
+  const isManual = match.source === "manuel";
+  const { count: periodCount, prefix: periodPrefix } = periodsForCategory(phase?.competition_name);
+  const periodLabel = periodPrefix === "P" ? "Période" : "Quart-temps";
+
+  const pointsFor = (s) => (s ? s.two_made * 2 + s.three_made * 3 + s.ft_made : 0);
+  const totalTeamPoints = sheetPlayers.reduce((sum, p) => sum + pointsFor(statsByPlayer.get(p.id)), 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Link href={backHref} className="inline-block text-sm font-semibold text-navy hover:text-cardinal">
+          ← Retour au calendrier
+        </Link>
+        <div className="flex items-center gap-2">
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              isManual ? "bg-sand text-ink/60" : "bg-lagoon-light text-navy"
+            }`}
+          >
+            {isManual ? "🤝 Manuel" : "🔄 Synchronisé"}
+          </span>
+          <form action={resetMatchSheet}>
+            <input type="hidden" name="match_id" value={match.id} />
+            <ConfirmSubmitButton
+              confirmMessage="Réinitialiser cette feuille de match ? Quarts-temps, notes et statistiques par joueuse seront effacés (l'effectif de l'équipe n'est pas touché). Cette action est irréversible."
+              className="text-xs font-semibold text-ink/40 hover:text-cardinal"
+            >
+              Réinitialiser la feuille
+            </ConfirmSubmitButton>
+          </form>
+        </div>
+      </div>
+
+      {!isManual && (
+        <p className="text-xs text-ink/40">
+          Ce match est synchronisé depuis la FFBB : la date, le lieu et le score officiel seront
+          remis à jour à chaque synchro. Seules la feuille de match et les statistiques par joueuse,
+          saisies ici, ne sont jamais écrasées.
+        </p>
+      )}
+
+      <div className="rounded-card bg-white p-5 shadow-sm">
+        <p className="text-xs font-semibold uppercase tracking-wide text-ink/40">
+          {phase?.competition_name || phase?.phase_name || "Match"}
+          {phase?.poule_label ? ` · ${phase.poule_label}` : ""}
+        </p>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <h1 className="font-display text-xl uppercase tracking-tight text-navy">
+            <span className={usIsLeft ? "font-bold" : ""}>{leftName}</span>
+            <span className="mx-2 text-ink/30">vs</span>
+            <span className={usIsRight ? "font-bold" : ""}>{rightName}</span>
+          </h1>
+          <div className="text-right">
+            <p className="text-sm text-ink/50">{match.location || "Lieu inconnu"}</p>
+            <div className="mt-1">
+              <ImportTeamStatsButton matchId={match.id} preview={teamStatsPreview} />
+            </div>
+          </div>
+        </div>
+        <p className="mt-1 text-sm text-ink/50">
+          {match.match_date ? formatDateTime(match.match_date) : "Date à confirmer"}
+        </p>
+        {!isPlayed && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs font-semibold text-lagoon">Modifier la date et l'heure</summary>
+            <form action={updateMatchDate} className="mt-2 flex flex-wrap items-center gap-2">
+              <input type="hidden" name="match_id" value={match.id} />
+              <input
+                type="datetime-local"
+                name="match_date"
+                required
+                defaultValue={match.match_date ? new Date(match.match_date).toISOString().slice(0, 16) : ""}
+                className="rounded-lg border border-ink/15 px-2 py-1 text-sm"
+              />
+              <SyncButton
+                pendingLabel="Enregistrement..."
+                className="rounded-full bg-lagoon px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+              >
+                Enregistrer
+              </SyncButton>
+            </form>
+            <p className="mt-1 text-xs text-ink/40">
+              Heure de Paris. {isManual ? "" : "Une synchro FFBB réussie remettra la date officielle de ce match. "}
+              Mets 00:00 si l'heure n'est pas encore connue.
+            </p>
+          </details>
+        )}
+      </div>
+
+      <div className="rounded-card bg-white p-5 shadow-sm">
+        <p className="font-display text-sm uppercase tracking-tight text-navy">Score</p>
+
+        {!isManual && (
+          <p className="mt-1 text-xs text-ink/40">
+            Score officiel FFBB — {isPlayed ? `${match.team1_score ?? "–"} - ${match.team2_score ?? "–"}` : "match non joué"}.
+            Les {periodLabel.toLowerCase()}s ci-dessous sont juste indicatifs, ils ne changent pas le score officiel.
+          </p>
+        )}
+
+        <form action={saveMatchSheet} className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <input type="hidden" name="match_id" value={match.id} />
+          {Array.from({ length: periodCount }, (_, i) => i + 1).map((q) => (
+            <div key={q} className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase text-ink/40">
+                {periodLabel} {q}
+              </span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min="0"
+                  name={`q${q}_us`}
+                  defaultValue={report?.quarters?.[q - 1]?.us ?? ""}
+                  placeholder={usIsLeft ? leftName : rightName}
+                  className="w-16 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+                />
+                <span className="text-ink/30">-</span>
+                <input
+                  type="number"
+                  min="0"
+                  name={`q${q}_them`}
+                  defaultValue={report?.quarters?.[q - 1]?.them ?? ""}
+                  placeholder="Adv."
+                  className="w-16 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+                />
+              </div>
+            </div>
+          ))}
+
+          {isManual && (
+            <label className="col-span-2 flex items-center gap-2 text-sm text-ink/60 sm:col-span-4">
+              <input type="checkbox" name="played" defaultChecked={isPlayed} className="h-4 w-4" />
+              Match joué (le score total est recalculé depuis les quarts-temps ci-dessus)
+            </label>
+          )}
+
+          <textarea
+            name="notes"
+            defaultValue={report?.notes ?? ""}
+            placeholder="Notes (arbitre, ambiance, faits marquants...)"
+            rows={2}
+            className="col-span-2 rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-4"
+          />
+
+          <button
+            type="submit"
+            className="col-span-2 rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light sm:col-span-1 sm:w-fit"
+          >
+            Enregistrer
+          </button>
+        </form>
+      </div>
+
+      <div className="rounded-card bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <p className="font-display text-sm uppercase tracking-tight text-navy">Feuille de match — joueuses</p>
+            <Link
+              href={statsHref}
+              title="Voir les statistiques de ce match"
+              aria-label="Voir les statistiques de ce match"
+              className="text-navy/50 hover:text-cardinal"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="12" width="4" height="9" rx="1" fill="currentColor" />
+                <rect x="10" y="7" width="4" height="14" rx="1" fill="currentColor" />
+                <rect x="17" y="3" width="4" height="18" rx="1" fill="currentColor" />
+              </svg>
+            </Link>
+          </div>
+          <p className="text-xs text-ink/40">Total calculé : {totalTeamPoints} pts</p>
+        </div>
+
+        {players.length === 0 ? (
+          <p className="mt-3 text-sm text-ink/50">Aucune joueuse dans l'effectif — ajoute-en une ci-dessous.</p>
+        ) : (
+          <form action={saveMatchStats} className="mt-3">
+            <input type="hidden" name="match_id" value={match.id} />
+            <MatchStatsTable
+              periodCount={periodCount}
+              periodPrefix={periodPrefix}
+              players={sheetPlayers.map((p) => ({
+                id: p.id,
+                firstName: displayFirstName(p),
+                jerseyNumber: p.jersey_number ?? null,
+              }))}
+              totals={sheetPlayers.map((p) => {
+                const s = statsByPlayer.get(p.id);
+                return {
+                  playerId: p.id,
+                  jerseyNumberMatch: s?.jersey_number_match ?? null,
+                  isStartingFive: s?.is_starting_five ?? false,
+                  minutesPlayed: s?.minutes_played ?? null,
+                  ftMade: s?.ft_made ?? 0,
+                  ftAtt: s?.ft_att ?? 0,
+                  twoMade: s?.two_made ?? 0,
+                  twoAtt: s?.two_att ?? 0,
+                  threeMade: s?.three_made ?? 0,
+                  threeAtt: s?.three_att ?? 0,
+                  rebOff: s?.reb_off ?? 0,
+                  rebDef: s?.reb_def ?? 0,
+                  assists: s?.assists ?? 0,
+                  fouls: s?.fouls ?? 0,
+                  foulsDrawn: s?.fouls_drawn ?? 0,
+                };
+              })}
+              periodStats={(periodStatsRows ?? []).map((r) => ({
+                playerId: r.player_id,
+                period: r.period,
+                pts2Made: r.pts2_made ?? 0,
+                pts2Att: r.pts2_att ?? 0,
+                pts3Made: r.pts3_made ?? 0,
+                pts3Att: r.pts3_att ?? 0,
+                ftMade: r.ft_made ?? 0,
+                ftAtt: r.ft_att ?? 0,
+                rebOff: r.reb_off ?? 0,
+                rebDef: r.reb_def ?? 0,
+                assists: r.assists ?? 0,
+                fouls: r.fouls ?? 0,
+                foulsDrawn: r.fouls_drawn ?? 0,
+                playingTimeSeconds: r.playing_time_seconds ?? 0,
+              }))}
+            />
+            <button
+              type="submit"
+              className="mt-3 rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
+            >
+              Enregistrer les statistiques
+            </button>
+          </form>
+        )}
+
+        {/* Un <form> par joueuse retirable, en dehors du <form> principal des
+            statistiques (les formulaires HTML ne s'imbriquent pas) — reliés
+            à leur bouton respectif via l'attribut form=. */}
+        {sheetPlayers.map((p) => (
+          <form key={p.id} id={`remove-${p.id}`} action={togglePlayerOnSheet} className="hidden">
+            <input type="hidden" name="match_id" value={match.id} />
+            <input type="hidden" name="player_id" value={p.id} />
+            <input type="hidden" name="on_sheet" value="false" />
+          </form>
+        ))}
+
+        {excludedPlayers.length > 0 && (
+          <div className="mb-3 mt-3 flex flex-wrap items-center gap-2 border-t border-ink/5 pt-3">
+            <p className="text-xs text-ink/40">Absentes pour ce match :</p>
+            {excludedPlayers.map((p) => (
+              <form
+                key={p.id}
+                action={togglePlayerOnSheet}
+                className="flex items-center gap-1 rounded-full bg-sand px-2 py-1 text-xs"
+              >
+                <input type="hidden" name="match_id" value={match.id} />
+                <input type="hidden" name="player_id" value={p.id} />
+                <input type="hidden" name="on_sheet" value="true" />
+                <span>{p.name}</span>
+                <button type="submit" className="font-semibold text-ink/30 hover:text-navy" title="Réintégrer à la feuille">
+                  +
+                </button>
+              </form>
+            ))}
+          </div>
+        )}
+
+        {staff.length > 0 && (
+          <div className="mt-4 border-t border-ink/5 pt-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink/40">Encadrement</p>
+            <ul className="space-y-1 text-sm text-ink/70">
+              {staff.map((p) => (
+                <li key={p.id}>
+                  {p.name}
+                  {p.diplome ? ` — ${p.diplome}` : ""}
+                  {p.is_adjoint ? " (adjoint)" : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="mt-4 border-t border-ink/5 pt-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink/40">Effectif</p>
+            <p className="text-[11px] text-ink/40">Clique sur une joueuse pour la modifier ou la supprimer.</p>
+          </div>
+
+          {/* Chaque pill ouvre sa propre fiche (mêmes champs que "Nouvelle
+              joueuse", pré-remplis) — plus de suppression en un clic direct
+              sur la pill : ça évite l'effacement accidentel d'une joueuse
+              (et de toutes ses stats, sur tous les matchs) signalé
+              précédemment. La suppression reste possible, mais seulement
+              depuis cette fiche, avec confirmation. */}
+          <div className="flex flex-wrap gap-2">
+            {(allPeople ?? []).map((p) => (
+              <details key={p.id}>
+                <summary className="inline-block cursor-pointer list-none rounded-full bg-sand px-3 py-1 text-xs font-semibold text-ink hover:bg-sand-dark">
+                  {p.name}
+                  {p.role === "entraineur" ? " (entraîneur)" : ""}
+                </summary>
+
+                <div className="mt-2 space-y-3 rounded-lg bg-sand p-3">
+                  <form action={updatePlayer} className="space-y-2">
+                    <input type="hidden" name="player_id" value={p.id} />
+                    <PlayerFormFields defaultClub={defaultClub} participantFirstName={participantFirstName} player={p} />
+                    <button
+                      type="submit"
+                      className="rounded-full bg-navy px-4 py-1.5 text-sm font-semibold text-white hover:bg-navy-light"
+                    >
+                      Enregistrer
+                    </button>
+                  </form>
+
+                  <form action={deletePlayer} className="border-t border-ink/10 pt-2">
+                    <input type="hidden" name="player_id" value={p.id} />
+                    <ConfirmSubmitButton
+                      confirmMessage={`Supprimer « ${p.name} » de l'effectif ? Ses statistiques sur TOUS les matchs seront perdues définitivement. Cette action est irréversible.`}
+                      className="text-xs font-semibold text-cardinal hover:text-cardinal-dark"
+                    >
+                      Supprimer de l'effectif
+                    </ConfirmSubmitButton>
+                  </form>
+                </div>
+              </details>
+            ))}
+          </div>
+
+          <details className="mt-3">
+            <summary className="inline-block cursor-pointer list-none rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark">
+              + Nouvelle joueuse
+            </summary>
+            <form action={addPlayer} className="mt-3 space-y-2 rounded-lg bg-sand p-3">
+              <input type="hidden" name="participant_sport_id" value={match.participant_sport_id} />
+              <PlayerFormFields defaultClub={defaultClub} participantFirstName={participantFirstName} />
+              <button
+                type="submit"
+                className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark"
+              >
+                Ajouter à l'effectif
+              </button>
+            </form>
+          </details>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default async function BasketPage({ searchParams }) {
+  const supabase = createClient();
+
+  // Statut du dernier import de clubs du comité (indépendant de la
+  // participante/saison sélectionnée — affiché près du titre).
+  const { data: comiteImport } = await supabase
+    .from("basketball_comite_imports")
+    .select("*")
+    .order("last_sync_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // La feuille de match remplace tout le contenu de la page tant qu'elle est
+  // ouverte — on garde tous les autres paramètres d'URL (participant, saison,
+  // phase, journée...) pour revenir exactement là d'où on vient.
+  if (searchParams?.feuille) {
+    const backParams = new URLSearchParams();
+    Object.entries(searchParams).forEach(([key, value]) => {
+      if (key !== "feuille" && typeof value === "string") backParams.set(key, value);
+    });
+    return <MatchSheetPage matchId={searchParams.feuille} backHref={`/basket?${backParams.toString()}`} />;
+  }
+
+  const currentSeason = computeCurrentSeasonLabel();
+
+  const { data: sport } = await supabase
+    .from("sports")
+    .select("id, name")
+    .eq("slug", "basket")
+    .maybeSingle();
+
+  const { data: assignments } = sport
+    ? await supabase
+        .from("participant_sports")
+        .select("*, participants(id, first_name)")
+        .eq("sport_id", sport.id)
+    : { data: [] };
+
+  const selectedPsId = searchParams?.ps || assignments?.[0]?.id || null;
+  const selectedPs = (assignments ?? []).find((a) => a.id === selectedPsId) ?? null;
+  const tab = ["calendrier", "classement", "stats"].includes(searchParams?.tab)
+    ? searchParams.tab
+    : "calendrier";
+  const scope = ["us", "poule"].includes(searchParams?.scope) ? searchParams.scope : "us";
+  const journeesMode = searchParams?.journees === "toutes" ? "toutes" : "une";
+
+  // Saisons disponibles pour ce participant — toujours au moins la saison en
+  // cours, même si rien n'a encore été synchronisé.
+  let seasonOptions = [currentSeason];
+  if (selectedPsId) {
+    const { data: seasonRows } = await supabase
+      .from("basketball_matches")
+      .select("season")
+      .eq("participant_sport_id", selectedPsId);
+    const set = new Set([currentSeason, ...(seasonRows ?? []).map((r) => r.season).filter(Boolean)]);
+    seasonOptions = [...set].sort().reverse();
+  }
+  const selectedSeason =
+    searchParams?.season && seasonOptions.includes(searchParams.season) ? searchParams.season : currentSeason;
+  const isCurrentSeason = selectedSeason === currentSeason;
+
+  // Phases de la saison sélectionnée (ex. Saison régulière / Phase 2 /
+  // Phase 3) — chacune a son propre ID FFBB et sa propre poule.
+  let phases = [];
+  if (selectedPsId) {
+    const { data: phaseRows } = await supabase
+      .from("basketball_phases")
+      .select("*")
+      .eq("participant_sport_id", selectedPsId)
+      .eq("season", selectedSeason)
+      .order("position", { ascending: true });
+    phases = phaseRows ?? [];
+  }
+  const selectedPhase =
+    phases.find((p) => p.id === searchParams?.phase) ?? phases[0] ?? null;
+
+  // Icône affichée devant chaque match du calendrier : le badge du niveau de
+  // compétition récupéré à la synchro pour une phase FFBB, un simple
+  // pictogramme pour une phase de matchs amicaux (pas d'asset FFBB associé).
+  const phaseTypeIcon =
+    selectedPhase?.phase_type === "amical"
+      ? "🤝"
+      : selectedPhase?.competition_logo_asset
+        ? ffbbAssetUrl(selectedPhase.competition_logo_asset, { width: 64 })
+        : null;
+
+  let matches = [];
+  let classement = [];
+  if (selectedPhase) {
+    const { data: matchRows } = await supabase
+      .from("basketball_matches")
+      .select("*")
+      .eq("phase_id", selectedPhase.id)
+      .order("match_date", { ascending: true });
+    matches = matchRows ?? [];
+
+    // Matchs ayant au moins un replay (table absente ou vide : aucune pastille, sans erreur).
+    const { data: replayRows } = await supabase
+      .from("replay_groups")
+      .select("match_id")
+      .not("match_id", "is", null);
+    const replayMatchIds = new Set((replayRows ?? []).map((r) => r.match_id));
+    matches = matches.map((m) => ({ ...m, has_replay: replayMatchIds.has(m.id) }));
+
+    const { data: classementRows } = await supabase
+      .from("basketball_classements")
+      .select("*")
+      .eq("phase_id", selectedPhase.id);
+    classement = classementRows ?? [];
+  }
+
+  // Les stats/le bilan d'équipe ne concernent toujours QUE notre équipe,
+  // indépendamment du bouton "Sathonay Camp / Toute la poule" (qui ne filtre
+  // que le calendrier) — et, contrairement au calendrier/classement, portent
+  // sur TOUTES les phases de la saison par défaut (le calendrier/classement,
+  // eux, restent scopés à la phase choisie dans PhaseBar).
+  const allPhaseIds = phases.map((p) => p.id);
+  let seasonMatches = [];
+  if (allPhaseIds.length > 0) {
+    const { data: seasonMatchRows } = await supabase
+      .from("basketball_matches")
+      .select("*")
+      .in("phase_id", allPhaseIds)
+      .order("match_date", { ascending: true });
+    seasonMatches = seasonMatchRows ?? [];
+  }
+  const rawStatsPhase = searchParams?.stats_phase;
+  const statsPhaseParam =
+    rawStatsPhase == null ? [] : Array.isArray(rawStatsPhase) ? rawStatsPhase : [rawStatsPhase];
+  // stats_filtered=1 distingue "l'utilisateur a soumis le formulaire, quitte
+  // à tout décocher" du premier affichage (pas encore de choix) — dans ce
+  // second cas seulement, toutes les phases comptent par défaut.
+  const selectedStatsPhaseIds = searchParams?.stats_filtered === "1" ? statsPhaseParam : allPhaseIds;
+  const statsMatches = seasonMatches.filter((m) => selectedStatsPhaseIds.includes(m.phase_id));
+  // Ouvert depuis l'icône "Statistiques" d'une feuille de match précise : on
+  // ignore alors le filtre par phases et on ne garde QUE ce match — le
+  // bandeau habituel est remplacé par un résumé de ce match (voir plus bas).
+  const statsMatchId = searchParams?.stats_match || null;
+  const statsMatchFocus = statsMatchId ? (seasonMatches.find((m) => m.id === statsMatchId) ?? null) : null;
+  const playedMatches = statsMatchFocus
+    ? [statsMatchFocus].filter((m) => m.us_is_team1 !== null && m.status === "joue")
+    : statsMatches.filter((m) => m.us_is_team1 !== null && m.status === "joue");
+  const scopedMatches = scope === "poule" ? matches : matches.filter((m) => m.us_is_team1 !== null);
+
+  // Table des clubs (logos/gymnase/adresse) — partagée entre toutes les
+  // équipes et saisons, chargée uniquement pour l'onglet Calendrier.
+  let clubLogos = new Map();
+  if (tab === "calendrier") {
+    const { data: clubRows } = await supabase.from("basketball_clubs").select("club_key, display_name, logo_asset, logo_url");
+    clubLogos = new Map((clubRows ?? []).map((c) => [c.club_key, c]));
+  }
+
+  // Effectif + statistiques par joueuse — uniquement chargés pour l'onglet
+  // Statistiques (inutile ailleurs), pour la sélection par défaut de la
+  // joueuse dans "Statistiques individuelles" (elle-même en priorité).
+  let statsPlayers = [];
+  let statsRows = [];
+  if (tab === "stats" && selectedPsId) {
+    const { data: playersData } = await supabase
+      .from("basketball_players")
+      .select("*")
+      .eq("participant_sport_id", selectedPsId)
+      .eq("role", "joueur")
+      .order("name", { ascending: true });
+    statsPlayers = playersData ?? [];
+
+    const playedMatchIds = playedMatches.map((m) => m.id);
+    if (playedMatchIds.length > 0) {
+      const { data: statsData } = await supabase
+        .from("basketball_match_stats")
+        .select("*")
+        .in("match_id", playedMatchIds);
+      statsRows = statsData ?? [];
+    }
+  }
+  const selectedPlayerId =
+    (searchParams?.stats_player && statsPlayers.some((p) => p.id === searchParams.stats_player)
+      ? searchParams.stats_player
+      : statsPlayers.find((p) => p.is_self)?.id ?? statsPlayers[0]?.id) ?? null;
+  const statsPhaseQS = selectedStatsPhaseIds.map((id) => `stats_phase=${id}`).join("&");
+  const statsQueryBase = `/basket?ps=${selectedPsId}&tab=stats&scope=${scope}&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}&stats_filtered=1&${statsPhaseQS}`;
+
+  const journeeOptions = buildJourneeOptions(scopedMatches);
+  const selectedJournee = searchParams?.journee || defaultJournee(scopedMatches, journeeOptions);
+  // Repris sur tous les liens de nav (onglets, bascule Sathonay/poule,
+  // pastilles de phase) pour que changer d'onglet ou de vue ne fasse jamais
+  // revenir sur "Une journée" si "Toutes" était sélectionné.
+  const journeeQS = `&journees=${journeesMode}${journeesMode === "une" && selectedJournee ? `&journee=${encodeURIComponent(selectedJournee)}` : ""}`;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-3xl uppercase tracking-tight text-navy">Basket</h1>
+          <p className="mt-1 text-ink/60">Calendrier, classement et bilan, synchronisables depuis la FFBB.</p>
+        </div>
+
+        {/* Import des clubs d'un comité entier (organismes + équipes) — pas
+            lié à une participante ni une saison, donc affiché ici plutôt
+            que dans le bandeau saison. */}
+        <details className="rounded-card bg-white p-3 shadow-sm">
+          <summary className="cursor-pointer text-xs font-semibold text-ink/50 hover:text-navy">
+            Import clubs du comité
+          </summary>
+          <form action={syncComiteClubs} className="mt-2 flex flex-wrap items-end gap-2">
+            <label className="text-xs font-semibold text-ink/50">
+              Code comité
+              <input
+                name="comite_code"
+                defaultValue={comiteImport?.comite_code ?? "0069"}
+                placeholder="ex. 0069"
+                className="mt-1 w-24 rounded-lg border border-ink/15 px-2 py-1 text-sm"
+              />
+            </label>
+            <SyncButton
+              pendingLabel="Import..."
+              className="rounded-full bg-lagoon px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+            >
+              Importer
+            </SyncButton>
+          </form>
+          {comiteImport?.last_sync_at && (
+            <p className={`mt-2 max-w-xs text-xs ${comiteImport.last_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
+              {formatDateTime(comiteImport.last_sync_at)} —{" "}
+              {comiteImport.last_sync_error ?? comiteImport.last_sync_summary ?? "OK"}
+            </p>
+          )}
+        </details>
+      </div>
+
       <p className="rounded-card bg-lagoon-light p-3 text-xs text-navy">
         « Mettre à jour les calendriers &amp; résultats » lit les données FFBB déposées par le programme ci-dessous
         et enregistre d'un coup, pour la participante choisie, toutes les phases, tous les matchs et tous les
