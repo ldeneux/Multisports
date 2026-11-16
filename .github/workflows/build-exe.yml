@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "scripts/push_ffbb.py"
+#      - "scripts/push_ffbb.py"
       - "scripts/push_ffbb_club.py"
 
 jobs:
