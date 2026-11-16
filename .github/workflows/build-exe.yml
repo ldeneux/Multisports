@@ -10,7 +10,6 @@ on:
   workflow_dispatch:
   push:
     paths:
-#      - "scripts/push_ffbb.py"
       - "scripts/push_ffbb_club.py"
 
 jobs:
@@ -26,8 +25,6 @@ jobs:
       - name: Installer les dépendances
         run: pip install pyinstaller requests
 
- #     - name: Construire MiseAJourFFBB.exe
- #       run: pyinstaller --onefile --clean --name MiseAJourFFBB scripts/push_ffbb.py
 
       - name: Construire MiseAJourFFBB_Club.exe
         run: pyinstaller --onefile --clean --name MiseAJourFFBB_Club scripts/push_ffbb_club.py
@@ -36,6 +33,5 @@ jobs:
         with:
           name: MiseAJourFFBB-windows
           path: |
-#            dist/MiseAJourFFBB.exe
             dist/MiseAJourFFBB_Club.exe
           if-no-files-found: error
