@@ -340,7 +340,10 @@ export async function syncClubCompetitions(formData) {
           }))
           .sort((a, b) => a.distance - b.distance);
 
-        if (positions.length === 0 || splitEls.length === 0) return;
+        // Un relais sans temps intermédiaires (cas de certaines compétitions, ex. relais mixte en séries) doit quand même
+        // être importé : on garde l'équipe, le temps d'équipe, les points et les relayeurs, avec des temps de relais vides.
+        // Avant, l'absence de temps intermédiaires faisait ignorer tout le relais.
+        if (positions.length === 0) return;
 
         const raceId = $el.attr("raceid");
         const relayInfo = resolveRace(raceId);

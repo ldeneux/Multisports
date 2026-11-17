@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear, ffnLiveUrl } from "@/lib/utils";
+import { formatDate, formatDateTime, msToSwimTime, computeCurrentSeasonYear, ffnLiveUrl, ffnCompetitionResultsUrl, ffnCompetitionIdFromLink } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
+import ConfirmDialogButton from "@/components/ConfirmDialogButton";
 import PlannedYearSelect from "@/components/PlannedYearSelect";
 import UrlSelect from "@/components/UrlSelect";
 import MedalIcon from "@/components/MedalIcon";
@@ -88,6 +89,27 @@ function SyncCard({ ps }) {
 // propre <form>, associé à ses <input> via l'attribut form="..." (les
 // <input> vivent dans des <td>, donc en dehors de la balise <form> elle-même
 // — c'est la façon standard de faire un formulaire par ligne de tableau).
+// Les deux liens d'une compétition FFN, séparés par « / » : le live (liveffn.com) et les résultats (extranat).
+// Sans identifiant de compétition reconnaissable, on garde le lien tel qu'il a été saisi.
+function FfnLinks({ id, fallbackUrl }) {
+  const linkClass = "font-semibold text-lagoon hover:underline";
+  if (id) {
+    return (
+      <span className="whitespace-nowrap">
+        <a href={ffnLiveUrl(id)} target="_blank" rel="noopener noreferrer" className={linkClass}>LiveFFN</a>
+        <span className="text-ink/40"> / </span>
+        <a href={ffnCompetitionResultsUrl(id)} target="_blank" rel="noopener noreferrer" className={linkClass}>FFN</a>
+      </span>
+    );
+  }
+  if (/^https?:\/\//i.test(fallbackUrl || "")) {
+    return (
+      <a href={fallbackUrl} target="_blank" rel="noopener noreferrer" className={linkClass}>Ouvrir</a>
+    );
+  }
+  return null;
+}
+
 function PlannedCompetitionRow({ row }) {
   const formId = `planned-${row.id}`;
   return (
@@ -127,6 +149,27 @@ function PlannedCompetitionRow({ row }) {
       <td className="px-2 py-1.5">
         <input
           form={formId}
+          name="title"
+          defaultValue={row.title ?? ""}
+          placeholder="Intitulé de la compétition"
+          className="w-56 rounded-lg border border-ink/15 px-2 py-1"
+        />
+      </td>
+      <td className="px-2 py-1.5">
+        <input
+          form={formId}
+          name="ffn_link"
+          defaultValue={row.ffn_link ?? ""}
+          placeholder="Lien FFN"
+          className="w-44 rounded-lg border border-ink/15 px-2 py-1"
+        />
+        <div className="mt-0.5 text-[11px]">
+          <FfnLinks id={ffnCompetitionIdFromLink(row.ffn_link)} fallbackUrl={row.ffn_link} />
+        </div>
+      </td>
+      <td className="px-2 py-1.5">
+        <input
+          form={formId}
           name="location"
           defaultValue={row.location ?? ""}
           placeholder="Lieu"
@@ -157,27 +200,9 @@ function PlannedCompetitionRow({ row }) {
       <td className="px-2 py-1.5">
         <input
           form={formId}
-          name="title"
-          defaultValue={row.title ?? ""}
-          placeholder="Intitulé de la compétition"
-          className="w-56 rounded-lg border border-ink/15 px-2 py-1"
-        />
-      </td>
-      <td className="px-2 py-1.5">
-        <input
-          form={formId}
           name="categories"
           defaultValue={row.categories ?? ""}
           placeholder="Catégories"
-          className="w-32 rounded-lg border border-ink/15 px-2 py-1"
-        />
-      </td>
-      <td className="px-2 py-1.5">
-        <input
-          form={formId}
-          name="ffn_link"
-          defaultValue={row.ffn_link ?? ""}
-          placeholder="Lien FFN"
           className="w-32 rounded-lg border border-ink/15 px-2 py-1"
         />
       </td>
@@ -192,12 +217,17 @@ function PlannedCompetitionRow({ row }) {
           </button>
           <form action={deletePlannedCompetition}>
             <input type="hidden" name="planned_competition_id" value={row.id} />
-            <ConfirmSubmitButton
-              confirmMessage="Supprimer cette ligne du calendrier prévisionnel ?"
+            <ConfirmDialogButton
+              title="Supprimer cette compétition du calendrier ?"
+              name={row.title || row.location || "Compétition sans intitulé"}
+              details={[
+                row.start_date ? formatDate(row.start_date) : null,
+                row.title && row.location ? row.location : null,
+              ]}
               className="text-xs font-semibold text-ink/30 hover:text-cardinal"
             >
               ✕
-            </ConfirmSubmitButton>
+            </ConfirmDialogButton>
           </form>
         </div>
       </td>
@@ -222,6 +252,12 @@ function NewPlannedCompetitionRow({ ps }) {
         <input type="number" min="1" form={formId} name="nb_days" defaultValue="1" className="w-14 rounded-lg border border-ink/15 px-2 py-1" />
       </td>
       <td className="px-2 py-1.5">
+        <input form={formId} name="title" placeholder="Intitulé de la compétition" className="w-56 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
+        <input form={formId} name="ffn_link" placeholder="Lien FFN" className="w-44 rounded-lg border border-ink/15 px-2 py-1" />
+      </td>
+      <td className="px-2 py-1.5">
         <input form={formId} name="location" placeholder="Lieu" className="w-32 rounded-lg border border-ink/15 px-2 py-1" />
       </td>
       <td className="px-2 py-1.5">
@@ -235,13 +271,7 @@ function NewPlannedCompetitionRow({ ps }) {
         </select>
       </td>
       <td className="px-2 py-1.5">
-        <input form={formId} name="title" placeholder="Intitulé de la compétition" className="w-56 rounded-lg border border-ink/15 px-2 py-1" />
-      </td>
-      <td className="px-2 py-1.5">
         <input form={formId} name="categories" placeholder="Catégories" className="w-32 rounded-lg border border-ink/15 px-2 py-1" />
-      </td>
-      <td className="px-2 py-1.5">
-        <input form={formId} name="ffn_link" placeholder="Lien FFN" className="w-32 rounded-lg border border-ink/15 px-2 py-1" />
       </td>
       <td className="whitespace-nowrap px-2 py-1.5">
         <button
@@ -259,27 +289,22 @@ function NewPlannedCompetitionRow({ ps }) {
 // Compétition passée issue de la FFN (swim_results / relais) : lecture seule,
 // mêmes colonnes que le calendrier saisi à la main pour que tout s'aligne.
 function PastCompetitionRow({ comp }) {
-  const link = ffnLiveUrl(comp.ffn_competition_id) || null;
   return (
     <tr className="border-b border-ink/5 bg-sand/40 text-ink/70 last:border-0">
       <td className="whitespace-nowrap px-2 py-1.5">{formatDate(comp.competition_date)}</td>
       <td className="px-2 py-1.5 text-ink/30">—</td>
       <td className="px-2 py-1.5 text-ink/30">—</td>
-      <td className="px-2 py-1.5">{comp.city ?? ""}</td>
-      <td className="px-2 py-1.5"></td>
-      <td className="whitespace-nowrap px-2 py-1.5">{comp.pool_length ? `${comp.pool_length}m` : ""}</td>
       <td className="px-2 py-1.5">
         <span className="font-semibold text-ink/80">{comp.name}</span>{" "}
         <span className="rounded-full bg-lagoon-light px-1.5 py-0.5 text-[10px] font-semibold text-lagoon">FFN</span>
       </td>
-      <td className="px-2 py-1.5">{comp.level ?? ""}</td>
       <td className="px-2 py-1.5">
-        {link && (
-          <a href={link} target="_blank" rel="noopener noreferrer" className="font-semibold text-lagoon hover:underline">
-            Live
-          </a>
-        )}
+        <FfnLinks id={comp.ffn_competition_id} />
       </td>
+      <td className="px-2 py-1.5">{comp.city ?? ""}</td>
+      <td className="px-2 py-1.5"></td>
+      <td className="whitespace-nowrap px-2 py-1.5">{comp.pool_length ? `${comp.pool_length}m` : ""}</td>
+      <td className="px-2 py-1.5">{comp.level ?? ""}</td>
       <td className="px-2 py-1.5"></td>
     </tr>
   );
@@ -315,12 +340,12 @@ function PlannedCompetitionsCard({ ps, plannedCompetitions, pastCompetitions, pl
               <th className="px-2 pb-2 pt-3">Date de début</th>
               <th className="px-2 pb-2 pt-3">Heure</th>
               <th className="px-2 pb-2 pt-3">Nb jours</th>
+              <th className="px-2 pb-2 pt-3">Intitulé</th>
+              <th className="px-2 pb-2 pt-3">Lien FFN</th>
               <th className="px-2 pb-2 pt-3">Lieu</th>
               <th className="px-2 pb-2 pt-3">Commentaire</th>
               <th className="px-2 pb-2 pt-3">Bassin</th>
-              <th className="px-2 pb-2 pt-3">Intitulé</th>
               <th className="px-2 pb-2 pt-3">Catégories</th>
-              <th className="px-2 pb-2 pt-3">Lien FFN</th>
               <th className="px-2 pb-2 pt-3"></th>
             </tr>
           </thead>
