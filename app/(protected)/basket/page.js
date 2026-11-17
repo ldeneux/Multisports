@@ -2176,7 +2176,7 @@ export default async function BasketPage({ searchParams }) {
             >
               MiseAJourFFBB_ClubsARA.exe
             </a>{" "}
-            (une dizaine de minutes : il lit tous les clubs des 12 comités d'Auvergne-Rhône-Alpes et leurs équipes).
+            (il cherche les clubs des 12 comités d'Auvergne-Rhône-Alpes numéro par numéro et lit leurs équipes : comptez 10 à 30 minutes la première fois, bien moins ensuite).
             <br />
             2. Clique ensuite sur le bouton ci-dessous.
           </p>

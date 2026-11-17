@@ -10,9 +10,14 @@ Mêmes identifiants (mémorisés dans ~/.multisports-ffbb/config.json).
   - MiseAJourFFBB_ClubsARA_rapport.csv : une ligne par club (nombre d'équipes, résultat) ;
   - diagnostic/ : copies des pages FFBB lues quand quelque chose n'a pas pu être trouvé.
 Version script : `python push_ffbb_clubs_ara.py` (Python + `pip install requests`).
-Durée : une dizaine de minutes (une page par club, avec une pause entre chaque).
+Principe : le site n'a pas de page « liste des clubs ». Les clubs ont un code ARA + comité (4 chiffres)
++ numéro (3 chiffres), ex. ARA0069106 : le programme essaie donc les numéros 001, 002, 003... de chaque comité
+(une page qui répond 404 = pas de club à ce numéro) et s'arrête quand 120 numéros de suite sont vides.
+Les numéros vides sont mémorisés (clubs_absents.json) : le premier passage dure une demi-heure environ,
+les suivants sont bien plus rapides.
 """
 import csv
+from concurrent.futures import ThreadPoolExecutor
 import getpass
 import json
 import os
@@ -123,6 +128,9 @@ DOSSIER = CONFIG.parent
 PAUSE = 0.4            # secondes entre deux pages (on reste poli avec le site)
 FRAICHEUR_H = 12       # un club déposé il y a moins de 12 h n'est pas relu (reprise après interruption)
 LOT = 25               # nombre de clubs déposés d'un coup
+TRAVAILLEURS = 3       # pages lues en parallèle
+LOT_NUMEROS = 12       # numéros de club essayés à chaque tour
+GAP_MAX = 120          # on s'arrête après 120 numéros de suite sans club
 
 # Comités de la ligue Auvergne-Rhône-Alpes (code FFBB = numéro du département sur 4 chiffres).
 COMITES = {
@@ -174,36 +182,11 @@ def sans_balises(s):
     return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", s))).strip()
 
 
-# ----------------------------------------------------------------------------- 1) la liste des clubs
-def clubs_du_comite(comite):
-    """Codes des clubs listés sur la page « clubs » du comité (pages suivantes si le site en a)."""
-    codes = {}
-    for page in range(1, 41):
-        url = f"{SITE}/ligues/ara/comites/{comite}/clubs" + (f"?page={page}" if page > 1 else "")
-        try:
-            html = telecharger(url)
-        except Exception as e:
-            if page == 1:
-                print(f"    page illisible : {e}")
-            break
-        trouves = [c.upper() for c in RE_CLUB.findall(decoder(html))]
-        if page == 1 and not trouves:
-            sauver_diag(f"liste_clubs_{comite}.html", html)
-            print("    aucun club repéré dans la page (copie enregistrée dans le dossier diagnostic)")
-            break
-        nouveaux = [c for c in dict.fromkeys(trouves) if c not in codes]
-        if not nouveaux:
-            break
-        for c in nouveaux:
-            codes[c] = comite
-    return list(codes)
-
-
-# ----------------------------------------------------------------------------- 2) un club et ses équipes
-def lire_club(code):
+# ----------------------------------------------------------------------------- un club et ses équipes
+def analyser_club(code, html):
+    """Nom, logo et équipes d'un club, lus dans sa page."""
     comite = code[3:7]
     url = f"{SITE}/ligues/ara/comites/{comite}/clubs/{code.lower()}"
-    html = telecharger(url)
     txt = decoder(html)
 
     nom = ""
@@ -235,7 +218,50 @@ def lire_club(code):
             if m:
                 nom_eq = m.group(1)
         equipes.append({"engagement_id": eid, "nom": nom_eq})
-    return {"nom": nom or code, "url": url, "logo_asset": logo, "equipes": equipes}, html
+    return {"nom": nom or code, "url": url, "logo_asset": logo, "equipes": equipes}
+
+
+def lire_club(code):
+    """Une page de club (utilisé pour les tests) : lève une erreur si elle n'existe pas."""
+    html = telecharger(f"{SITE}/ligues/ara/comites/{code[3:7]}/clubs/{code.lower()}")
+    return analyser_club(code, html), html
+
+
+def sonder(code):
+    """Essaie le club de ce code. Renvoie ('club', data, html), ('absent',) ou ('erreur', message)."""
+    url = f"{SITE}/ligues/ara/comites/{code[3:7]}/clubs/{code.lower()}"
+    try:
+        time.sleep(PAUSE)
+        r = requests.get(url, headers=HEADERS_SITE, timeout=30)
+    except Exception as e:
+        return ("erreur", f"connexion : {e}")
+    if r.status_code == 404:
+        return ("absent",)
+    if r.status_code != 200:
+        blocage = " (blocage anti-robot du site, réessaie plus tard)" if r.status_code in (403, 429, 503) else ""
+        return ("erreur", f"HTTP {r.status_code}{blocage}")
+    # Garde-fou : si le site répondait 200 pour un numéro qui n'existe pas, la page ne contiendrait pas le code du club.
+    if code.lower() not in decoder(r.text).lower():
+        return ("sans_code", r.text)
+    try:
+        return ("club", analyser_club(code, r.text), r.text)
+    except Exception as e:
+        return ("erreur", f"lecture : {e}")
+
+
+def lire_absents():
+    try:
+        return set(json.loads((DOSSIER / "clubs_absents.json").read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+
+def sauver_absents(absents):
+    try:
+        DOSSIER.mkdir(parents=True, exist_ok=True)
+        (DOSSIER / "clubs_absents.json").write_text(json.dumps(sorted(absents)), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def deja_deposes(token):
@@ -282,56 +308,81 @@ def main():
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         raise RuntimeError("Renseigne SUPABASE_URL et SUPABASE_ANON_KEY en haut du fichier.")
     etat = {"token": obtenir_token()}
-    print(f"\nRégion Auvergne-Rhône-Alpes - {len(COMITES)} comités")
-
-    # --- 1) Les clubs de chaque comité -------------------------------------------------------
-    print("\n1/2  Liste des clubs de chaque comité ...")
-    codes = []
-    for comite, nom in COMITES.items():
-        trouves = clubs_du_comite(comite)
-        print(f"  {comite} {nom} : {len(trouves)} club(s)")
-        codes.extend(c for c in trouves if c not in codes)
-    print(f"  Total : {len(codes)} club(s).")
-    if not codes:
-        print("  Aucun club trouvé : les pages enregistrées dans le dossier diagnostic permettent de comprendre pourquoi.")
-        return
-
-    # --- 2) Chaque club : nom, logo, équipes ---------------------------------------------------
     recents = deja_deposes(etat["token"])
+    absents = lire_absents()
+    print(f"\nRégion Auvergne-Rhône-Alpes - {len(COMITES)} comités")
     if recents:
-        print(f"\n  {len(recents)} club(s) déjà déposé(s) depuis moins de {FRAICHEUR_H} h : ils ne sont pas relus.")
-    print("\n2/2  Lecture de chaque club et de ses équipes ...")
-    rapport, lot, diag_faite = [], [], False
-    total = len(codes)
+        print(f"{len(recents)} club(s) déjà déposé(s) depuis moins de {FRAICHEUR_H} h : ils ne sont pas relus.")
+    print("Recherche des clubs numéro par numéro (le site n'a pas de liste) ...\n")
+
+    rapport, lot = [], []
+    diag_faite = False
+    erreurs_de_suite = 0
+    abandon = None
+    nouveaux_absents = 0
+
     try:
-        for i, code in enumerate(codes, 1):
-            ligne = {"code": code, "comite": code[3:7], "nom": "", "equipes": "", "statut": ""}
-            if code in recents:
-                ligne["statut"] = "OK (déjà déposé)"
-                rapport.append(ligne)
-                continue
-            try:
-                data, html = lire_club(code)
-                ligne.update(nom=data["nom"], equipes=len(data["equipes"]))
-                if not data["equipes"] and not diag_faite:
-                    sauver_diag(f"page_club_{code}.html", html)   # une seule copie, pour comprendre
-                    diag_faite = True
-                lot.append({"club_code": code, "comite_code": code[3:7], "data": data,
-                            "fetched_at": datetime.now(timezone.utc).isoformat()})
-                ligne["statut"] = "OK"
-            except Exception as e:
-                ligne["statut"] = f"ERREUR : {e}"
-            rapport.append(ligne)
-            if len(lot) >= LOT:
-                deposer(etat, lot)
-                lot = []
-            if i % 10 == 0 or i == total:
-                print(f"  [{i}/{total}] {ligne['nom'] or code} - {ligne['statut']}")
+        for comite, nom_comite in COMITES.items():
+            trouves, derniere = 0, 0
+            n = 1
+            while n <= 999 and n - derniere <= GAP_MAX and not abandon:
+                numeros = list(range(n, min(n + LOT_NUMEROS, 1000)))
+                codes = [f"ARA{comite}{k:03d}" for k in numeros]
+                a_sonder = [c for c in codes if c not in absents and c not in recents]
+                with ThreadPoolExecutor(max_workers=TRAVAILLEURS) as pool:
+                    reponses = dict(zip(a_sonder, pool.map(sonder, a_sonder)))
+                for k, code in zip(numeros, codes):
+                    if code in recents:
+                        trouves += 1
+                        derniere = k
+                        rapport.append({"code": code, "comite": comite, "nom": "", "equipes": "", "statut": "OK (déjà déposé)"})
+                        continue
+                    rep = reponses.get(code)
+                    if rep is not None and rep[0] == "sans_code":   # page 200 sans le code : on ne la retient pas
+                        if not diag_faite:
+                            sauver_diag(f"page_sans_code_{code}.html", rep[1])
+                            diag_faite = True
+                        continue
+                    if rep is None or rep[0] == "absent":      # absent (connu ou nouveau)
+                        if rep is not None:
+                            absents.add(code)
+                            nouveaux_absents += 1
+                        continue
+                    if rep[0] == "erreur":
+                        erreurs_de_suite += 1
+                        rapport.append({"code": code, "comite": comite, "nom": "", "equipes": "", "statut": f"ERREUR : {rep[1]}"})
+                        if erreurs_de_suite >= 10:
+                            abandon = rep[1]
+                        continue
+                    erreurs_de_suite = 0
+                    _, data, html = rep
+                    trouves += 1
+                    derniere = k
+                    if not data["equipes"] and not diag_faite:
+                        sauver_diag(f"page_club_{code}.html", html)   # une copie, pour comprendre
+                        diag_faite = True
+                    lot.append({"club_code": code, "comite_code": comite, "data": data,
+                                "fetched_at": datetime.now(timezone.utc).isoformat()})
+                    rapport.append({"code": code, "comite": comite, "nom": data["nom"],
+                                    "equipes": len(data["equipes"]), "statut": "OK"})
+                if len(lot) >= LOT:
+                    deposer(etat, lot)
+                    lot = []
+                    sauver_absents(absents)
+                print(f"  {comite} {nom_comite} : numéro {min(n + LOT_NUMEROS - 1, 999)}/999 - {trouves} club(s) trouvé(s)", end="\r")
+                n += LOT_NUMEROS
+            print(f"  {comite} {nom_comite} : {trouves} club(s)                                        ")
+            if abandon:
+                break
     finally:
+        sauver_absents(absents)
         try:
             deposer(etat, lot)   # dépose ce qui reste, même en cas d'interruption
         except Exception as e:
             print(f"  (dernier lot non déposé : {e})")
+
+    if abandon:
+        print(f"\nArrêt : le site renvoie des erreurs en série ({abandon}). Réessaie dans un moment.")
 
     # --- Bilan ---------------------------------------------------------------------------
     ok = sum(1 for r in rapport if r["statut"].startswith("OK"))
@@ -348,7 +399,7 @@ def main():
     except Exception:
         pass
     print(f"\n{ok} club(s) déposé(s) ({nb_equipes} équipe(s)), {erreurs} en erreur.")
-    if erreurs or nb_equipes == 0:
+    if ok == 0 or erreurs or nb_equipes == 0:
         print(f"En cas de problème, envoie le contenu du dossier {DOSSIER} à la personne qui gère l'appli.")
     else:
         print("Terminé. Dans l'appli (onglet Basket), clique sur « Importer les clubs & équipes ».")
