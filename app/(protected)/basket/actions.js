@@ -572,140 +572,128 @@ async function upsertClubsFromRencontres(supabase, rencontres) {
   await supabase.from("basketball_clubs").upsert(rows, { onConflict: "club_key" });
 }
 
-// Import massif de tous les clubs (et toutes leurs équipes) d'un comité
-// entier, via les collections FFBB "organismes" et "engagements" —
-// contrairement à upsertClubsFromRencontres (alimentée au fil des rencontres
-// croisées), ceci récupère TOUS les clubs du comité d'un coup, qu'on ait
-// déjà joué contre eux ou non. Codes clubs FFBB pour un comité : préfixe
-// "ara" + code comité 4 chiffres (ex. "ara0069" pour le Rhône, comité 0069 —
-// visible dans l'URL competitions.ffbb.com/ligues/ara/comites/0069).
-export async function syncComiteClubs(formData) {
+// ---- Clubs et équipes de toute la région Auvergne-Rhône-Alpes ----------------
+// Même principe que les calendriers : MiseAJourFFBB_ClubsARA.exe (lancé depuis le PC, car
+// competitions.ffbb.com bloque les serveurs) dépose ses lectures dans ffbb_clubs_cache ; ce
+// bouton les range dans basketball_clubs (nom, logo, code FFBB) et basketball_club_teams (équipes
+// de la saison en cours). Jamais destructeur : un champ de club déjà renseigné (à la main ou par
+// une synchro de match) n'est pas remplacé, et une équipe d'une autre saison n'est pas réécrite.
+export async function importRegionClubs() {
   const supabase = createClient();
-  const comiteCode = (formData.get("comite_code") || "").trim();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
 
-  if (!comiteCode) {
-    revalidatePath("/basket");
-    return;
-  }
-
-  // Format confirmé par un échantillon réel de la base : le préfixe région
-  // est en MAJUSCULES (ex. "CVL0045063", "OCC0009012"), pas en minuscules
-  // comme le laissait penser l'URL du site public (competitions.ffbb.com/
-  // ligues/ara/...). Auvergne-Rhône-Alpes = "ARA".
-  const codePrefix = `ARA${comiteCode}`;
-  let clubsFound = 0;
+  const season = computeCurrentSeasonLabel();
+  const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
+  const now = new Date().toISOString();
 
   try {
-    const { FFBBClient, COLLECTIONS, FFBBAuthError } = await import("ffbb-api-client");
-    const client = new FFBBClient();
-    await client.authenticate();
-
-    // Le token de cette API non officielle semble expirer rapidement — assez
-    // pour ne plus être valide entre deux appels FFBB séparés par un
-    // aller-retour Supabase. En cas de FFBBAuthError (401/403), on
-    // ré-authentifie une fois et on rejoue l'appel avant d'abandonner.
-    const withAuthRetry = async (fn) => {
-      try {
-        return await fn();
-      } catch (err) {
-        if (err instanceof FFBBAuthError) {
-          await client.authenticate();
-          return await fn();
-        }
-        throw err;
+    // 1) Le dépôt du programme (par pages : l'API plafonne à 1000 lignes par lecture).
+    const rows = [];
+    for (let from = 0; ; from += 500) {
+      const { data, error } = await supabase
+        .from("ffbb_clubs_cache")
+        .select("club_code, comite_code, data, fetched_at")
+        .order("club_code")
+        .range(from, from + 499);
+      if (error) {
+        throw new Error(
+          `Lecture du dépôt impossible (${error.message}). As-tu exécuté supabase/12-clubs-region.sql ?`
+        );
       }
-    };
-
-    // 1) Tous les clubs du comité.
-    const organismesRes = await withAuthRetry(() =>
-      client.list(COLLECTIONS.organismes, {
-        filter: { code: { _starts_with: codePrefix } },
-        fields: ["id", "nom", "code", "logo.id", "adresse", "commune.libelle", "salle.libelle"],
-        limit: -1,
-      })
-    );
-    const orgList = Array.isArray(organismesRes) ? organismesRes : organismesRes?.data ?? [];
-    clubsFound = orgList.length;
-
-    if (clubsFound === 0) {
-      // Diagnostic : on regarde un échantillon SANS filtre pour voir le
-      // vrai format du champ "code" plutôt que de deviner à nouveau.
-      let sample = [];
-      try {
-        const sampleRes = await client.list(COLLECTIONS.organismes, {
-          fields: ["id", "nom", "code"],
-          limit: 5,
-        });
-        sample = Array.isArray(sampleRes) ? sampleRes : sampleRes?.data ?? [];
-      } catch {
-        // ignore — le diagnostic est un bonus, pas grave s'il échoue aussi
-      }
-      const sampleText = sample.length
-        ? ` Exemples réels de codes : ${sample.map((o) => `${o.nom} = "${o.code}"`).join(" · ")}`
-        : " (impossible de récupérer un échantillon pour comparer).";
-      throw new Error(
-        `Aucun club trouvé pour le préfixe "${codePrefix}".${sampleText}`
-      );
+      rows.push(...(data ?? []));
+      if (!data || data.length < 500) break;
+    }
+    if (rows.length === 0) {
+      throw new Error("Le dépôt est vide : lance d'abord MiseAJourFFBB_ClubsARA.exe depuis un PC.");
     }
 
-    // Écriture non-destructive, comme upsertClubsFromRencontres : on ne
-    // remplace jamais un champ déjà renseigné (saisie manuelle ou synchro
-    // de match précédente).
-    const keys = orgList.map((o) => stripTeamSuffix(o.nom)).filter(Boolean);
-    const { data: existingRows } = await supabase
-      .from("basketball_clubs")
-      .select("club_key, display_name, ffbb_organisme_id, logo_asset, gymnase, adresse")
-      .in("club_key", keys);
-    const existingByKey = new Map((existingRows ?? []).map((row) => [row.club_key, row]));
-
-    // On déduplique par club_key AVANT l'upsert : deux organismes FFBB
-    // distincts peuvent se réduire à la même clé une fois passés dans
-    // stripTeamSuffix, et Postgres refuse un upsert où la même clé de
-    // conflit apparaît deux fois dans le même batch ("ON CONFLICT DO
-    // UPDATE command cannot affect row a second time"). On garde la
-    // première occurrence rencontrée pour chaque clé.
-    const clubRowsByKey = new Map();
-    for (const o of orgList) {
-      const key = stripTeamSuffix(o.nom);
-      if (!key || clubRowsByKey.has(key)) continue;
-      const existing = existingByKey.get(key);
-      const ffbbAdresse = [o.adresse, o.commune?.libelle].filter(Boolean).join(", ") || null;
-      clubRowsByKey.set(key, {
+    // 2) Les clubs (dédoublonnés par clé : deux clubs peuvent se réduire à la même clé une fois le
+    //    suffixe d'équipe retiré, et Postgres refuse deux fois la même clé dans un upsert).
+    const clubs = new Map();
+    for (const r of rows) {
+      const nom = r.data?.nom;
+      const key = stripTeamSuffix(nom);
+      if (!key || clubs.has(key)) continue;
+      clubs.set(key, { code: r.club_code, comite: r.comite_code, nom, logo: r.data?.logo_asset ?? null });
+    }
+    const existing = new Map();
+    for (const keys of chunk([...clubs.keys()], 200)) {
+      const { data, error } = await supabase
+        .from("basketball_clubs")
+        .select("club_key, display_name, ffbb_organisme_id, logo_asset, gymnase, adresse, ffbb_code, comite_code")
+        .in("club_key", keys);
+      if (error) throw new Error(`Lecture des clubs impossible (${error.message}).`);
+      for (const row of data ?? []) existing.set(row.club_key, row);
+    }
+    const clubRows = [...clubs.entries()].map(([key, c]) => {
+      const ex = existing.get(key);
+      return {
         club_key: key,
-        display_name: existing?.display_name ?? o.nom,
-        ffbb_organisme_id: existing?.ffbb_organisme_id ?? (o.id != null ? String(o.id) : null),
-        logo_asset: existing?.logo_asset ?? o.logo?.id ?? null,
-        gymnase: existing?.gymnase ?? o.salle?.libelle ?? null,
-        adresse: existing?.adresse ?? ffbbAdresse,
-        updated_at: new Date().toISOString(),
-      });
+        display_name: ex?.display_name ?? stripTeamSuffix(c.nom),
+        ffbb_organisme_id: ex?.ffbb_organisme_id ?? null,
+        logo_asset: ex?.logo_asset ?? c.logo,
+        gymnase: ex?.gymnase ?? null,
+        adresse: ex?.adresse ?? null,
+        ffbb_code: ex?.ffbb_code ?? c.code,
+        comite_code: ex?.comite_code ?? c.comite ?? null,
+        updated_at: now,
+      };
+    });
+    for (const part of chunk(clubRows, 500)) {
+      const { error } = await supabase.from("basketball_clubs").upsert(part, { onConflict: "club_key" });
+      if (error) throw new Error(`Écriture des clubs impossible (${error.message}).`);
     }
-    const clubRows = [...clubRowsByKey.values()];
 
-    const { error: clubsError } = await supabase
-      .from("basketball_clubs")
-      .upsert(clubRows, { onConflict: "club_key" });
-    if (clubsError) throw new Error(`Écriture des clubs impossible (${clubsError.message}).`);
+    // 3) Les équipes de la saison en cours (celles d'une autre saison ne sont jamais réécrites).
+    const teams = new Map();
+    for (const r of rows) {
+      const key = stripTeamSuffix(r.data?.nom);
+      if (!key) continue;
+      for (const t of r.data?.equipes ?? []) {
+        const id = t?.engagement_id ? String(t.engagement_id) : null;
+        if (!id || teams.has(id)) continue;
+        teams.set(id, {
+          engagement_id: id,
+          club_key: key,
+          club_code: r.club_code,
+          team_name: t.nom || null,
+          season,
+          updated_at: now,
+        });
+      }
+    }
+    const otherSeason = new Set();
+    for (const ids of chunk([...teams.keys()], 200)) {
+      const { data, error } = await supabase
+        .from("basketball_club_teams")
+        .select("engagement_id, season")
+        .in("engagement_id", ids);
+      if (error) throw new Error(`Lecture des équipes impossible (${error.message}).`);
+      for (const row of data ?? []) if (row.season && row.season !== season) otherSeason.add(String(row.engagement_id));
+    }
+    const teamRows = [...teams.values()].filter((t) => !otherSeason.has(t.engagement_id));
+    for (const part of chunk(teamRows, 500)) {
+      const { error } = await supabase.from("basketball_club_teams").upsert(part, { onConflict: "engagement_id" });
+      if (error) throw new Error(`Écriture des équipes impossible (${error.message}).`);
+    }
 
-    // L'import des équipes (engagements) d'un club a été retiré : l'API
-    // FFBB rejette systématiquement (403) toute tentative de LISTER les
-    // équipes d'un club, que ce soit par un filtre groupé sur
-    // ffbbserver_engagements ou par la relation `deep` depuis l'organisme —
-    // les deux ont été testés. Elle n'autorise que la lecture d'une équipe
-    // ou d'une poule dont on connaît déjà l'ID (voir la synchro des poules, qui
-    // fonctionne). Ce n'est donc pas contournable côté client : on se
-    // limite à l'import des clubs, qui fonctionne bien.
-
+    const last = rows.map((r) => r.fetched_at).filter(Boolean).sort().pop();
+    const when = last
+      ? new Date(last).toLocaleString("fr-FR", { timeZone: "Europe/Paris", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+      : "?";
     await supabase.from("basketball_comite_imports").upsert({
-      comite_code: comiteCode,
-      last_sync_at: new Date().toISOString(),
+      comite_code: "ARA",
+      last_sync_at: now,
       last_sync_error: null,
-      last_sync_summary: `${clubsFound} club(s) importé(s).`,
+      last_sync_summary: `${clubRows.length} club(s), ${teamRows.length} équipe(s) importé(s) (dépôt du ${when}).`,
     });
   } catch (err) {
     await supabase.from("basketball_comite_imports").upsert({
-      comite_code: comiteCode,
-      last_sync_at: new Date().toISOString(),
+      comite_code: "ARA",
+      last_sync_at: now,
       last_sync_error: String(err?.message || err).slice(0, 300),
     });
   }

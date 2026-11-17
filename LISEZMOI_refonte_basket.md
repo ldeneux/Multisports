@@ -1,22 +1,27 @@
-# Refonte de l'onglet Basket — « Mettre à jour les calendriers & résultats » (v4)
+# Refonte de l'onglet Basket (v5)
 
 Copie chaque fichier de ce zip à la même place dans le projet (écrase l'ancien), puis :
 
-1. Supabase > SQL Editor : exécuter `supabase/11-basket-sync-globale.sql`
-   (ajoute la colonne « équipes FFBB suivies » et renomme le club « Sathonay Camp » en « OLYMPIC SATHONAY » ; rien d'autre n'est modifié).
-2. Paramètres > ligne Basket de chaque participante : renseigner « Équipes FFBB suivies cette saison »
-   (ex. `U15F`, `U13F-2`, `SENF`, ou plusieurs séparées par des virgules). À refaire à chaque début de saison.
-3. Lancer MiseAJourFFBB_Club.exe (inchangé) puis, dans Basket, cliquer « Mettre à jour les calendriers & résultats ».
+1. Supabase > SQL Editor : exécuter `supabase/11-basket-sync-globale.sql` (si pas déjà fait) puis `supabase/12-clubs-region.sql`.
+2. Paramètres > ligne Basket de chaque participante : « Équipes FFBB suivies cette saison » (ex. `U15F`).
+3. GitHub > Actions > « Construire les .exe FFBB » > Run workflow : construit désormais 3 programmes.
+   Télécharge l'artefact et place **MiseAJourFFBB_ClubsARA.exe** dans `public/` (comme MiseAJourFFBB_Club.exe).
 
-## v4
-- Clic sur Julia / Candice : on arrive sur la DERNIÈRE phase, filtre « OLYMPIC SATHONAY », TOUTES les journées.
-- Le champ « Catégorie » n'apparaît plus sur les lignes Basket de Paramètres (et n'est plus utilisé par le basket).
-- « Sathonay Camp » remplacé par « OLYMPIC SATHONAY » (bouton de filtre, club par défaut des joueuses, base de données).
-- Classement : celui de la FFBB n'est gardé que s'il contient TOUTES les équipes de la poule ; sinon il est recalculé
-  à partir des matchs (qui, eux, sont complets). Le détail est affiché sous « Dernière mise à jour ».
+## Calendriers & résultats (inchangé depuis la v4)
+MiseAJourFFBB_Club.exe puis « Mettre à jour les calendriers & résultats » (toutes les participantes).
 
-## Rappel des changements précédents
-- Un seul bouton, à droite des badges : met à jour les équipes de TOUTES les participantes en une lecture du cache.
-- Phases affichées au-dessus des onglets ; plus de gestion de phases, de « Réinitialiser » ni de matchs amicaux.
-- Jamais d'écrasement d'une saison précédente (poules d'une autre saison ignorées, matchs archivés intacts,
-  nettoyage limité à la phase en cours, score déjà enregistré conservé si la FFBB n'en publie pas).
+## Nouveau : clubs & équipes de toute la région Auvergne-Rhône-Alpes
+Remplace « Import clubs du comité » (qui ne lisait qu'un comité et aucune équipe).
+1. Double-clic sur MiseAJourFFBB_ClubsARA.exe (PC Windows, mêmes identifiants que l'autre programme, ~10 min) :
+   il lit les clubs des 12 comités (Ain, Allier, Ardèche, Cantal, Drôme, Isère, Loire, Haute-Loire, Puy-de-Dôme,
+   Rhône, Savoie, Haute-Savoie) puis la page de chaque club (nom, logo, équipes) et dépose le tout dans Supabase.
+   Reprise possible : un club déposé depuis moins de 12 h n'est pas relu.
+2. Onglet Basket > « Clubs & équipes de la région » > « Importer les clubs & équipes » : range les clubs dans
+   la liste des clubs (jamais d'écrasement d'un champ déjà renseigné) et les équipes de la saison en cours dans
+   la nouvelle table basketball_club_teams (les équipes d'une autre saison ne sont jamais réécrites).
+
+⚠ Le programme ClubsARA lit les pages publiques de competitions.ffbb.com ; je n'ai pas pu les tester d'ici.
+Au premier lancement, s'il ne trouve pas de clubs ou d'équipes, il enregistre une copie de la page dans
+`%USERPROFILE%\.multisports-ffbb\diagnostic\` : envoie-la-moi et j'ajuste la lecture.
+
+Le paquet npm `ffbb-api-client` n'est plus utilisé par l'appli : tu peux le retirer de package.json.

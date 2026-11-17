@@ -28,7 +28,7 @@ import {
   updatePlayer,
   deletePlayer,
   deleteMatch,
-  syncComiteClubs,
+  importRegionClubs,
   checkTeamStatsAvailability,
 } from "./actions";
 import ImportTeamStatsButton from "@/components/ImportTeamStatsButton";
@@ -1965,14 +1965,18 @@ async function MatchSheetPage({ matchId, backHref }) {
 export default async function BasketPage({ searchParams }) {
   const supabase = createClient();
 
-  // Statut du dernier import de clubs du comité (indépendant de la
-  // participante/saison sélectionnée — affiché près du titre).
+  // Statut du dernier import des clubs / équipes de la région (indépendant de la
+  // participante/saison sélectionnée — affiché près du titre), et dépôt du programme.
   const { data: comiteImport } = await supabase
     .from("basketball_comite_imports")
     .select("*")
-    .order("last_sync_at", { ascending: false })
-    .limit(1)
+    .eq("comite_code", "ARA")
     .maybeSingle();
+  const { count: depositCount, data: depositLast } = await supabase
+    .from("ffbb_clubs_cache")
+    .select("fetched_at", { count: "exact" })
+    .order("fetched_at", { ascending: false })
+    .limit(1);
 
   // La feuille de match remplace tout le contenu de la page tant qu'elle est
   // ouverte — on garde tous les autres paramètres d'URL (participant, saison,
@@ -2157,33 +2161,42 @@ export default async function BasketPage({ searchParams }) {
           <p className="mt-1 text-ink/60">Calendrier, classement et bilan, synchronisables depuis la FFBB.</p>
         </div>
 
-        {/* Import des clubs d'un comité entier (organismes + équipes) — pas
-            lié à une participante ni une saison, donc affiché ici plutôt
-            que dans le bandeau saison. */}
-        <details className="rounded-card bg-white p-3 shadow-sm">
+        {/* Clubs et équipes de toute la région Auvergne-Rhône-Alpes — pas lié à une
+            participante ni une saison, donc affiché ici plutôt que dans le bandeau saison. */}
+        <details className="max-w-sm rounded-card bg-white p-3 shadow-sm">
           <summary className="cursor-pointer text-xs font-semibold text-ink/50 hover:text-navy">
-            Import clubs du comité
+            Clubs &amp; équipes de la région
           </summary>
-          <form action={syncComiteClubs} className="mt-2 flex flex-wrap items-end gap-2">
-            <label className="text-xs font-semibold text-ink/50">
-              Code comité
-              <input
-                name="comite_code"
-                defaultValue={comiteImport?.comite_code ?? "0069"}
-                placeholder="ex. 0069"
-                className="mt-1 w-24 rounded-lg border border-ink/15 px-2 py-1 text-sm"
-              />
-            </label>
+          <p className="mt-2 text-xs text-ink/60">
+            1. Sur ton PC Windows, double-clique sur{" "}
+            <a
+              href="/MiseAJourFFBB_ClubsARA.exe"
+              download="MiseAJourFFBB_ClubsARA.exe"
+              className="font-semibold underline"
+            >
+              MiseAJourFFBB_ClubsARA.exe
+            </a>{" "}
+            (une dizaine de minutes : il lit tous les clubs des 12 comités d'Auvergne-Rhône-Alpes et leurs équipes).
+            <br />
+            2. Clique ensuite sur le bouton ci-dessous.
+          </p>
+          <form action={importRegionClubs} className="mt-2 flex flex-wrap items-center gap-2">
             <SyncButton
               pendingLabel="Import..."
               className="rounded-full bg-lagoon px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
             >
-              Importer
+              Importer les clubs &amp; équipes
             </SyncButton>
           </form>
+          {depositCount != null && (
+            <p className="mt-2 text-xs text-ink/40">
+              Dépôt du programme : {depositCount} club(s)
+              {depositLast?.[0]?.fetched_at ? `, dernier le ${formatDateTime(depositLast[0].fetched_at)}` : ""}.
+            </p>
+          )}
           {comiteImport?.last_sync_at && (
-            <p className={`mt-2 max-w-xs text-xs ${comiteImport.last_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
-              {formatDateTime(comiteImport.last_sync_at)} —{" "}
+            <p className={`mt-1 text-xs ${comiteImport.last_sync_error ? "text-cardinal-dark" : "text-ink/40"}`}>
+              Dernier import : {formatDateTime(comiteImport.last_sync_at)} —{" "}
               {comiteImport.last_sync_error ?? comiteImport.last_sync_summary ?? "OK"}
             </p>
           )}
