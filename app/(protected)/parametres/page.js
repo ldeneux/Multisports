@@ -253,13 +253,15 @@ export default async function ParametresPage() {
                   />
                 </label>
 
-                <label className="text-xs font-semibold text-ink/60">
-                  Catégorie
-                  <input
-                    name="category" defaultValue={a.category ?? ""}
-                    className="mt-1 w-full rounded-lg border border-ink/15 px-2 py-1.5"
-                  />
-                </label>
+                {!/basket/i.test(a.sports?.name ?? "") && (
+                  <label className="text-xs font-semibold text-ink/60">
+                    Catégorie
+                    <input
+                      name="category" defaultValue={a.category ?? ""}
+                      className="mt-1 w-full rounded-lg border border-ink/15 px-2 py-1.5"
+                    />
+                  </label>
+                )}
 
                 <label className="text-xs font-semibold text-ink/60">
                   Lien (calendrier/résultats)

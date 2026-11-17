@@ -1048,33 +1048,61 @@ async function applyPouleToParticipant(supabase, { season, ctx, poule, pouleId, 
     if (error) throw new Error(`Nettoyage des matchs : ${error.message}`);
   }
 
-  // Le classement officiel (si la page en contient un), sinon calculé à partir des matchs.
-  const standings = (poule.classements ?? [])
-    .filter((c) => c.idEngagement?.id)
-    .map((c) => ({
-      participant_sport_id: ps.id,
-      phase_id: phase.id,
-      poule_id: pouleId,
-      season,
-      engagement_id: String(c.idEngagement.id),
-      engagement_nom: c.idEngagement.nom || "Équipe inconnue",
-      position: c.position ?? null,
-      points: c.points ?? null,
-      matches_joues: c.matchJoues ?? null,
-      gagnes: c.gagnes ?? null,
-      perdus: c.perdus ?? null,
-      is_us: String(c.idEngagement.id) === eng.engagementId,
-      synced_at: new Date().toISOString(),
-    }));
-  let classementNote = null;
-  if (standings.length > 0) {
+  // Classement. On utilise celui de la FFBB seulement s'il contient TOUTES les équipes de la poule
+  // (les équipes sont lues dans les matchs). Sinon (la page n'en publie que 5 sur 6, ou avec d'autres
+  // identifiants que les matchs...), on le recalcule à partir des matchs de la poule, qui sont complets.
+  const isExempt = (n) => !n || String(n).trim().toLowerCase() === "exempt";
+  const pouleTeams = new Map(); // id d'engagement -> nom
+  for (const r of poule.rencontres) {
+    if (!isExempt(r.nomEquipe1) && r.idEngagementEquipe1?.id) pouleTeams.set(String(r.idEngagementEquipe1.id), r.nomEquipe1);
+    if (!isExempt(r.nomEquipe2) && r.idEngagementEquipe2?.id) pouleTeams.set(String(r.idEngagementEquipe2.id), r.nomEquipe2);
+  }
+  const official = (poule.classements ?? []).filter((c) => c.idEngagement?.id);
+  const officialIds = new Set(official.map((c) => String(c.idEngagement.id)));
+  const missing = [...pouleTeams.keys()].filter((id) => !officialIds.has(id));
+  const officialRow = (c) => ({
+    participant_sport_id: ps.id,
+    phase_id: phase.id,
+    poule_id: pouleId,
+    season,
+    engagement_id: String(c.idEngagement.id),
+    engagement_nom: c.idEngagement.nom || pouleTeams.get(String(c.idEngagement.id)) || "Équipe inconnue",
+    position: c.position ?? null,
+    points: c.points ?? null,
+    matches_joues: c.matchJoues ?? null,
+    gagnes: c.gagnes ?? null,
+    perdus: c.perdus ?? null,
+    is_us: String(c.idEngagement.id) === eng.engagementId,
+    synced_at: new Date().toISOString(),
+  });
+  const writeStandings = async (rows) => {
     const { error: delError } = await supabase.from("basketball_classements").delete().eq("phase_id", phase.id);
     if (delError) throw new Error(`Nettoyage du classement : ${delError.message}`);
-    const { error: insError } = await supabase.from("basketball_classements").insert(standings);
+    const { error: insError } = await supabase.from("basketball_classements").insert(rows);
     if (insError) throw new Error(`Écriture du classement : ${insError.message}`);
+  };
+
+  let classementNote = null;
+  if (official.length > 0 && missing.length === 0) {
+    await writeStandings(official.map(officialRow));
   } else {
+    if (official.length > 0) {
+      classementNote = `Classement FFBB incomplet (${pouleTeams.size - missing.length} équipe(s) sur ${pouleTeams.size}) : recalculé à partir des matchs.`;
+    }
     const recalcul = await computeClassementCore(supabase, phase.id);
-    if (recalcul?.error) classementNote = `Classement non recalculé : ${recalcul.error}`;
+    if (recalcul?.error) {
+      // Pas encore de match joué (début de saison) : classement FFBB complété par les équipes manquantes, à zéro.
+      if (official.length > 0) {
+        const base = official.map(officialRow);
+        const extra = missing.map((id, i) => ({
+          ...officialRow({ idEngagement: { id, nom: pouleTeams.get(id) }, position: base.length + i + 1, points: 0, matchJoues: 0, gagnes: 0, perdus: 0 }),
+        }));
+        await writeStandings([...base, ...extra]);
+        classementNote = `Classement FFBB complété avec ${missing.length} équipe(s) manquante(s).`;
+      } else {
+        classementNote = `Classement non calculé : ${recalcul.error}`;
+      }
+    }
   }
 
   // Statut de la phase.
@@ -1410,13 +1438,8 @@ async function computeClassementCore(supabase, phaseId) {
     .eq("phase_id", phaseId);
   if (matchError) return { error: matchError.message };
 
-  // Barème : U11 (catégorie de l'équipe ou nom de la compétition) = 3-2-1, sinon 2-1.
-  const { data: sportRow } = await supabase
-    .from("participant_sports")
-    .select("category")
-    .eq("id", phase.participant_sport_id)
-    .maybeSingle();
-  const scoringText = [sportRow?.category, ...(matches ?? []).map((m) => m.division_label)].filter(Boolean).join(" ");
+  // Barème : U11 (d'après le nom de la compétition) = 3-2-1, sinon 2-1.
+  const scoringText = (matches ?? []).map((m) => m.division_label).filter(Boolean).join(" ");
   const rule = CLASSEMENT_SCORING[/\bU\s?11\b/i.test(scoringText) ? "321" : "21"];
 
   // 1. Les équipes de la poule (une entrée par nom d'équipe).

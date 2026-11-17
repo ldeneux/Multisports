@@ -10,4 +10,9 @@
 -- les équipes déjà présentes dans les phases de la saison en cours, sinon elle signale « équipe inconnue ».
 alter table multisports.participant_sports add column if not exists ffbb_team_codes text;
 
+-- Le club s'appelle partout « OLYMPIC SATHONAY » (et plus « Sathonay Camp »).
+update multisports.participant_sports
+   set club = 'OLYMPIC SATHONAY'
+ where club is not null and lower(trim(club)) in ('sathonay camp', 'sathonay-camp', 'sathonay');
+
 notify pgrst, 'reload schema';

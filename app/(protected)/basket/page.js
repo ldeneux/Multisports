@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { formatDateTime, ffbbAssetUrl, computeCurrentSeasonLabel } from "@/lib/utils";
 import SyncButton from "@/components/SyncButton";
 import SyncTeamsButton from "@/components/SyncTeamsButton";
+import { CLUB_FFBB_NAME } from "@/lib/ffbbClub";
 import ComputeClassementButton from "@/components/ComputeClassementButton";
 import SeasonSelect from "@/components/SeasonSelect";
 import ConfirmSubmitButton from "@/components/ConfirmSubmitButton";
@@ -204,7 +205,7 @@ function MatchCard({ m, typeIcon, sheetBaseHref, clubLogos }) {
   // main pour un match manuel) — jamais remplacé automatiquement par le nom
   // du club configuré dans Paramètres. Ça permet de repérer tout de suite
   // une erreur d'ID FFBB (le mauvais club apparaît sous son vrai nom au lieu
-  // d'être maquillé en "Sathonay Camp"), et de consulter ponctuellement le
+  // d'être maquillé en "OLYMPIC SATHONAY"), et de consulter ponctuellement le
   // calendrier d'une autre poule sans que l'app ne le déguise en "nous".
   // Convention FFBB : "équipe 1" = domicile -> toujours affichée à gauche.
   const leftExempt = isExemptName(m.team1_name);
@@ -1601,7 +1602,7 @@ async function MatchSheetPage({ matchId, backHref }) {
 
   const players = (allPeople ?? []).filter((p) => p.role !== "entraineur");
   const staff = (allPeople ?? []).filter((p) => p.role === "entraineur");
-  const defaultClub = phase?.our_team_name || ps?.club || "";
+  const defaultClub = phase?.our_team_name || CLUB_FFBB_NAME;
   const participantFirstName = ps?.participants?.first_name || "";
 
   const statsByPlayer = new Map((statsRows ?? []).map((s) => [s.player_id, s]));
@@ -2005,7 +2006,8 @@ export default async function BasketPage({ searchParams }) {
     ? searchParams.tab
     : "calendrier";
   const scope = ["us", "poule"].includes(searchParams?.scope) ? searchParams.scope : "us";
-  const journeesMode = searchParams?.journees === "toutes" ? "toutes" : "une";
+  // Par défaut : toutes les journées (« Une journée » seulement si on le demande).
+  const journeesMode = searchParams?.journees === "une" ? "une" : "toutes";
 
   // Saisons disponibles pour ce participant — toujours au moins la saison en
   // cours, même si rien n'a encore été synchronisé.
@@ -2034,8 +2036,9 @@ export default async function BasketPage({ searchParams }) {
       .order("position", { ascending: true });
     phases = phaseRows ?? [];
   }
+  // Par défaut : la DERNIÈRE phase de la saison (la plus récente).
   const selectedPhase =
-    phases.find((p) => p.id === searchParams?.phase) ?? phases[0] ?? null;
+    phases.find((p) => p.id === searchParams?.phase) ?? phases[phases.length - 1] ?? null;
 
   // Icône affichée devant chaque match du calendrier : le badge du niveau de
   // compétition récupéré à la mise à jour FFBB.
@@ -2069,7 +2072,7 @@ export default async function BasketPage({ searchParams }) {
   }
 
   // Les stats/le bilan d'équipe ne concernent toujours QUE notre équipe,
-  // indépendamment du bouton "Sathonay Camp / Toute la poule" (qui ne filtre
+  // indépendamment du bouton "OLYMPIC SATHONAY / Toute la poule" (qui ne filtre
   // que le calendrier) — et, contrairement au calendrier/classement, portent
   // sur TOUTES les phases de la saison par défaut (le calendrier/classement,
   // eux, restent scopés à la phase choisie dans PhaseBar).
@@ -2220,7 +2223,7 @@ export default async function BasketPage({ searchParams }) {
                 {assignments.map((a) => (
                   <Link
                     key={a.id}
-                    href={`/basket?ps=${a.id}&tab=${tab}&scope=${scope}`}
+                    href={`/basket?ps=${a.id}&tab=${tab}&scope=us`}
                     className={`rounded-full px-3 py-1 text-xs font-semibold ${
                       a.id === selectedPsId ? "bg-cardinal text-white" : "bg-white text-ink/50 hover:text-ink"
                     }`}
@@ -2295,7 +2298,7 @@ export default async function BasketPage({ searchParams }) {
                     scope === "us" ? "bg-navy text-white" : "text-ink/50 hover:text-ink"
                   }`}
                 >
-                  {selectedPs?.club || "Sathonay Camp"}
+                  {CLUB_FFBB_NAME}
                 </Link>
                 <Link
                   href={`/basket?ps=${selectedPsId}&tab=calendrier&scope=poule&season=${encodeURIComponent(selectedSeason)}&phase=${selectedPhase?.id ?? ""}${journeeQS}`}
