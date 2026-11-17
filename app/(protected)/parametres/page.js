@@ -271,10 +271,10 @@ export default async function ParametresPage() {
 
                 {/basket/i.test(a.sports?.name ?? "") && (
                   <label className="col-span-2 text-xs font-semibold text-ink/60 sm:col-span-3">
-                    Équipes FFBB suivies (ex. U15F, ou U15F, SENF-2)
+                    Équipes FFBB suivies cette saison (à mettre à jour chaque saison)
                     <input
                       name="ffbb_team_codes" defaultValue={a.ffbb_team_codes ?? ""}
-                      placeholder="catégorie + sexe + n° d'équipe : U15F, U13F-2, SENF"
+                      placeholder="ex. U15F · U13F-2 · SENF · ou plusieurs : U15F, SENF-2"
                       className="mt-1 w-full rounded-lg border border-ink/15 px-2 py-1.5"
                     />
                   </label>

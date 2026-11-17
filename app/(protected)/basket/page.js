@@ -18,7 +18,6 @@ import {
   ChartInfo,
 } from "@/components/BasketCharts";
 import {
-  addMatch,
   saveMatchSheet,
   updateMatchDate,
   resetMatchSheet,
@@ -28,7 +27,6 @@ import {
   updatePlayer,
   deletePlayer,
   deleteMatch,
-  resetCurrentSeason,
   syncComiteClubs,
   checkTeamStatsAvailability,
 } from "./actions";
@@ -89,7 +87,6 @@ function stripTeamSuffix(name) {
 // mises à jour par « Mettre à jour les calendriers & résultats ».
 function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isCurrentSeason, journeeQS = "" }) {
   const linkBase = `/basket?ps=${selectedPsId}&tab=${tab}&scope=${scope}&season=${encodeURIComponent(season)}${journeeQS}`;
-  const isAmical = selectedPhase?.phase_type === "amical";
 
   return (
     <div className="space-y-3">
@@ -108,9 +105,7 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
           ))}
 
         {selectedPhase &&
-          (isAmical ? (
-            <p className="text-sm text-ink/50">🤝 Matchs amicaux saisis à la main (jamais écrasés par la mise à jour).</p>
-          ) : (
+          (
             (selectedPhase.competition_name || selectedPhase.poule_label) && (
               <p className="text-sm">
                 {selectedPhase.competition_url ? (
@@ -128,10 +123,10 @@ function PhaseBar({ phases, selectedPhase, selectedPsId, tab, scope, season, isC
                 {selectedPhase.poule_label && <span className="text-ink/50"> · {selectedPhase.poule_label}</span>}
               </p>
             )
-          ))}
+          )}
       </div>
 
-      {!isAmical && selectedPhase?.last_sync_at && (
+      {selectedPhase?.last_sync_at && (
         <p
           className={`text-xs ${
             selectedPhase.last_sync_error && !/^Données du cache/.test(selectedPhase.last_sync_error)
@@ -2043,14 +2038,10 @@ export default async function BasketPage({ searchParams }) {
     phases.find((p) => p.id === searchParams?.phase) ?? phases[0] ?? null;
 
   // Icône affichée devant chaque match du calendrier : le badge du niveau de
-  // compétition récupéré à la synchro pour une phase FFBB, un simple
-  // pictogramme pour une phase de matchs amicaux (pas d'asset FFBB associé).
-  const phaseTypeIcon =
-    selectedPhase?.phase_type === "amical"
-      ? "🤝"
-      : selectedPhase?.competition_logo_asset
-        ? ffbbAssetUrl(selectedPhase.competition_logo_asset, { width: 64 })
-        : null;
+  // compétition récupéré à la mise à jour FFBB.
+  const phaseTypeIcon = selectedPhase?.competition_logo_asset
+    ? ffbbAssetUrl(selectedPhase.competition_logo_asset, { width: 64 })
+    : null;
 
   let matches = [];
   let classement = [];
@@ -2198,7 +2189,7 @@ export default async function BasketPage({ searchParams }) {
 
       <p className="rounded-card bg-lagoon-light p-3 text-xs text-navy">
         « Mettre à jour les calendriers &amp; résultats » lit les données FFBB déposées par le programme ci-dessous
-        et enregistre d'un coup, pour la participante choisie, toutes les phases, tous les matchs et tous les
+        et enregistre d'un coup, pour toutes les participantes, toutes les phases, tous les matchs et tous les
         classements de la saison en cours (rien à saisir : ni phase, ni ID, ni lien). Les saisons précédentes ne
         sont jamais modifiées. Pour rafraîchir les données FFBB, double-clique sur le programme sur ton PC Windows
         (rien à installer), puis clique sur le bouton. Au premier lancement, Windows peut afficher « Windows a
@@ -2219,9 +2210,10 @@ export default async function BasketPage({ searchParams }) {
         </div>
       ) : (
         <>
-          {/* Qui, et quelle saison : tout ce qui suit (synchro, calendrier,
+          {/* Qui, et quelle saison : tout ce qui suit (phases, calendrier,
               classement, stats) dépend de ces deux choix — d'où leur
-              position tout en haut, avant le bloc de synchro. */}
+              position tout en haut. Le bouton de mise à jour FFBB concerne
+              toutes les participantes d'un coup. */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             {assignments.length > 1 ? (
               <div className="flex flex-wrap gap-2">
@@ -2241,17 +2233,7 @@ export default async function BasketPage({ searchParams }) {
               <span />
             )}
             <div className="flex items-center gap-2">
-              <form action={resetCurrentSeason}>
-                <input type="hidden" name="participant_sport_id" value={selectedPsId} />
-                <ConfirmSubmitButton
-                  confirmMessage={`Supprimer tous les matchs et le classement de la saison ${currentSeason} pour ${
-                    selectedPs?.club || "cette équipe"
-                  } ? Les autres saisons (archives) ne sont pas concernées. Cette action est irréversible.`}
-                  className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-ink/50 shadow-sm hover:text-cardinal"
-                >
-                  Réinitialiser
-                </ConfirmSubmitButton>
-              </form>
+              {isCurrentSeason && <SyncTeamsButton />}
               <SeasonSelect
                 seasons={seasonOptions}
                 value={selectedSeason}
@@ -2267,16 +2249,16 @@ export default async function BasketPage({ searchParams }) {
             </div>
           )}
 
-          {isCurrentSeason && (
-            <div className="rounded-card bg-white p-4 shadow-sm">
-              <SyncTeamsButton
-                participantSportId={selectedPsId}
-                lastSyncAt={selectedPs?.last_ffbb_sync_at ? formatDateTime(selectedPs.last_ffbb_sync_at) : null}
-                lastSyncSummary={selectedPs?.last_ffbb_sync_summary ?? null}
-                lastSyncError={selectedPs?.last_ffbb_sync_error ?? null}
-              />
-            </div>
-          )}
+          <PhaseBar
+            phases={phases}
+            selectedPhase={selectedPhase}
+            selectedPsId={selectedPsId}
+            tab={tab}
+            scope={scope}
+            season={selectedSeason}
+            isCurrentSeason={isCurrentSeason}
+            journeeQS={journeeQS}
+          />
 
           <div className="flex flex-wrap items-center gap-2">
             <Link
@@ -2328,69 +2310,6 @@ export default async function BasketPage({ searchParams }) {
             )}
           </div>
 
-          <PhaseBar
-            phases={phases}
-            selectedPhase={selectedPhase}
-            selectedPsId={selectedPsId}
-            tab={tab}
-            scope={scope}
-            season={selectedSeason}
-            isCurrentSeason={isCurrentSeason}
-            journeeQS={journeeQS}
-          />
-
-          {/* Autocomplétion (suggestion, pas restriction) pour le champ
-              "Adversaire" du formulaire manuel ci-dessous — un club hors
-              département, jamais croisé, reste saisissable en texte libre. */}
-          <datalist id="known-clubs">
-            {[...clubLogos.values()].map((c) =>
-              c.display_name ? <option key={c.club_key} value={c.display_name} /> : null
-            )}
-          </datalist>
-
-          {isCurrentSeason && tab === "calendrier" && (
-            <details className="rounded-card bg-white p-4 shadow-sm">
-              <summary className="cursor-pointer text-sm font-semibold text-navy">
-                Ajouter un match amical
-              </summary>
-              <p className="mt-3 text-xs text-ink/50">
-                Les matchs de compétition viennent tout seuls de la mise à jour FFBB. Ce formulaire ne sert qu'aux
-                matchs amicaux (absents de la FFBB), rangés dans une phase « Matchs amicaux » créée automatiquement.
-              </p>
-              <form action={addMatch} className="mt-3 grid gap-2 sm:grid-cols-2">
-                <input type="hidden" name="participant_sport_id" value={selectedPsId} />
-                <input type="hidden" name="amical" value="1" />
-                <input
-                  type="datetime-local"
-                  name="match_date"
-                  required
-                  className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm"
-                />
-                <select name="home_away" className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm">
-                  <option value="domicile">Domicile</option>
-                  <option value="exterieur">Extérieur</option>
-                </select>
-                <input
-                  name="opponent"
-                  placeholder="Adversaire"
-                  list="known-clubs"
-                  required
-                  className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2"
-                />
-                <input
-                  name="location"
-                  placeholder="Lieu / salle"
-                  className="rounded-lg border border-ink/15 px-2 py-1.5 text-sm sm:col-span-2"
-                />
-                <button
-                  type="submit"
-                  className="rounded-full bg-cardinal px-4 py-1.5 text-sm font-semibold text-white hover:bg-cardinal-dark sm:col-span-2 sm:w-fit"
-                >
-                  Ajouter
-                </button>
-              </form>
-            </details>
-          )}
 
           {tab === "calendrier" && (
             <CalendrierTab
@@ -2409,7 +2328,7 @@ export default async function BasketPage({ searchParams }) {
           )}
           {tab === "classement" && (
             <div className="space-y-3">
-              {selectedPhase && selectedPhase.phase_type !== "amical" && (
+              {selectedPhase && (
                 <div className="flex justify-end">
                   <ComputeClassementButton phaseId={selectedPhase.id} />
                 </div>
