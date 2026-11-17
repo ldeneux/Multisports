@@ -138,7 +138,8 @@ CLUB_CODE = "ARA0069106"                      # code FFBB du club (ligue ARA, co
 CLUB_URL = f"{SITE}/ligues/ara/comites/0069/clubs/{CLUB_CODE.lower()}"
 BASE_COMPETITIONS = f"{SITE}/ligues/ara/comites/0069/competitions"
 DOSSIER = CONFIG.parent
-PAUSE = 0.4   # secondes entre deux pages (on reste poli avec le site)
+PAUSE = 0.6   # secondes entre deux pages (on reste poli avec le site)
+ATTENTES_BLOCAGE = (20, 60)   # pauses (s) avant un nouvel essai quand le site répond 403 / 429 / 503
 
 # Le lien garde son chemin d'origine : …/ligues/ara/comites/0069/competitions/<code> (compétition de comité) ou
 # …/ligues/ara/competitions/<code> (compétition régionale : RM2, PRM...). Reconstruire tout sous le comité donnait un 404.
@@ -167,11 +168,17 @@ RE_ENG_JSON = re.compile(r'"(?:idEngagement|engagementId|id_engagement)"\s*:\s*(
 
 def telecharger(url):
     time.sleep(PAUSE)
-    r = requests.get(url, headers=HEADERS_SITE, timeout=30)
-    if r.status_code != 200:
+    for essai in range(len(ATTENTES_BLOCAGE) + 1):
+        r = requests.get(url, headers=HEADERS_SITE, timeout=30)
+        if r.status_code == 200:
+            return r.text
+        if r.status_code in (403, 429, 503) and essai < len(ATTENTES_BLOCAGE):
+            attente = ATTENTES_BLOCAGE[essai]
+            print(f"       le site ralentit (HTTP {r.status_code}) : pause de {attente} s puis nouvel essai ...")
+            time.sleep(attente)
+            continue
         blocage = " (blocage anti-robot du site, réessaie plus tard)" if r.status_code in (403, 429, 503) else ""
         raise ErreurSite(f"le site répond HTTP {r.status_code}{blocage}", r.status_code)
-    return r.text
 
 
 def decoder(html):
@@ -264,7 +271,7 @@ def lire_poule(c, engagement=None):
                     params["phase"] = c["phase"]
                 params["journee"] = n
                 pages.append(telecharger(f"{base}?{urlencode(params)}"))
-            nb = len(re.findall(r'\\?"nomEquipe1\\?"', pages[0]))
+            nb = len(rencontres_pages(pages, c["poule"])) or len(re.findall(r'\\?"nomEquipe1\\?"', pages[0]))
             if c["poule"] not in pages[0] or nb == 0:
                 raise RuntimeError("la page ne contient pas les données de la poule")
             if engagement and not any(engagement in p for p in pages):
@@ -275,7 +282,10 @@ def lire_poule(c, engagement=None):
             derniere = e
             if isinstance(e, ErreurSite) and e.statut in (403, 429, 503):
                 raise                  # blocage anti-robot : inutile d'insister sur les autres adresses
-    raise derniere
+    essayees = " | ".join(c.get("bases") or [c["base"]])
+    if isinstance(derniere, ErreurSite):
+        raise ErreurSite(f"{derniere} - adresses essayées : {essayees}", derniere.statut)
+    raise RuntimeError(f"{derniere} - adresses essayées : {essayees}")
 
 
 # ----------------------------------------------------------------------------- autres phases de la compétition
@@ -325,6 +335,49 @@ def _ids_poules(liste):
     return [str(x.get("id")) for x in (liste or []) if isinstance(x, dict) and re.fullmatch(r"\d{9,}", str(x.get("id") or ""))]
 
 
+def _equipe_du_club(nom):
+    return bool(nom) and str(nom).upper().strip().startswith(CLUB_NOM.upper())
+
+
+def rencontres_de(html, poule):
+    """Rencontres qui appartiennent VRAIMENT à la poule (une page peut contenir toute la phase)."""
+    out = {}
+
+    def rec(n, dans_poule):
+        if isinstance(n, dict):
+            if str(n.get("id")) == str(poule) and (isinstance(n.get("rencontres"), list) or isinstance(n.get("classements"), list)):
+                dans_poule = True
+            if "nomEquipe1" in n and "nomEquipe2" in n:
+                idp = n.get("idPoule")
+                idp = idp.get("id") if isinstance(idp, dict) else idp
+                if (idp is not None and str(idp) == str(poule)) or (idp is None and dans_poule):
+                    out[str(n.get("id"))] = n
+            for v in n.values():
+                rec(v, dans_poule)
+        elif isinstance(n, list):
+            for v in n:
+                rec(v, dans_poule)
+
+    for b in blobs_json(html):
+        rec(b, False)
+    return out
+
+
+def rencontres_pages(pages, poule):
+    out = {}
+    for h in pages:
+        out.update(rencontres_de(h, poule))
+    return out
+
+
+def poule_contient_club(pages, poule):
+    """Le club joue-t-il dans CETTE poule ? (lecture de ses rencontres ; ancien test sur la page entière si la structure est inconnue)."""
+    rs = rencontres_pages(pages, poule)
+    if not rs:
+        return any(RE_CLUB_DANS_PAGE.search(x) for x in pages)
+    return any(_equipe_du_club(r.get("nomEquipe1")) or _equipe_du_club(r.get("nomEquipe2")) for r in rs.values())
+
+
 def phases_soeurs(html, poule, phase_courante=None):
     """Autres phases de la compétition qui contient `poule` : liste de (id_phase, libellé, [ids de poules connues])."""
     trouvees = {}
@@ -357,7 +410,8 @@ def poules_de_phase(html, phase):
 
 
 def decouvrir_phases_soeurs(token, c, pages, deposees, rapport, diag):
-    """Cherche et dépose les poules des AUTRES phases de la compétition (là où le club joue). Renvoie le nombre déposé."""
+    """Cherche et dépose les poules des AUTRES phases de la compétition (là où le club joue). Renvoie le nombre déposé.
+    Une seule page est lue par phase ; seules les poules où le club joue sont ensuite lues en détail et déposées."""
     html0 = pages[0]
     autres = phases_soeurs(html0, c["poule"], c.get("phase"))
     if not autres:
@@ -369,20 +423,23 @@ def decouvrir_phases_soeurs(token, c, pages, deposees, rapport, diag):
     for ph_id, libelle, poules in autres:
         base = c["base"]
         try:
-            if not poules:
-                poules = poules_de_phase(telecharger(f"{base}?{urlencode({'phase': ph_id, 'journee': 1})}"), ph_id)
+            page_phase = telecharger(f"{base}?{urlencode({'phase': ph_id, 'journee': 1})}")
         except Exception as e:
             print(f"       phase {libelle or ph_id} : lecture impossible ({e})")
             continue
+        poules = poules or poules_de_phase(page_phase, ph_id)
         for pl in poules[:15]:
             if pl in deposees:
                 continue
+            connues = rencontres_de(page_phase, pl)
+            if connues and not any(_equipe_du_club(r.get("nomEquipe1")) or _equipe_du_club(r.get("nomEquipe2")) for r in connues.values()):
+                continue                       # poule déjà lue dans la page de la phase : le club n'y joue pas (aucune requête)
             cand = {"base": base, "bases": c.get("bases") or [base], "poule": pl, "phase": ph_id, "via": "phase soeur"}
             try:
                 pages_s, nb = lire_poule(cand)
             except Exception:
                 continue                       # poule sans données : on passe à la suivante
-            if not any(RE_CLUB_DANS_PAGE.search(x) for x in pages_s):
+            if not poule_contient_club(pages_s, pl):
                 continue                       # le club n'est pas dans cette poule
             deposer(token, pl, pages_s)
             deposees.add(pl)
@@ -403,6 +460,50 @@ def deposer(token, poule_id, pages):
     if r.status_code not in (200, 201, 204):
         raise RuntimeError(f"écriture Supabase ({r.status_code}) : {r.text[:200]}")
 
+
+
+def traiter_equipe(token, eng, rang, deposees, rapport, ctx, ajouter=True):
+    """Lit et dépose la poule d'une équipe du club (puis les autres phases de sa compétition). Renvoie sa ligne de rapport."""
+    ligne = {"engagement": eng, "equipe": "", "poule": "", "phase": "", "lien": "", "matchs": "", "statut": ""}
+    html_eq = None
+    try:
+        html_eq = telecharger(f"{CLUB_URL}/equipes/{eng}")
+        ligne["equipe"] = titre(html_eq)
+        candidats = candidats_equipe(decoder(html_eq))
+        if not candidats:
+            raise RuntimeError("aucun lien de poule trouvé dans la page de l'équipe")
+        derniere = "poule introuvable"
+        for c in candidats:
+            try:
+                pages, nb = lire_poule(c, eng)
+            except Exception as e:
+                derniere = str(e)
+                continue
+            ligne.update(poule=c["poule"], phase=c["phase"] or "", matchs=nb,
+                         lien=f"{c['base']}?poule={c['poule']}" + (f"&phase={c['phase']}" if c["phase"] else ""))
+            if c["poule"] in deposees:
+                ligne["statut"] = "OK (poule déjà déposée)"
+            else:
+                deposer(token, c["poule"], pages)
+                deposees.add(c["poule"])
+                ligne["statut"] = f"OK ({c['via']})"
+            try:
+                decouvrir_phases_soeurs(token, c, pages, deposees, rapport, ctx["diag_phases"])
+            except Exception as e:
+                print(f"       autres phases : {e}")
+            break
+        else:
+            raise RuntimeError(derniere)
+    except Exception as e:
+        ligne["statut"] = f"ERREUR : {e}"
+        if html_eq and ctx["diag_equipes"] < 8:        # une copie de la page de chaque équipe en erreur (8 au plus)
+            sauver_diag(f"page_equipe_{eng}.html", html_eq)
+            ctx["diag_equipes"] += 1
+    if ajouter:
+        rapport.append(ligne)
+    marque = "OK " if ligne["statut"].startswith("OK") else "ERR"
+    print(f"  [{rang}] {marque} {ligne['equipe'] or eng} - {ligne['statut']}")
+    return ligne
 
 
 def main():
@@ -429,47 +530,20 @@ def main():
 
     # --- 2) La poule de chaque équipe ------------------------------------------------------
     print("\n2/3  Lecture de la poule de chaque équipe ...")
-    diag_faite = False
-    diag_phases = {}
+    ctx = {"diag_equipes": 0, "diag_phases": {}}
+    lignes = {}
     for i, eng in enumerate(engagements, 1):
-        ligne = {"engagement": eng, "equipe": "", "poule": "", "phase": "", "lien": "", "matchs": "", "statut": ""}
-        html_eq = None
-        try:
-            html_eq = telecharger(f"{CLUB_URL}/equipes/{eng}")
-            ligne["equipe"] = titre(html_eq)
-            candidats = candidats_equipe(decoder(html_eq))
-            if not candidats:
-                raise RuntimeError("aucun lien de poule trouvé dans la page de l'équipe")
-            derniere = "poule introuvable"
-            for c in candidats:
-                try:
-                    pages, nb = lire_poule(c, eng)
-                except Exception as e:
-                    derniere = str(e)
-                    continue
-                ligne.update(poule=c["poule"], phase=c["phase"] or "", matchs=nb,
-                             lien=f"{c['base']}?poule={c['poule']}" + (f"&phase={c['phase']}" if c["phase"] else ""))
-                if c["poule"] in deposees:
-                    ligne["statut"] = "OK (poule déjà déposée)"
-                else:
-                    deposer(token, c["poule"], pages)
-                    deposees.add(c["poule"])
-                    ligne["statut"] = f"OK ({c['via']})"
-                try:
-                    decouvrir_phases_soeurs(token, c, pages, deposees, rapport, diag_phases)
-                except Exception as e:
-                    print(f"       autres phases : {e}")
-                break
-            else:
-                raise RuntimeError(derniere)
-        except Exception as e:
-            ligne["statut"] = f"ERREUR : {e}"
-            if html_eq and not diag_faite:
-                sauver_diag(f"page_equipe_{eng}.html", html_eq)
-                diag_faite = True
-        rapport.append(ligne)
-        marque = "OK " if ligne["statut"].startswith("OK") else "ERR"
-        print(f"  [{i}/{len(engagements)}] {marque} {ligne['equipe'] or eng} - {ligne['statut']}")
+        lignes[eng] = traiter_equipe(token, eng, f"{i}/{len(engagements)}", deposees, rapport, ctx)
+
+    # Équipes bloquées par le site (403 / 429 / 503) : une seconde tentative après une pause.
+    bloquees = [e for e, l in lignes.items() if re.search(r"HTTP (403|429|503)", l["statut"])]
+    if bloquees:
+        print(f"\n  {len(bloquees)} équipe(s) bloquée(s) par le site : pause de 60 s puis nouvelle tentative ...")
+        time.sleep(60)
+        for eng in bloquees:
+            nouvelle = traiter_equipe(token, eng, "reprise", deposees, rapport, ctx, ajouter=False)
+            if nouvelle["statut"].startswith("OK"):
+                lignes[eng].update(nouvelle)
 
     # --- 3) Les phases déjà saisies dans l'appli (complément) -------------------------------
     print("\n3/3  Phases déjà saisies dans l'appli ...")
