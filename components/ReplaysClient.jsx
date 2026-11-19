@@ -2,7 +2,15 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { addChapter, addReplayGroup, deleteChapter, deleteGroup, moveChapter } from "@/app/(protected)/replays/actions";
+import {
+  addChapter,
+  addReplayGroup,
+  deleteChapter,
+  deleteGroup,
+  moveChapter,
+  updateChapter,
+  updateReplayGroup,
+} from "@/app/(protected)/replays/actions";
 
 const SPORTS = [
   { value: "basket", label: "Basket" },
@@ -199,7 +207,7 @@ function MatchPicker({ matches, value, onPick }) {
 // ---------------------------------------------------------------------------
 // Formulaire : un match / une compétition + ses chapitres
 // ---------------------------------------------------------------------------
-export function ReplayForm({ matches, defaultMatchId, startOpen }) {
+export function ReplayForm({ matches, participants = [], defaultMatchId, startOpen }) {
   const router = useRouter();
   const initial = matches.find((m) => m.id === defaultMatchId);
 
@@ -211,6 +219,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
   const [team, setTeam] = useState(initial?.team ?? "");
   const [division, setDivision] = useState(initial?.division ?? "");
   const [matchId, setMatchId] = useState(initial?.id ?? "");
+  const [participantId, setParticipantId] = useState(initial?.participantId ?? "");
   const [rows, setRows] = useState(() => defaultRows("basket"));
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -226,6 +235,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
     setSeasonAuto(!m.season);
     setDivision(m.division);
     if (m.team) setTeam(m.team);
+    if (m.participantId) setParticipantId(m.participantId); // le participant du match
   }
 
   function changeDate(value) {
@@ -253,6 +263,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
     setTeam("");
     setDivision("");
     setMatchId("");
+    setParticipantId("");
     setRows(defaultRows("basket"));
   }
 
@@ -269,6 +280,7 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
         team,
         division,
         match_id: matchId,
+        participant_id: participantId,
         chapters: rows.map(({ label, subtitle, url }) => ({ label, subtitle, url })),
       });
       if (res?.error) {
@@ -328,9 +340,21 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
             <input value={team} onChange={(e) => setTeam(e.target.value)} placeholder="U15" className={inputClass} />
           </Field>
         </div>
-        <Field label="Division / niveau (facultatif)">
-          <input value={division} onChange={(e) => setDivision(e.target.value)} className={inputClass} />
-        </Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Division / niveau (facultatif)">
+            <input value={division} onChange={(e) => setDivision(e.target.value)} className={inputClass} />
+          </Field>
+          <Field label="Participant">
+            <select value={participantId} onChange={(e) => setParticipantId(e.target.value)} className={inputClass}>
+              <option value="">— Aucun —</option>
+              {participants.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.firstName}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
 
         <div className="space-y-2">
           <p className="text-xs font-semibold text-ink/60">Chapitres (une vidéo chacun, les lignes vides sont ignorées)</p>
@@ -388,18 +412,54 @@ export function ReplayForm({ matches, defaultMatchId, startOpen }) {
 // ---------------------------------------------------------------------------
 // Liste : une carte par match / compétition
 // ---------------------------------------------------------------------------
-export function ReplayList({ groups }) {
+export function ReplayList({ groups, participants = [] }) {
+  const [participantFilter, setParticipantFilter] = useState("tous");
   const [filter, setFilter] = useState("tous");
   const [seasonFilter, setSeasonFilter] = useState("toutes");
 
   const seasons = unique(groups.map((g) => g.season).filter(Boolean)).sort().reverse();
   const effSeason = seasonFilter === "toutes" || seasons.includes(seasonFilter) ? seasonFilter : "toutes";
+  const effParticipant =
+    participantFilter === "tous" || participants.some((p) => p.id === participantFilter) ? participantFilter : "tous";
   const shown = groups.filter(
-    (g) => (filter === "tous" || g.sport === filter) && (effSeason === "toutes" || g.season === effSeason)
+    (g) =>
+      (effParticipant === "tous" || g.participantId === effParticipant) &&
+      (filter === "tous" || g.sport === filter) &&
+      (effSeason === "toutes" || g.season === effSeason)
   );
+  const unassigned = groups.filter((g) => !g.participantId).length;
 
   return (
     <div className="space-y-3">
+      {participants.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {/* Mêmes pastilles que le calendrier : Tous, puis un participant par couleur */}
+          <button
+            type="button"
+            onClick={() => setParticipantFilter("tous")}
+            className={`rounded-full px-4 py-1.5 text-sm font-semibold shadow-sm ${
+              effParticipant === "tous" ? "bg-navy text-white" : "bg-white text-ink/60"
+            }`}
+          >
+            Tous
+          </button>
+          {participants.map((p) => {
+            const active = effParticipant === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setParticipantFilter(p.id)}
+                aria-pressed={active}
+                className="rounded-full px-4 py-1.5 text-sm font-semibold shadow-sm"
+                style={{ backgroundColor: active ? p.color : "white", color: active ? "white" : p.color }}
+              >
+                {p.firstName}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {[["tous", "Tous"], ...SPORTS.map((s) => [s.value, s.label])].map(([value, label]) => (
           <button
@@ -430,8 +490,14 @@ export function ReplayList({ groups }) {
       {shown.length === 0 && (
         <p className="rounded-card bg-white p-4 text-sm text-ink/60 shadow-sm">Aucun replay pour l'instant.</p>
       )}
+      {effParticipant !== "tous" && unassigned > 0 && (
+        <p className="text-xs text-ink/50">
+          {unassigned} replay{unassigned > 1 ? "s" : ""} sans participant {unassigned > 1 ? "n'apparaissent" : "n'apparaît"} que dans « Tous » :
+          ouvrez-le{unassigned > 1 ? "s" : ""}, touchez « Modifier » et choisissez le participant.
+        </p>
+      )}
       {shown.map((g) => (
-        <GroupCard key={g.id} g={g} />
+        <GroupCard key={g.id} g={g} participants={participants} />
       ))}
     </div>
   );
@@ -450,12 +516,16 @@ function Frame({ src, title }) {
   );
 }
 
-function GroupCard({ g }) {
+function GroupCard({ g, participants = [] }) {
   const router = useRouter();
   const [expanded, setExpanded] = useState(false);
   // null | { mode: "one", id } | { mode: "all", index }
   const [player, setPlayer] = useState(null);
   const [adding, setAdding] = useState(false);
+  // Modification du replay (titre, informations, participant) et d'un chapitre (nom, sous-titre, lien)
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [chapterDraft, setChapterDraft] = useState(null); // { id, label, subtitle, url }
   const [newLabel, setNewLabel] = useState("");
   const [newSubtitle, setNewSubtitle] = useState("");
   const [newUrl, setNewUrl] = useState("");
@@ -467,6 +537,19 @@ function GroupCard({ g }) {
   const info = [formatDay(g.recordedOn), g.season && `Saison ${g.season}`, g.team, g.division]
     .filter(Boolean)
     .join(" · ");
+  const owner = participants.find((p) => p.id === g.participantId);
+
+  function startEditing() {
+    setDraft({
+      title: g.title,
+      recorded_on: g.recordedOn ?? "",
+      season: g.season,
+      team: g.team,
+      division: g.division,
+      participant_id: g.participantId ?? "",
+    });
+    setEditing(true);
+  }
 
   function run(action, after) {
     setError("");
@@ -542,6 +625,14 @@ function GroupCard({ g }) {
           {SPORT_EMOJI[g.sport] ?? "🏅"}
         </span>
         <span className="min-w-0 flex-1 font-display text-base font-bold text-navy">{g.title}</span>
+        {owner && (
+          <span
+            className="shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-bold text-white"
+            style={{ backgroundColor: owner.color }}
+          >
+            {owner.firstName}
+          </span>
+        )}
         <span
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sand text-lg font-bold text-navy"
           aria-hidden="true"
@@ -552,8 +643,62 @@ function GroupCard({ g }) {
 
       {expanded && (
         <div className="space-y-3 px-4 pb-4">
+          {editing && draft ? (
+            <div className="space-y-2 rounded-lg bg-sand/60 p-3">
+              <Field label="Titre">
+                <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} className={inputClass} />
+              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Date">
+                  <input
+                    type="date"
+                    value={draft.recorded_on}
+                    onChange={(e) => setDraft({ ...draft, recorded_on: e.target.value })}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Saison">
+                  <input value={draft.season} onChange={(e) => setDraft({ ...draft, season: e.target.value })} placeholder="2025-2026" className={inputClass} />
+                </Field>
+                <Field label="Équipe / catégorie">
+                  <input value={draft.team} onChange={(e) => setDraft({ ...draft, team: e.target.value })} className={inputClass} />
+                </Field>
+                <Field label="Division / niveau">
+                  <input value={draft.division} onChange={(e) => setDraft({ ...draft, division: e.target.value })} className={inputClass} />
+                </Field>
+              </div>
+              <Field label="Participant">
+                <select value={draft.participant_id} onChange={(e) => setDraft({ ...draft, participant_id: e.target.value })} className={inputClass}>
+                  <option value="">— Aucun —</option>
+                  {participants.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.firstName}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setEditing(false)} className="rounded-full bg-white px-4 py-1.5 text-xs font-bold text-ink/60">
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  disabled={pending || !draft.title.trim()}
+                  onClick={() => run(() => updateReplayGroup(g.id, draft), () => setEditing(false))}
+                  className="rounded-full bg-navy px-4 py-1.5 text-xs font-bold text-white hover:bg-navy-light disabled:opacity-50"
+                >
+                  Enregistrer
+                </button>
+              </div>
+            </div>
+          ) : (
           <div className="flex items-start justify-between gap-3">
-            <p className="min-w-0 text-xs text-ink/50">{info || "Aucune information générale."}</p>
+            <p className="min-w-0 text-xs text-ink/50">
+              {info || "Aucune information générale."}{" "}
+              <button type="button" onClick={startEditing} className="font-semibold text-lagoon hover:underline">
+                Modifier
+              </button>
+            </p>
             {playable.length > 0 && (
               <button
                 type="button"
@@ -564,6 +709,7 @@ function GroupCard({ g }) {
               </button>
             )}
           </div>
+          )}
 
           {renderPlayer()}
 
@@ -571,7 +717,44 @@ function GroupCard({ g }) {
             <p className="text-sm text-ink/60">Aucun chapitre pour l'instant.</p>
           ) : (
             <ul className="divide-y divide-ink/5">
-              {g.chapters.map((c, idx) => (
+              {g.chapters.map((c, idx) =>
+                chapterDraft?.id === c.id ? (
+                  <li key={c.id} className="space-y-2 py-2">
+                    <div className="flex flex-wrap gap-2">
+                      <input
+                        value={chapterDraft.label}
+                        onChange={(e) => setChapterDraft({ ...chapterDraft, label: e.target.value })}
+                        placeholder="Nom du chapitre"
+                        className={`${inputClass} w-full sm:w-1/3`}
+                      />
+                      <input
+                        value={chapterDraft.url}
+                        onChange={(e) => setChapterDraft({ ...chapterDraft, url: e.target.value })}
+                        placeholder="Lien YouTube ou Drive"
+                        className={`${inputClass} min-w-0 flex-1`}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <input
+                        value={chapterDraft.subtitle}
+                        onChange={(e) => setChapterDraft({ ...chapterDraft, subtitle: e.target.value })}
+                        placeholder="Sous-titre (facultatif)"
+                        className="min-w-0 flex-1 rounded-md border border-ink/10 bg-white px-3 py-1 text-xs"
+                      />
+                      <button type="button" onClick={() => setChapterDraft(null)} className="rounded-full bg-sand px-4 py-2 text-xs font-bold text-ink/60">
+                        Annuler
+                      </button>
+                      <button
+                        type="button"
+                        disabled={pending || !chapterDraft.label.trim() || !chapterDraft.url.trim()}
+                        onClick={() => run(() => updateChapter(c.id, chapterDraft), () => setChapterDraft(null))}
+                        className="rounded-full bg-navy px-4 py-2 text-xs font-bold text-white hover:bg-navy-light disabled:opacity-50"
+                      >
+                        Enregistrer
+                      </button>
+                    </div>
+                  </li>
+                ) : (
                 <li key={c.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-semibold text-navy">{c.label}</span>
@@ -619,6 +802,14 @@ function GroupCard({ g }) {
                   <button
                     type="button"
                     disabled={pending}
+                    onClick={() => setChapterDraft({ id: c.id, label: c.label, subtitle: c.subtitle, url: c.url })}
+                    className="text-xs font-semibold text-lagoon hover:underline"
+                  >
+                    Modifier
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pending}
                     onClick={() => {
                       if (window.confirm(`Retirer le chapitre « ${c.label} » ? (la vidéo reste sur YouTube / Drive)`)) {
                         run(() => deleteChapter(c.id));
@@ -629,7 +820,8 @@ function GroupCard({ g }) {
                     Retirer
                   </button>
                 </li>
-              ))}
+                )
+              )}
             </ul>
           )}
 

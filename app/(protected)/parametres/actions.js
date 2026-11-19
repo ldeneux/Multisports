@@ -85,17 +85,14 @@ export async function addAssignment(formData) {
 export async function updateAssignment(formData) {
   const supabase = createClient();
 
-  const fields = {
-    club: formData.get("club") || null,
-    link_url: formData.get("link_url") || null,
-  };
-  // Catégorie : plus saisie pour le basket (les lignes Basket n'ont pas ce champ) ; on ne l'écrase donc jamais.
-  if (formData.has("category")) fields.category = formData.get("category") || null;
-  // Champ présent uniquement sur les lignes Basket (colonne ajoutée par supabase/11-basket-sync-globale.sql).
-  if (formData.has("ffbb_team_codes")) {
-    fields.ffbb_team_codes = (formData.get("ffbb_team_codes") || "").toString().trim() || null;
-  }
-  await supabase.from("participant_sports").update(fields).eq("id", formData.get("id"));
+  await supabase
+    .from("participant_sports")
+    .update({
+      club: formData.get("club") || null,
+      category: formData.get("category") || null,
+      link_url: formData.get("link_url") || null,
+    })
+    .eq("id", formData.get("id"));
 
   revalidatePath("/parametres");
   revalidatePath("/");
