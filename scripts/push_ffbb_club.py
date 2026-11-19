@@ -191,10 +191,42 @@ def engagements_du_club(txt):
     return list(dict.fromkeys(RE_ENG_JSON.findall(txt)))
 
 
-def candidats_equipe(txt):
-    """Poules possibles pour une équipe : d'abord les liens …/competitions/<code>?poule=…&phase=…
-    de sa page ; à défaut, les identifiants de poule / compétition présents dans ses données."""
+RE_RENCONTRE = re.compile(r'\{"id":"(\d{12,})","date_rencontre"')
+
+
+def candidats_depuis_rencontres(txt):
+    """Poules des matchs listés sur la page de l'équipe (sa liste de matchs = ses poules).
+    Chaque match porte sa poule (idPoule) et sa phase (competitionId) ; le « code » de la compétition
+    dans l'adresse est celui de la compétition d'origine (competition_origine) quand il y en a une
+    (ex. 2e tour de coupe : phase 2900372, mais adresse …/competitions/crmlsm)."""
+    marques = [m.start() for m in RE_RENCONTRE.finditer(txt)]
     vus, res = set(), []
+    for i, debut in enumerate(marques):
+        fin = marques[i + 1] if i + 1 < len(marques) else debut + 25000
+        bloc = txt[debut:min(fin, debut + 25000)]
+        mp = re.search(r'"idPoule"\s*:\s*\{\s*"id"\s*:\s*"(\d{9,})"', bloc)
+        mc = re.search(r'"competitionId"\s*:\s*\{\s*"id"\s*:\s*"(\d{9,})"', bloc)
+        if not mp or not mc:
+            continue
+        ms = (re.search(r'"competition_origine"\s*:\s*\{\s*"id"\s*:\s*"\d+"\s*,\s*"slug"\s*:\s*"([^"]+)"', bloc)
+              or re.search(r'"competitionId"\s*:\s*\{\s*"id"\s*:\s*"\d+"\s*,\s*"code"\s*:\s*"[^"]*"\s*,\s*"slug"\s*:\s*"([^"]+)"', bloc))
+        slug = ms.group(1) if ms else mc.group(1)
+        cle = (slug, mp.group(1), mc.group(1))
+        if cle not in vus:
+            vus.add(cle)
+            res.append({"base": f"{BASE_COMPETITIONS}/{slug}", "poule": mp.group(1), "phase": mc.group(1),
+                        "via": "matchs"})
+    return res
+
+
+def candidats_equipe(txt):
+    """Poules possibles pour une équipe : d'abord celles de ses matchs (page de l'équipe) ; puis les liens
+    …/competitions/<code>?poule=…&phase=… de la page ; à défaut, les identifiants de poule / compétition
+    présents dans ses données."""
+    vus, res = set(), []
+    for c in candidats_depuis_rencontres(txt):
+        vus.add((c["base"].rsplit("/", 1)[-1], c["poule"], c["phase"]))
+        res.append(c)
     for m in RE_LIEN.finditer(txt):
         q = parse_qs(m.group(2))
         poule = (q.get("poule") or [""])[0]
@@ -294,23 +326,27 @@ def main():
             if not candidats:
                 raise RuntimeError("aucun lien de poule trouvé dans la page de l'équipe")
             derniere = "poule introuvable"
+            lues = []
             for c in candidats:
                 try:
                     pages, nb = lire_poule(c, eng)
                 except Exception as e:
                     derniere = str(e)
                     continue
-                ligne.update(poule=c["poule"], phase=c["phase"] or "", matchs=nb,
-                             lien=f"{c['base']}?poule={c['poule']}" + (f"&phase={c['phase']}" if c["phase"] else ""))
-                if c["poule"] in deposees:
-                    ligne["statut"] = "OK (poule déjà déposée)"
-                else:
+                lien = f"{c['base']}?poule={c['poule']}" + (f"&phase={c['phase']}" if c["phase"] else "")
+                if c["poule"] not in deposees:
                     deposer(token, c["poule"], pages)
                     deposees.add(c["poule"])
-                    ligne["statut"] = f"OK ({c['via']})"
-                break
-            else:
+                lues.append((c, nb, lien))
+                if c["via"] == "identifiants":
+                    break   # simple secours : on s'arrête à la première qui fonctionne
+            if not lues:
                 raise RuntimeError(derniere)
+            c0, nb0, lien0 = lues[0]
+            ligne.update(poule=" + ".join(c["poule"] for c, _, _ in lues),
+                         phase=" + ".join(c["phase"] or "" for c, _, _ in lues),
+                         matchs=sum(nb for _, nb, _ in lues), lien=" | ".join(l for _, _, l in lues))
+            ligne["statut"] = f"OK ({c0['via']}, {len(lues)} poule(s))"
         except Exception as e:
             ligne["statut"] = f"ERREUR : {e}"
             if html_eq and not diag_faite:
