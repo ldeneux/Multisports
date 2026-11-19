@@ -253,13 +253,15 @@ export default async function ParametresPage() {
                   />
                 </label>
 
-                <label className="text-xs font-semibold text-ink/60">
-                  Catégorie
-                  <input
-                    name="category" defaultValue={a.category ?? ""}
-                    className="mt-1 w-full rounded-lg border border-ink/15 px-2 py-1.5"
-                  />
-                </label>
+                {!/basket/i.test(a.sports?.name ?? "") && (
+                  <label className="text-xs font-semibold text-ink/60">
+                    Catégorie
+                    <input
+                      name="category" defaultValue={a.category ?? ""}
+                      className="mt-1 w-full rounded-lg border border-ink/15 px-2 py-1.5"
+                    />
+                  </label>
+                )}
 
                 <label className="text-xs font-semibold text-ink/60">
                   Lien (calendrier/résultats)
@@ -268,6 +270,17 @@ export default async function ParametresPage() {
                     className="mt-1 w-full rounded-lg border border-ink/15 px-2 py-1.5"
                   />
                 </label>
+
+                {/basket/i.test(a.sports?.name ?? "") && (
+                  <label className="col-span-2 text-xs font-semibold text-ink/60 sm:col-span-3">
+                    Équipes FFBB suivies cette saison (à mettre à jour chaque saison)
+                    <input
+                      name="ffbb_team_codes" defaultValue={a.ffbb_team_codes ?? ""}
+                      placeholder="ex. U15F · U13F-2 · SENF · ou plusieurs : U15F, SENF-2"
+                      className="mt-1 w-full rounded-lg border border-ink/15 px-2 py-1.5"
+                    />
+                  </label>
+                )}
 
                 <div className="flex gap-2">
                   <button
