@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { formatDate, ffbbAssetUrl, ffnCompetitionResultsUrl, ffnLiveUrl, ffnCompetitionIdFromLink } from "@/lib/utils";
 import CalendarEvent from "@/components/CalendarEvent";
 import { findHostClub } from "@/lib/ffn-clubs-rhone";
+import { PARTICIPANT_COLORS } from "@/lib/participantColors";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,6 @@ export const dynamic = "force-dynamic";
 // demandé) — pas de colonne "couleur" en base, donc attribuée par ordre
 // (le même ordre que le tri par date de naissance partout ailleurs dans
 // l'app, pour rester stable d'une page à l'autre).
-const PARTICIPANT_COLORS = ["#1E88C7", "#2E9E6B", "#E08E1D", "#8E44AD", "#C2185B", "#00838F"];
 
 const SPORT_ICONS = {
   basket: "🏀",
@@ -382,8 +382,9 @@ export default async function HomePage({ searchParams }) {
         time: row.start_time,
         level: row.categories,
         comment: row.comment,
-        ffnLink: row.ffn_link,
-        // Si le lien saisi contient l'identifiant FFN, on en déduit le live.
+        // Si le lien saisi contient l'identifiant FFN (que ce soit le lien live ou celui des résultats), on en déduit
+        // les deux liens : le live (titre de la fenêtre) et la page FFN des résultats (bouton « Voir sur le site FFN »).
+        ffnLink: ffnCompetitionIdFromLink(row.ffn_link) ? ffnCompetitionResultsUrl(ffnCompetitionIdFromLink(row.ffn_link)) : row.ffn_link,
         liveLink: ffnLiveUrl(ffnCompetitionIdFromLink(row.ffn_link)),
       }),
     };
