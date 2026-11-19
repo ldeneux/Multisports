@@ -16,8 +16,12 @@ const clean = (v) => {
   return s || null;
 };
 
+// Message clair quand la colonne participant_id n'existe pas encore (script SQL pas encore exécuté).
+const friendly = (message) =>
+  /participant_id/i.test(message ?? "") ? "La colonne « participant_id » n'existe pas encore : exécutez supabase/11-replays-participant.sql dans Supabase." : message;
+
 // Crée un replay (match ou compétition) avec ses chapitres.
-// input = { title, sport, recorded_on, season, team, division, match_id, chapters: [{ label, subtitle, url }] }
+// input = { title, sport, recorded_on, season, team, division, participant_id, match_id, chapters: [{ label, subtitle, url }] }
 export async function addReplayGroup(input) {
   const supabase = createClient();
   if (!(await currentUser(supabase))) return { error: "Non connecté." };
@@ -57,10 +61,11 @@ export async function addReplayGroup(input) {
       team: clean(input?.team),
       division: clean(input?.division),
       match_id: sport === "basket" ? clean(input?.match_id) : null,
+      ...(clean(input?.participant_id) ? { participant_id: clean(input.participant_id) } : {}),
     })
     .select("id")
     .single();
-  if (error) return { error: error.message };
+  if (error) return { error: friendly(error.message) };
 
   if (chapters.length) {
     const { error: chapterError } = await supabase
@@ -154,6 +159,62 @@ export async function moveChapter(id, direction) {
     const { error: updateError } = await supabase.from("replay_chapters").update({ position: index }).eq("id", row.id);
     if (updateError) return { error: updateError.message };
   }
+
+  revalidatePath("/replays");
+  return { ok: true };
+}
+
+// Modifie les informations d'un replay : titre, date, saison, équipe, division et participant.
+// input = { title, recorded_on, season, team, division, participant_id }
+export async function updateReplayGroup(id, input) {
+  const supabase = createClient();
+  if (!(await currentUser(supabase))) return { error: "Non connecté." };
+
+  const title = clean(input?.title);
+  if (!title) return { error: "Le titre est obligatoire." };
+  const recordedOn = /^\d{4}-\d{2}-\d{2}$/.test(String(input?.recorded_on ?? "")) ? input.recorded_on : null;
+
+  const { error } = await supabase
+    .from("replay_groups")
+    .update({
+      title,
+      recorded_on: recordedOn,
+      season: clean(input?.season),
+      team: clean(input?.team),
+      division: clean(input?.division),
+      participant_id: clean(input?.participant_id),
+    })
+    .eq("id", id);
+  if (error) return { error: friendly(error.message) };
+
+  revalidatePath("/replays");
+  return { ok: true };
+}
+
+// Modifie un chapitre : nom, sous-titre et lien (le lien est revérifié, comme à l'ajout).
+// input = { label, subtitle, url }
+export async function updateChapter(id, input) {
+  const supabase = createClient();
+  if (!(await currentUser(supabase))) return { error: "Non connecté." };
+
+  const url = String(input?.url ?? "").trim();
+  const parsed = parseVideoLink(url);
+  if (!parsed) return { error: "Lien non reconnu : colle l'adresse complète (https://…) de la vidéo." };
+
+  const label = clean(input?.label);
+  if (!label) return { error: "Le nom du chapitre est obligatoire." };
+
+  const { error } = await supabase
+    .from("replay_chapters")
+    .update({
+      label,
+      subtitle: clean(input?.subtitle),
+      url,
+      provider: parsed.provider,
+      video_ref: parsed.ref,
+    })
+    .eq("id", id);
+  if (error) return { error: error.message };
 
   revalidatePath("/replays");
   return { ok: true };

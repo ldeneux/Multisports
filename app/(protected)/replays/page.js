@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { embedUrl } from "@/lib/replays";
+import { PARTICIPANT_COLORS } from "@/lib/participantColors";
 import { ReplayForm, ReplayList } from "@/components/ReplaysClient";
 
 export const dynamic = "force-dynamic";
@@ -17,12 +18,12 @@ export default async function ReplaysPage({ searchParams }) {
     { data: matchRows },
     { data: phaseRows },
     { data: psRows },
+    { data: participantRows },
   ] = await Promise.all([
+    // « * » : participant_id est lu s'il existe (colonne ajoutée par supabase/11-replays-participant.sql).
     supabase
       .from("replay_groups")
-      .select(
-        "id, title, sport, recorded_on, season, team, division, match_id, created_at, replay_chapters(id, label, subtitle, url, provider, video_ref, position)"
-      ),
+      .select("*, replay_chapters(id, label, subtitle, url, provider, video_ref, position)"),
     supabase
       .from("basketball_matches")
       .select(
@@ -31,8 +32,16 @@ export default async function ReplaysPage({ searchParams }) {
       .not("us_is_team1", "is", null)
       .order("match_date", { ascending: true }),
     supabase.from("basketball_phases").select("id, phase_name, position"),
-    supabase.from("participant_sports").select("id, category, participants(first_name)"),
+    supabase.from("participant_sports").select("id, category, participant_id, participants(first_name)"),
+    supabase.from("participants").select("id, first_name").order("birthdate"),
   ]);
+
+  // Participants (même ordre et mêmes couleurs que les pastilles du calendrier)
+  const participants = (participantRows ?? []).map((p, i) => ({
+    id: p.id,
+    firstName: p.first_name,
+    color: PARTICIPANT_COLORS[i % PARTICIPANT_COLORS.length],
+  }));
 
   const phaseById = new Map((phaseRows ?? []).map((ph) => [ph.id, ph]));
   const psById = new Map((psRows ?? []).map((ps) => [ps.id, ps]));
@@ -51,6 +60,7 @@ export default async function ReplaysPage({ searchParams }) {
       opponent: (m.us_is_team1 ? m.team2_name : m.team1_name) ?? "",
       home: m.us_is_team1 === true,
       psId: m.participant_sport_id ?? "",
+      participantId: ps?.participant_id ?? "",
       who: ps?.participants?.first_name ?? "",
       team: ps?.category ?? "",
       phaseId: m.phase_id ?? "",
@@ -65,8 +75,12 @@ export default async function ReplaysPage({ searchParams }) {
     (a, b) => sortKey(b).localeCompare(sortKey(a)) || String(b.created_at).localeCompare(String(a.created_at))
   );
 
+  // Participant d'un replay : celui qui est enregistré, sinon celui du match de basket lié.
+  const matchParticipant = new Map(matches.map((m) => [m.id, m.participantId]));
+
   const groups = sorted.map((g) => ({
     id: g.id,
+    participantId: g.participant_id ?? matchParticipant.get(g.match_id) ?? "",
     title: g.title,
     sport: g.sport,
     recordedOn: g.recorded_on,
@@ -96,8 +110,13 @@ export default async function ReplaysPage({ searchParams }) {
           Impossible de lire les replays : {groupError.message} (as-tu exécuté supabase/7-replays.sql ?)
         </p>
       )}
-      <ReplayForm matches={matches} defaultMatchId={preselected} startOpen={Boolean(preselected) || groups.length === 0} />
-      <ReplayList groups={groups} />
+      <ReplayForm
+        matches={matches}
+        participants={participants}
+        defaultMatchId={preselected}
+        startOpen={Boolean(preselected) || groups.length === 0}
+      />
+      <ReplayList groups={groups} participants={participants} />
     </div>
   );
 }
