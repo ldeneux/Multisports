@@ -145,6 +145,8 @@ PAUSE = 0.4   # secondes entre deux pages (on reste poli avec le site)
 
 RE_LIEN = re.compile(r"((?:/ligues/[A-Za-z0-9_-]+)?(?:/comites/[A-Za-z0-9_-]+)?)/competitions/([A-Za-z0-9_.~%-]+)\?([^\"'\\\s<>]*)")
 RE_POULE = re.compile(r'"(?:idPoule|id_poule|pouleId|poule_id)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{9,})')
+# Poule d'une rencontre de l'équipe, telle qu'elle figure dans les données de sa page : "idPoule":{"id":"…"}
+RE_POULE_STRICT = re.compile(r'"idPoule"\s*:\s*\{\s*"id"\s*:\s*"(\d{9,})"')
 RE_PHASE = re.compile(r'"(?:idCompetition|id_competition|competitionId|competition_id|idPhase|phaseId)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{9,})')
 RE_ENG_JSON = re.compile(r'"(?:idEngagement|engagementId|id_engagement)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{12,})')
 
@@ -199,7 +201,7 @@ def candidats_equipe(txt):
     de sa page (avec LEUR chemin : départemental ou régional) ; à défaut, les identifiants de poule /
     compétition présents dans ses données. Pour chaque poule, les autres chemins possibles sont
     ajoutés en variantes, essayées seulement si les premiers essais échouent (404 notamment)."""
-    vus, primaires, variantes = set(), [], []
+    vus, primaires, variantes, liens_phase = set(), [], [], []
 
     def ajouter(prefixe, slug, poule, phase, via):
         cle = (prefixe, slug, poule, phase)
@@ -217,8 +219,19 @@ def candidats_equipe(txt):
             ajouter(m.group(1) or PREFIXES[0], m.group(2), poule, phase, "lien")
             for pre in PREFIXES:
                 ajouter(pre, m.group(2), poule, phase, "variante")
+        elif phase and re.fullmatch(r"\d{9,}", phase):
+            # Lien de compétition sans poule (ex. coupes) : …/competitions/crmlsm?phase=…
+            # La poule de l'équipe se lit alors dans les données de la page.
+            liens_phase.append((m.group(1) or PREFIXES[0], m.group(2), phase))
+    if not primaires and liens_phase:
+        poules_page = list(dict.fromkeys(RE_POULE_STRICT.findall(txt)))[:4]
+        for prefixe, slug, phase in dict.fromkeys(liens_phase):
+            for poule in poules_page:
+                ajouter(prefixe, slug, poule, phase, "lien-phase")
+                for pre in PREFIXES:
+                    ajouter(pre, slug, poule, phase, "variante")
     if not primaires:
-        poules = list(dict.fromkeys(RE_POULE.findall(txt)))[:3]
+        poules = list(dict.fromkeys(RE_POULE_STRICT.findall(txt) + RE_POULE.findall(txt)))[:4]
         phases = list(dict.fromkeys(RE_PHASE.findall(txt)))[:3] or [None]
         for p in poules:
             for ph in phases:
