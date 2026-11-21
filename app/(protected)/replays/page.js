@@ -69,10 +69,14 @@ export default async function ReplaysPage({ searchParams }) {
     };
   });
 
-  // Plus récents d'abord : date du match / de la compétition si connue, sinon date d'ajout.
-  const sortKey = (g) => g.recorded_on ?? String(g.created_at).slice(0, 10);
+  // Date d'un replay : celle qui est enregistrée, sinon la date du match de basket lié, sinon la date d'ajout.
+  // Elle sert à la fois à l'affichage (sous le titre) et au tri, pour que l'ordre suive toujours la date affichée.
+  const matchDate = new Map(matches.map((m) => [m.id, m.date]));
+  const dateOf = (g) => g.recorded_on ?? matchDate.get(g.match_id) ?? String(g.created_at).slice(0, 10);
+
+  // Les plus récents d'abord (à date égale : le dernier ajouté en premier).
   const sorted = [...(groupRows ?? [])].sort(
-    (a, b) => sortKey(b).localeCompare(sortKey(a)) || String(b.created_at).localeCompare(String(a.created_at))
+    (a, b) => dateOf(b).localeCompare(dateOf(a)) || String(b.created_at).localeCompare(String(a.created_at))
   );
 
   // Participant d'un replay : celui qui est enregistré, sinon celui du match de basket lié.
@@ -84,6 +88,7 @@ export default async function ReplaysPage({ searchParams }) {
     title: g.title,
     sport: g.sport,
     recordedOn: g.recorded_on,
+    date: dateOf(g),
     season: g.season ?? "",
     team: g.team ?? "",
     division: g.division ?? "",
