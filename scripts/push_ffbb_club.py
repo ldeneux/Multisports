@@ -136,11 +136,14 @@ SITE = "https://competitions.ffbb.com"
 CLUB_NOM = "OLYMPIC SATHONAY"
 CLUB_CODE = "ARA0069106"                      # code FFBB du club (ligue ARA, comité 0069)
 CLUB_URL = f"{SITE}/ligues/ara/comites/0069/clubs/{CLUB_CODE.lower()}"
-BASE_COMPETITIONS = f"{SITE}/ligues/ara/comites/0069/competitions"
+# Les compétitions départementales sont sous …/comites/0069/competitions/<code>, les compétitions
+# régionales (RM2, coupes régionales…) directement sous …/ligues/ara/competitions/<code>.
+PREFIXES = ["/ligues/ara/comites/0069", "/ligues/ara"]
+BASE_COMPETITIONS = f"{SITE}{PREFIXES[0]}/competitions"
 DOSSIER = CONFIG.parent
 PAUSE = 0.4   # secondes entre deux pages (on reste poli avec le site)
 
-RE_LIEN = re.compile(r"/competitions/([A-Za-z0-9_.~%-]+)\?([^\"'\\\s<>]*)")
+RE_LIEN = re.compile(r"((?:/ligues/[A-Za-z0-9_-]+)?(?:/comites/[A-Za-z0-9_-]+)?)/competitions/([A-Za-z0-9_.~%-]+)\?([^\"'\\\s<>]*)")
 RE_POULE = re.compile(r'"(?:idPoule|id_poule|pouleId|poule_id)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{9,})')
 RE_PHASE = re.compile(r'"(?:idCompetition|id_competition|competitionId|competition_id|idPhase|phaseId)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{9,})')
 RE_ENG_JSON = re.compile(r'"(?:idEngagement|engagementId|id_engagement)"\s*:\s*(?:\{\s*"id"\s*:\s*)?"?(\d{12,})')
@@ -193,24 +196,35 @@ def engagements_du_club(txt):
 
 def candidats_equipe(txt):
     """Poules possibles pour une équipe : d'abord les liens …/competitions/<code>?poule=…&phase=…
-    de sa page ; à défaut, les identifiants de poule / compétition présents dans ses données."""
-    vus, res = set(), []
+    de sa page (avec LEUR chemin : départemental ou régional) ; à défaut, les identifiants de poule /
+    compétition présents dans ses données. Pour chaque poule, les autres chemins possibles sont
+    ajoutés en variantes, essayées seulement si les premiers essais échouent (404 notamment)."""
+    vus, primaires, variantes = set(), [], []
+
+    def ajouter(prefixe, slug, poule, phase, via):
+        cle = (prefixe, slug, poule, phase)
+        if cle in vus:
+            return
+        vus.add(cle)
+        c = {"base": f"{SITE}{prefixe}/competitions/{slug}", "poule": poule, "phase": phase, "via": via}
+        (primaires if via != "variante" else variantes).append(c)
+
     for m in RE_LIEN.finditer(txt):
-        q = parse_qs(m.group(2))
+        q = parse_qs(m.group(3))
         poule = (q.get("poule") or [""])[0]
         phase = (q.get("phase") or [""])[0] or None
-        cle = (m.group(1), poule, phase)
-        if re.fullmatch(r"\d{9,}", poule) and cle not in vus:
-            vus.add(cle)
-            res.append({"base": f"{BASE_COMPETITIONS}/{m.group(1)}", "poule": poule, "phase": phase, "via": "lien"})
-    if res:
-        return res
-    poules = list(dict.fromkeys(RE_POULE.findall(txt)))[:3]
-    phases = list(dict.fromkeys(RE_PHASE.findall(txt)))[:3] or [None]
-    for p in poules:
-        for ph in phases:
-            res.append({"base": f"{BASE_COMPETITIONS}/{ph or 'x'}", "poule": p, "phase": ph, "via": "identifiants"})
-    return res
+        if re.fullmatch(r"\d{9,}", poule):
+            ajouter(m.group(1) or PREFIXES[0], m.group(2), poule, phase, "lien")
+            for pre in PREFIXES:
+                ajouter(pre, m.group(2), poule, phase, "variante")
+    if not primaires:
+        poules = list(dict.fromkeys(RE_POULE.findall(txt)))[:3]
+        phases = list(dict.fromkeys(RE_PHASE.findall(txt)))[:3] or [None]
+        for p in poules:
+            for ph in phases:
+                for pre in PREFIXES:
+                    ajouter(pre, ph or "x", p, ph, "identifiants")
+    return primaires + variantes
 
 
 def candidat_depuis_lien(competition_url, poule_stockee):
