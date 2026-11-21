@@ -534,7 +534,7 @@ function GroupCard({ g, participants = [] }) {
 
   const playable = g.chapters.filter((c) => c.embed);
   const allYoutube = playable.length > 0 && playable.every((c) => c.provider === "youtube");
-  const info = [formatDay(g.recordedOn), g.season && `Saison ${g.season}`, g.team, g.division]
+  const info = [formatDay(g.date), g.season && `Saison ${g.season}`, g.team, g.division]
     .filter(Boolean)
     .join(" · ");
   const owner = participants.find((p) => p.id === g.participantId);
@@ -542,7 +542,7 @@ function GroupCard({ g, participants = [] }) {
   function startEditing() {
     setDraft({
       title: g.title,
-      recorded_on: g.recordedOn ?? "",
+      recorded_on: g.recordedOn ?? g.date ?? "",
       season: g.season,
       team: g.team,
       division: g.division,
@@ -624,7 +624,10 @@ function GroupCard({ g, participants = [] }) {
         <span className="text-xl" aria-hidden="true">
           {SPORT_EMOJI[g.sport] ?? "🏅"}
         </span>
-        <span className="min-w-0 flex-1 font-display text-base font-bold text-navy">{g.title}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-display text-base font-bold text-navy">{g.title}</span>
+          {g.date && <span className="block text-[11px] font-normal text-ink/50">{formatDay(g.date)}</span>}
+        </span>
         {owner && (
           <span
             className="shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-bold text-white"
