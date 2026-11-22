@@ -89,6 +89,7 @@ export default async function ReplaysPage({ searchParams }) {
     sport: g.sport,
     recordedOn: g.recorded_on,
     date: dateOf(g),
+    format: g.format ?? "",
     season: g.season ?? "",
     team: g.team ?? "",
     division: g.division ?? "",

@@ -11,6 +11,7 @@ import {
   updateChapter,
   updateReplayGroup,
 } from "@/app/(protected)/replays/actions";
+import FormatIcon, { FORMAT_OPTIONS } from "@/components/FormatIcon";
 
 const SPORTS = [
   { value: "basket", label: "Basket" },
@@ -220,6 +221,7 @@ export function ReplayForm({ matches, participants = [], defaultMatchId, startOp
   const [division, setDivision] = useState(initial?.division ?? "");
   const [matchId, setMatchId] = useState(initial?.id ?? "");
   const [participantId, setParticipantId] = useState(initial?.participantId ?? "");
+  const [format, setFormat] = useState("");
   const [rows, setRows] = useState(() => defaultRows("basket"));
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -264,6 +266,7 @@ export function ReplayForm({ matches, participants = [], defaultMatchId, startOp
     setDivision("");
     setMatchId("");
     setParticipantId("");
+    setFormat("");
     setRows(defaultRows("basket"));
   }
 
@@ -281,6 +284,7 @@ export function ReplayForm({ matches, participants = [], defaultMatchId, startOp
         division,
         match_id: matchId,
         participant_id: participantId,
+        format,
         chapters: rows.map(({ label, subtitle, url }) => ({ label, subtitle, url })),
       });
       if (res?.error) {
@@ -340,7 +344,7 @@ export function ReplayForm({ matches, participants = [], defaultMatchId, startOp
             <input value={team} onChange={(e) => setTeam(e.target.value)} placeholder="U15" className={inputClass} />
           </Field>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           <Field label="Division / niveau (facultatif)">
             <input value={division} onChange={(e) => setDivision(e.target.value)} className={inputClass} />
           </Field>
@@ -350,6 +354,15 @@ export function ReplayForm({ matches, participants = [], defaultMatchId, startOp
               {participants.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.firstName}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Format">
+            <select value={format} onChange={(e) => setFormat(e.target.value)} className={inputClass}>
+              {FORMAT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
                 </option>
               ))}
             </select>
@@ -547,6 +560,7 @@ function GroupCard({ g, participants = [] }) {
       team: g.team,
       division: g.division,
       participant_id: g.participantId ?? "",
+      format: g.format ?? "",
     });
     setEditing(true);
   }
@@ -636,6 +650,7 @@ function GroupCard({ g, participants = [] }) {
             {owner.firstName}
           </span>
         )}
+        {g.format && <FormatIcon format={g.format} size={30} />}
         <span
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sand text-lg font-bold text-navy"
           aria-hidden="true"
@@ -670,16 +685,27 @@ function GroupCard({ g, participants = [] }) {
                   <input value={draft.division} onChange={(e) => setDraft({ ...draft, division: e.target.value })} className={inputClass} />
                 </Field>
               </div>
-              <Field label="Participant">
-                <select value={draft.participant_id} onChange={(e) => setDraft({ ...draft, participant_id: e.target.value })} className={inputClass}>
-                  <option value="">— Aucun —</option>
-                  {participants.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.firstName}
-                    </option>
-                  ))}
-                </select>
-              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Participant">
+                  <select value={draft.participant_id} onChange={(e) => setDraft({ ...draft, participant_id: e.target.value })} className={inputClass}>
+                    <option value="">— Aucun —</option>
+                    {participants.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.firstName}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Format">
+                  <select value={draft.format} onChange={(e) => setDraft({ ...draft, format: e.target.value })} className={inputClass}>
+                    {FORMAT_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setEditing(false)} className="rounded-full bg-white px-4 py-1.5 text-xs font-bold text-ink/60">
                   Annuler

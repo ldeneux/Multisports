@@ -17,11 +17,22 @@ const clean = (v) => {
 };
 
 // Message clair quand la colonne participant_id n'existe pas encore (script SQL pas encore exécuté).
-const friendly = (message) =>
-  /participant_id/i.test(message ?? "") ? "La colonne « participant_id » n'existe pas encore : exécutez supabase/11-replays-participant.sql dans Supabase." : message;
+const friendly = (message) => {
+  if (/participant_id/i.test(message ?? "")) {
+    return "La colonne « participant_id » n'existe pas encore : exécutez supabase/11-replays-participant.sql dans Supabase.";
+  }
+  if (/\bformat\b.*(column|schema cache)|column.*\bformat\b/i.test(message ?? "")) {
+    return "La colonne « format » n'existe pas encore : exécutez supabase/13-replays-format.sql dans Supabase.";
+  }
+  return message;
+};
+
+// Formats possibles d'une vidéo ; vide = non précisé.
+const FORMATS = ["extrait", "resume", "complet"];
+const cleanFormat = (v) => (FORMATS.includes(v) ? v : null);
 
 // Crée un replay (match ou compétition) avec ses chapitres.
-// input = { title, sport, recorded_on, season, team, division, participant_id, match_id, chapters: [{ label, subtitle, url }] }
+// input = { title, sport, recorded_on, season, team, division, participant_id, format, match_id, chapters: [{ label, subtitle, url }] }
 export async function addReplayGroup(input) {
   const supabase = createClient();
   if (!(await currentUser(supabase))) return { error: "Non connecté." };
@@ -62,6 +73,7 @@ export async function addReplayGroup(input) {
       division: clean(input?.division),
       match_id: sport === "basket" ? clean(input?.match_id) : null,
       ...(clean(input?.participant_id) ? { participant_id: clean(input.participant_id) } : {}),
+      ...(cleanFormat(input?.format) ? { format: cleanFormat(input.format) } : {}),
     })
     .select("id")
     .single();
@@ -165,7 +177,7 @@ export async function moveChapter(id, direction) {
 }
 
 // Modifie les informations d'un replay : titre, date, saison, équipe, division et participant.
-// input = { title, recorded_on, season, team, division, participant_id }
+// input = { title, recorded_on, season, team, division, participant_id, format }
 export async function updateReplayGroup(id, input) {
   const supabase = createClient();
   if (!(await currentUser(supabase))) return { error: "Non connecté." };
@@ -183,6 +195,7 @@ export async function updateReplayGroup(id, input) {
       team: clean(input?.team),
       division: clean(input?.division),
       participant_id: clean(input?.participant_id),
+      format: cleanFormat(input?.format),
     })
     .eq("id", id);
   if (error) return { error: friendly(error.message) };
